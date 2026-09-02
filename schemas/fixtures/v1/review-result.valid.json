@@ -10,5 +10,15 @@
   "evidenceRefs": [
     "schema-validation"
   ],
-  "findings": []
+  "findings": [],
+  "details": {
+    "affectedContractsModules": [
+      "schemas/v1/module-contract.schema.json"
+    ],
+    "dependencyConsumerSurfaces": [
+      "example.provider -> example.consumer"
+    ],
+    "semanticCompatibilityAssessment": "Consumer-required output ranges remain representable.",
+    "invariantDependencyRuleAssessment": "No forbidden dependency direction is introduced."
+  }
 }

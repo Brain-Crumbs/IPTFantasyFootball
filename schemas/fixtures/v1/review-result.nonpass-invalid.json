@@ -1,0 +1,20 @@
+{
+  "schemaId": "ipt.review-result",
+  "schemaVersion": "1.0.0",
+  "reviewId": "review-fail-no-remediation",
+  "taskId": "BOOT-003",
+  "revisionIdentity": "abc123",
+  "role": "QA",
+  "outcome": "FAIL",
+  "recordedAt": "2026-09-02T18:00:00Z",
+  "evidenceRefs": [],
+  "findings": [],
+  "details": {
+    "acceptanceCriteriaScenarios": [
+      "Rejected malformed task record."
+    ],
+    "regressionNegativeCaseCoverage": [
+      "Unknown major rejection."
+    ]
+  }
+}

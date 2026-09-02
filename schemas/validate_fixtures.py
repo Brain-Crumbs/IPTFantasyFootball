@@ -27,6 +27,19 @@ unknown = json.loads((FIXTURE_DIR / "task.unknown-major.json").read_text())
 if not list(Draft202012Validator(task_schema).iter_errors(unknown)):
     failures.append("task.unknown-major.json: unsupported major version was accepted")
 
+review_schema = json.loads((SCHEMA_DIR / "review-result.schema.json").read_text())
+review_validator = Draft202012Validator(review_schema, format_checker=FormatChecker())
+
+nonpass = json.loads((FIXTURE_DIR / "review-result.nonpass-invalid.json").read_text())
+if not list(review_validator.iter_errors(nonpass)):
+    failures.append("review-result.nonpass-invalid.json: non-PASS result without remediation was accepted")
+
+role_samples = json.loads((FIXTURE_DIR / "review-result.roles-valid.json").read_text())
+for index, sample in enumerate(role_samples):
+    errors = list(review_validator.iter_errors(sample))
+    if errors:
+        failures.append(f"review-result.roles-valid.json[{index}]: expected valid, got {errors[0].message}")
+
 if failures:
     for failure in failures:
         print(f"FAIL: {failure}")

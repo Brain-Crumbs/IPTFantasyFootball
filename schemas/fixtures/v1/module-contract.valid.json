@@ -17,6 +17,12 @@
     ],
     "invariants": [
       "Return type remains numeric."
+    ],
+    "examples": [
+      "getValue() may return 0, 50, or 100."
+    ],
+    "edgeCases": [
+      "Values 0 and 100 are valid boundary outputs."
     ]
   },
   "allowedDependencies": [
