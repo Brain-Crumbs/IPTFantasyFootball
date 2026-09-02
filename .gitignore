@@ -1,0 +1,13 @@
+# Editor / OS artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Node/TypeScript artifacts (bootstrap technology direction from issue #1)
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
