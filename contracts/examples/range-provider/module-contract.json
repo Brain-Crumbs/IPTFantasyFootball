@@ -1,0 +1,50 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.0.0",
+  "moduleId": "example.range-provider",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "getScore(): number"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "produce-score"
+    ],
+    "behavioralConstraints": [
+      "getScore returns an integer in [0, 100]"
+    ],
+    "invariants": [
+      "Every successful call returns a finite integer",
+      "Values from 90 through 100 are valid outputs"
+    ],
+    "examples": [
+      "getScore() may return 95"
+    ],
+    "edgeCases": [
+      "0 and 100 are both valid boundary values"
+    ]
+  },
+  "allowedDependencies": [
+    "core/*"
+  ],
+  "forbiddenDependencies": [
+    "presentation/*",
+    "consumer.alerting"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "consumer.alerting",
+      "expectations": [
+        "Scores from 90 through 100 can occur and trigger the high-severity path"
+      ],
+      "requiredCapabilities": [
+        "produce-score"
+      ],
+      "acceptedRanges": [
+        "requires producer support for [90, 100] as reachable valid outputs"
+      ]
+    }
+  ]
+}
