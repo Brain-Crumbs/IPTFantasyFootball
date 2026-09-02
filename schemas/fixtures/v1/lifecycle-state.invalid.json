@@ -1,0 +1,14 @@
+{
+  "schemaId": "ipt.lifecycle-state",
+  "schemaVersion": "1.0.0",
+  "taskId": "BOOT-003",
+  "currentState": "MADE_UP",
+  "history": [
+    {
+      "eventId": "",
+      "toState": "READY",
+      "occurredAt": "not-a-time",
+      "reason": ""
+    }
+  ]
+}

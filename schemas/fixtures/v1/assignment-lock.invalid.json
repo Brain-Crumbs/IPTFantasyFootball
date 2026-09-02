@@ -1,0 +1,10 @@
+{
+  "schemaId": "ipt.assignment-lock",
+  "schemaVersion": "1.0.0",
+  "lockId": "",
+  "taskId": "BAD",
+  "canonicalBranch": "",
+  "ownerId": "",
+  "status": "OWNED",
+  "acquiredAt": "yesterday"
+}

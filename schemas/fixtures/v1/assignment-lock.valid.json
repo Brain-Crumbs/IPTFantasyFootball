@@ -1,0 +1,10 @@
+{
+  "schemaId": "ipt.assignment-lock",
+  "schemaVersion": "1.0.0",
+  "lockId": "lock-boot-003",
+  "taskId": "BOOT-003",
+  "canonicalBranch": "bootstrap/boot-003-core-schemas",
+  "ownerId": "agent-run-1",
+  "status": "ACTIVE",
+  "acquiredAt": "2026-09-02T18:00:00Z"
+}

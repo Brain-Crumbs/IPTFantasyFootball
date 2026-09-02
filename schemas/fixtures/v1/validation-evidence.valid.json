@@ -1,0 +1,17 @@
+{
+  "schemaId": "ipt.validation-evidence",
+  "schemaVersion": "1.0.0",
+  "evidenceId": "evidence-1",
+  "taskId": "BOOT-003",
+  "revisionIdentity": "abc123",
+  "validatorId": "schema-fixtures",
+  "outcome": "PASS",
+  "recordedAt": "2026-09-02T18:00:00Z",
+  "checks": [
+    {
+      "checkId": "valid-task",
+      "outcome": "PASS",
+      "evidenceRef": "schemas/fixtures/v1/task.valid.json"
+    }
+  ]
+}

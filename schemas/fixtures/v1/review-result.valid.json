@@ -1,0 +1,14 @@
+{
+  "schemaId": "ipt.review-result",
+  "schemaVersion": "1.0.0",
+  "reviewId": "review-1",
+  "taskId": "BOOT-003",
+  "revisionIdentity": "abc123",
+  "role": "Architect",
+  "outcome": "PASS",
+  "recordedAt": "2026-09-02T18:00:00Z",
+  "evidenceRefs": [
+    "schema-validation"
+  ],
+  "findings": []
+}
