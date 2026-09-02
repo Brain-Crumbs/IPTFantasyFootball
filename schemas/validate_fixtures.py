@@ -11,6 +11,7 @@ failures = []
 
 for family in FAMILIES:
     schema = json.loads((SCHEMA_DIR / f"{family}.schema.json").read_text())
+    Draft202012Validator.check_schema(schema)
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     for expectation in ("valid", "invalid"):
         path = FIXTURE_DIR / f"{family}.{expectation}.json"
