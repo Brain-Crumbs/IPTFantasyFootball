@@ -84,7 +84,8 @@ A Developer handoff must be representable as structured data with:
 - acceptance-criteria evidence mapping;
 - validation checks/results;
 - known limitations, assumptions, and risks;
-- handoff readiness status.
+- outcome = PASS | FAIL | BLOCKED;
+- handoff readiness detail, if useful, as descriptive metadata rather than a separate judgment vocabulary.
 
 ### Authority
 
@@ -278,7 +279,7 @@ It does not require broad implementation reasoning context.
 - reject stale approvals when the head revision moved;
 - compute/report merge readiness according to policy;
 - merge only when every required policy fact is satisfied;
-- otherwise issue BLOCKED/NOT READY facts with missing prerequisites.
+- otherwise issue BLOCKED with the missing prerequisites recorded as blocking facts.
 
 ### Prohibited actions
 
@@ -296,7 +297,8 @@ A Merge Controller result must be representable as structured data with:
 - role = MergeController;
 - task ID;
 - exact PR head/revision identity;
-- readiness outcome;
+- outcome = PASS | FAIL | BLOCKED;
+- readiness detail, if useful, as descriptive metadata rather than a separate judgment vocabulary;
 - policy checks evaluated;
 - evidence/review references;
 - blocking prerequisites, if any;
@@ -355,7 +357,7 @@ QA and Architecture pass, but realistic UAT shows the feature does not accomplis
 
 Required review results exist, but the PR head differs from their revision identity.
 
-**Result:** Merge Controller must report not ready/blocked. It may not merge based on stale evidence.
+**Result:** Merge Controller must report BLOCKED. It may include descriptive readiness detail, but it may not introduce a second outcome vocabulary or merge based on stale evidence.
 
 ## 10. Boundary to later BOOT tasks
 
