@@ -12,6 +12,7 @@ BOOT-000 creates only the minimum written constitution and repository skeleton n
 
 ## Governing documents
 
+- [AGENTS.md](AGENTS.md) — mandatory repository-wide operating procedure for development agents, including task start, scope, branch, validation, handoff, and status-authority rules.
 - [CONSTITUTION.md](CONSTITUTION.md) — architectural invariants that later bootstrap work must preserve and eventually enforce.
 - [BOOTSTRAP.md](BOOTSTRAP.md) — temporary bootstrap authority, current seed identity, phase boundary, and handoff rules.
 - [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION) — machine-simple marker for the current bootstrap seed version.
