@@ -1,0 +1,24 @@
+{
+  "schemaId": "ipt.review-result",
+  "schemaVersion": "1.0.0",
+  "reviewId": "review-1",
+  "taskId": "BOOT-003",
+  "revisionIdentity": "abc123",
+  "role": "Architect",
+  "outcome": "PASS",
+  "recordedAt": "2026-09-02T18:00:00Z",
+  "evidenceRefs": [
+    "schema-validation"
+  ],
+  "findings": [],
+  "details": {
+    "affectedContractsModules": [
+      "schemas/v1/module-contract.schema.json"
+    ],
+    "dependencyConsumerSurfaces": [
+      "example.provider -> example.consumer"
+    ],
+    "semanticCompatibilityAssessment": "Consumer-required output ranges remain representable.",
+    "invariantDependencyRuleAssessment": "No forbidden dependency direction is introduced."
+  }
+}

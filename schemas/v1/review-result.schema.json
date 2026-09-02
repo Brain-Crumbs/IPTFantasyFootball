@@ -1,0 +1,420 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iptfantasyfootball.dev/schemas/v1/review-result.schema.json",
+  "title": "Review Result and Finding v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaId",
+    "schemaVersion",
+    "reviewId",
+    "taskId",
+    "revisionIdentity",
+    "role",
+    "outcome",
+    "details",
+    "findings",
+    "evidenceRefs",
+    "recordedAt"
+  ],
+  "$defs": {
+    "developerDetails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementationSummary",
+        "changedSurfaces",
+        "acceptanceCriteriaEvidence",
+        "validationChecks",
+        "knownLimitationsAssumptionsRisks"
+      ],
+      "properties": {
+        "implementationSummary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "changedSurfaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "acceptanceCriteriaEvidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "validationChecks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "knownLimitationsAssumptionsRisks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "handoffReadinessDetail": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "qaDetails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acceptanceCriteriaScenarios",
+        "regressionNegativeCaseCoverage"
+      ],
+      "properties": {
+        "acceptanceCriteriaScenarios": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "regressionNegativeCaseCoverage": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "architectDetails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "affectedContractsModules",
+        "dependencyConsumerSurfaces",
+        "semanticCompatibilityAssessment",
+        "invariantDependencyRuleAssessment"
+      ],
+      "properties": {
+        "affectedContractsModules": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "dependencyConsumerSurfaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "semanticCompatibilityAssessment": {
+          "type": "string",
+          "minLength": 1
+        },
+        "invariantDependencyRuleAssessment": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "uatDetails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intendedOutcomesScenarios",
+        "observedBehavior"
+      ],
+      "properties": {
+        "intendedOutcomesScenarios": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "observedBehavior": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "mergeControllerDetails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policyChecks"
+      ],
+      "properties": {
+        "policyChecks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "readinessDetail": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blockingPrerequisites": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "mergeActionResult": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "findingId",
+        "severity",
+        "observed",
+        "expected"
+      ],
+      "properties": {
+        "findingId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "enum": [
+            "INFO",
+            "LOW",
+            "MEDIUM",
+            "HIGH",
+            "CRITICAL"
+          ]
+        },
+        "requirementRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contractRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidenceRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observed": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected": {
+          "type": "string",
+          "minLength": 1
+        },
+        "remediation": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "nonPass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "remediation"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "remediation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blockingPrerequisites": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "schemaId": {
+      "const": "ipt.review-result"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "reviewId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^[A-Z]+-[0-9]{3,}$"
+    },
+    "revisionIdentity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "role": {
+      "enum": [
+        "Developer",
+        "QA",
+        "Architect",
+        "UAT/Product",
+        "MergeController"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "BLOCKED"
+      ]
+    },
+    "details": {
+      "type": "object"
+    },
+    "nonPass": {
+      "$ref": "#/$defs/nonPass"
+    },
+    "recordedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "role": {
+            "const": "Developer"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "details": {
+            "$ref": "#/$defs/developerDetails"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "role": {
+            "const": "QA"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "details": {
+            "$ref": "#/$defs/qaDetails"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "role": {
+            "const": "Architect"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "details": {
+            "$ref": "#/$defs/architectDetails"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "role": {
+            "const": "UAT/Product"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "details": {
+            "$ref": "#/$defs/uatDetails"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "role": {
+            "const": "MergeController"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "details": {
+            "$ref": "#/$defs/mergeControllerDetails"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "FAIL",
+              "BLOCKED"
+            ]
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "required": [
+          "nonPass"
+        ]
+      }
+    }
+  ]
+}

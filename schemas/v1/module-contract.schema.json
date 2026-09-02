@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iptfantasyfootball.dev/schemas/v1/module-contract.schema.json",
+  "title": "Module and Consumer Contract Metadata v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaId",
+    "schemaVersion",
+    "moduleId",
+    "moduleVersion",
+    "structuralContract",
+    "semanticContract",
+    "allowedDependencies",
+    "forbiddenDependencies",
+    "knownConsumers"
+  ],
+  "properties": {
+    "schemaId": {
+      "const": "ipt.module-contract"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "moduleId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "moduleVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "structuralContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interfaces"
+      ],
+      "properties": {
+        "interfaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "semanticContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capabilities",
+        "behavioralConstraints",
+        "invariants",
+        "examples",
+        "edgeCases"
+      ],
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "behavioralConstraints": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "invariants": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "edgeCases": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "allowedDependencies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "forbiddenDependencies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "knownConsumers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "consumerId",
+          "expectations",
+          "requiredCapabilities",
+          "acceptedRanges"
+        ],
+        "properties": {
+          "consumerId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "requiredCapabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          },
+          "acceptedRanges": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

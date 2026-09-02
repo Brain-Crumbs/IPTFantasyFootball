@@ -1,0 +1,14 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "BOOT-003-R1",
+  "taskId": "BOOT-003",
+  "statement": "Every core schema family is versioned.",
+  "acceptanceCriteria": [
+    "Schema version is required."
+  ],
+  "sourceRefs": [
+    "#1",
+    "#5"
+  ]
+}

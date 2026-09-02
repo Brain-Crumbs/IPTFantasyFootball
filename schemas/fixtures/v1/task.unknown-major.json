@@ -1,0 +1,22 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "2.0.0",
+  "taskId": "BOOT-999",
+  "title": "Unknown major",
+  "objective": "Demonstrate rejection.",
+  "inScope": [],
+  "outOfScope": [],
+  "dependencies": [],
+  "canonicalBranch": "bootstrap/boot-999-unknown",
+  "requirements": [],
+  "acceptanceCriteria": [
+    "Reject unknown major."
+  ],
+  "validationPlan": [
+    "Validate against v1."
+  ],
+  "affectedContracts": [],
+  "requiredReviewRoles": [
+    "Developer"
+  ]
+}

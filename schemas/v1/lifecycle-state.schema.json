@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iptfantasyfootball.dev/schemas/v1/lifecycle-state.schema.json",
+  "title": "Lifecycle State and History v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaId",
+    "schemaVersion",
+    "taskId",
+    "currentState",
+    "history"
+  ],
+  "$defs": {
+    "state": {
+      "enum": [
+        "PLANNED",
+        "READY",
+        "ASSIGNED",
+        "IN_DEVELOPMENT",
+        "DEV_VALIDATED",
+        "QA_REVIEW",
+        "ARCHITECTURE_REVIEW",
+        "UAT_REVIEW",
+        "MERGE_READY",
+        "MERGED",
+        "DONE",
+        "BLOCKED",
+        "DEV_VALIDATION_FAILED",
+        "QA_FAILED",
+        "ARCHITECTURE_FAILED",
+        "UAT_FAILED",
+        "MERGE_BLOCKED",
+        "REWORK_REQUIRED"
+      ]
+    }
+  },
+  "properties": {
+    "schemaId": {
+      "const": "ipt.lifecycle-state"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^[A-Z]+-[0-9]{3,}$"
+    },
+    "currentState": {
+      "$ref": "#/$defs/state"
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "eventId",
+          "toState",
+          "occurredAt",
+          "reason"
+        ],
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fromState": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/state"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "toState": {
+            "$ref": "#/$defs/state"
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revisionIdentity": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

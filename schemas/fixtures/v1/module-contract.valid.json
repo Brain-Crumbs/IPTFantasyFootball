@@ -1,0 +1,48 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.0.0",
+  "moduleId": "example.provider",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "getValue(): number"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "Provides values from 0 through 100."
+    ],
+    "behavioralConstraints": [
+      "Returned values are within inclusive range 0..100."
+    ],
+    "invariants": [
+      "Return type remains numeric."
+    ],
+    "examples": [
+      "getValue() may return 0, 50, or 100."
+    ],
+    "edgeCases": [
+      "Values 0 and 100 are valid boundary outputs."
+    ]
+  },
+  "allowedDependencies": [
+    "core.domain"
+  ],
+  "forbiddenDependencies": [
+    "vendor.agent"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "example.consumer",
+      "expectations": [
+        "Values above 80 remain possible."
+      ],
+      "requiredCapabilities": [
+        "Provides values from 0 through 100."
+      ],
+      "acceptedRanges": [
+        "0..100 inclusive; consumer relies on 81..100."
+      ]
+    }
+  ]
+}

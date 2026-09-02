@@ -1,0 +1,120 @@
+[
+  {
+    "schemaId": "ipt.review-result",
+    "schemaVersion": "1.0.0",
+    "reviewId": "dev-1",
+    "taskId": "BOOT-003",
+    "revisionIdentity": "abc123",
+    "role": "Developer",
+    "outcome": "PASS",
+    "recordedAt": "2026-09-02T18:00:00Z",
+    "evidenceRefs": [],
+    "findings": [],
+    "details": {
+      "implementationSummary": "Implemented schemas.",
+      "changedSurfaces": [
+        "schemas/"
+      ],
+      "acceptanceCriteriaEvidence": [
+        "Schema families added."
+      ],
+      "validationChecks": [
+        "Fixture validation."
+      ],
+      "knownLimitationsAssumptionsRisks": [
+        "Runtime loading deferred."
+      ]
+    }
+  },
+  {
+    "schemaId": "ipt.review-result",
+    "schemaVersion": "1.0.0",
+    "reviewId": "qa-1",
+    "taskId": "BOOT-003",
+    "revisionIdentity": "abc123",
+    "role": "QA",
+    "outcome": "PASS",
+    "recordedAt": "2026-09-02T18:00:00Z",
+    "evidenceRefs": [],
+    "findings": [],
+    "details": {
+      "acceptanceCriteriaScenarios": [
+        "Valid fixtures accepted."
+      ],
+      "regressionNegativeCaseCoverage": [
+        "Invalid fixtures rejected."
+      ]
+    }
+  },
+  {
+    "schemaId": "ipt.review-result",
+    "schemaVersion": "1.0.0",
+    "reviewId": "review-1",
+    "taskId": "BOOT-003",
+    "revisionIdentity": "abc123",
+    "role": "Architect",
+    "outcome": "PASS",
+    "recordedAt": "2026-09-02T18:00:00Z",
+    "evidenceRefs": [
+      "schema-validation"
+    ],
+    "findings": [],
+    "details": {
+      "affectedContractsModules": [
+        "schemas/v1/module-contract.schema.json"
+      ],
+      "dependencyConsumerSurfaces": [
+        "example.provider -> example.consumer"
+      ],
+      "semanticCompatibilityAssessment": "Consumer-required output ranges remain representable.",
+      "invariantDependencyRuleAssessment": "No forbidden dependency direction is introduced."
+    }
+  },
+  {
+    "schemaId": "ipt.review-result",
+    "schemaVersion": "1.0.0",
+    "reviewId": "uat-1",
+    "taskId": "BOOT-003",
+    "revisionIdentity": "abc123",
+    "role": "UAT/Product",
+    "outcome": "PASS",
+    "recordedAt": "2026-09-02T18:00:00Z",
+    "evidenceRefs": [],
+    "findings": [],
+    "details": {
+      "intendedOutcomesScenarios": [
+        "Future consumers can encode required records."
+      ],
+      "observedBehavior": [
+        "Schemas expose required control-plane data."
+      ]
+    }
+  },
+  {
+    "schemaId": "ipt.review-result",
+    "schemaVersion": "1.0.0",
+    "reviewId": "merge-1",
+    "taskId": "BOOT-003",
+    "revisionIdentity": "abc123",
+    "role": "MergeController",
+    "outcome": "BLOCKED",
+    "recordedAt": "2026-09-02T18:00:00Z",
+    "evidenceRefs": [],
+    "findings": [],
+    "details": {
+      "policyChecks": [
+        "Required review evidence checked."
+      ],
+      "blockingPrerequisites": [
+        "Independent review missing."
+      ]
+    },
+    "nonPass": {
+      "reason": "Required review evidence is incomplete.",
+      "remediation": "Obtain the missing independent review.",
+      "blockingPrerequisites": [
+        "Independent review missing."
+      ]
+    }
+  }
+]

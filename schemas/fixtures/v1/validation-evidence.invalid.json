@@ -1,0 +1,11 @@
+{
+  "schemaId": "ipt.validation-evidence",
+  "schemaVersion": "1.0.0",
+  "evidenceId": "",
+  "taskId": "BOOT-003",
+  "revisionIdentity": "",
+  "validatorId": "",
+  "outcome": "OK",
+  "recordedAt": "bad",
+  "checks": []
+}

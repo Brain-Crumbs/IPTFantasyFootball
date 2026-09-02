@@ -1,0 +1,23 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.0.0",
+  "moduleId": "",
+  "moduleVersion": "v1",
+  "structuralContract": {
+    "interfaces": []
+  },
+  "semanticContract": {
+    "capabilities": [],
+    "behavioralConstraints": [],
+    "invariants": []
+  },
+  "allowedDependencies": [],
+  "forbiddenDependencies": [],
+  "knownConsumers": [
+    {
+      "consumerId": "",
+      "expectations": [],
+      "requiredCapabilities": []
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iptfantasyfootball.dev/schemas/v1/assignment-lock.schema.json",
+  "title": "Assignment and Lock Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaId",
+    "schemaVersion",
+    "lockId",
+    "taskId",
+    "canonicalBranch",
+    "ownerId",
+    "status",
+    "acquiredAt"
+  ],
+  "properties": {
+    "schemaId": {
+      "const": "ipt.assignment-lock"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "lockId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^[A-Z]+-[0-9]{3,}$"
+    },
+    "canonicalBranch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ownerId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "ACTIVE",
+        "RELEASED",
+        "STALE"
+      ]
+    },
+    "acquiredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "releasedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

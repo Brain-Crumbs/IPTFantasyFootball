@@ -1,0 +1,37 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "BOOT-003",
+  "title": "Core schemas",
+  "objective": "Define versioned control-plane schemas.",
+  "inScope": [
+    "Schema definitions"
+  ],
+  "outOfScope": [
+    "Runtime state engine"
+  ],
+  "dependencies": [
+    "BOOT-000",
+    "BOOT-002"
+  ],
+  "canonicalBranch": "bootstrap/boot-003-core-schemas",
+  "allowedPaths": [
+    "schemas/"
+  ],
+  "requirements": [
+    "BOOT-003-R1"
+  ],
+  "acceptanceCriteria": [
+    "All schema families are versioned."
+  ],
+  "validationPlan": [
+    "Validate fixtures."
+  ],
+  "affectedContracts": [
+    "docs/ROLE_MODEL.md"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "Architect"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "bad",
+  "title": "",
+  "objective": "",
+  "inScope": [],
+  "outOfScope": [],
+  "dependencies": [],
+  "canonicalBranch": "",
+  "requirements": [],
+  "acceptanceCriteria": [],
+  "validationPlan": [],
+  "affectedContracts": [],
+  "requiredReviewRoles": [
+    "Unknown"
+  ]
+}

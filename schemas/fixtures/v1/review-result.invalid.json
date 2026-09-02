@@ -1,0 +1,19 @@
+{
+  "schemaId": "ipt.review-result",
+  "schemaVersion": "1.0.0",
+  "reviewId": "",
+  "taskId": "BOOT-003",
+  "revisionIdentity": "",
+  "role": "Owner",
+  "outcome": "APPROVED",
+  "recordedAt": "bad",
+  "evidenceRefs": [],
+  "findings": [
+    {
+      "findingId": "",
+      "severity": "P2",
+      "observed": "",
+      "expected": ""
+    }
+  ]
+}
