@@ -260,20 +260,17 @@ function transitiveDependenciesFor(
   const seen = new Set<string>();
   const result: string[] = [];
 
-  function addDependency(dependencyId: string): void {
-    const dependencyTask = registry.get(dependencyId);
-    if (dependencyTask === undefined) return;
-    for (const nested of [...dependencyTask.dependencies].sort(compareText)) {
-      addDependency(nested);
+  for (const dependencyId of [...task.dependencies].sort(compareText)) {
+    for (const nested of transitiveDependenciesFor(dependencyId, registry, memo)) {
+      if (!seen.has(nested)) {
+        seen.add(nested);
+        result.push(nested);
+      }
     }
     if (!seen.has(dependencyId)) {
       seen.add(dependencyId);
       result.push(dependencyId);
     }
-  }
-
-  for (const dependencyId of [...task.dependencies].sort(compareText)) {
-    addDependency(dependencyId);
   }
 
   const frozen = freezeStrings(result);
