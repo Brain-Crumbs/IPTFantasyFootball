@@ -5,9 +5,17 @@ import { EXIT_CODES, OUTPUT_SCHEMA_VERSION } from "../dist/cli/contracts.js";
 import { runCli } from "../dist/cli/core.js";
 
 const cliPath = new URL("../dist/cli/cli.js", import.meta.url);
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 function spawnCli(args) {
   return spawnSync(process.execPath, [cliPath.pathname, ...args], { encoding: "utf8" });
+}
+
+function spawnDocumentedJsonCli(args) {
+  return spawnSync(npmCommand, ["run", "--silent", "agent", "--", "--json", ...args], {
+    encoding: "utf8",
+    cwd: new URL("..", import.meta.url),
+  });
 }
 
 test("help describes the control-plane purpose and bootstrap command surface", () => {
@@ -35,6 +43,16 @@ test("unknown option is a deterministic usage error", () => {
   const result = runCli(["--wat"]);
   assert.equal(result.exitCode, EXIT_CODES.USAGE_ERROR);
   assert.match(result.stderr, /^USAGE_UNKNOWN_OPTION:/);
+});
+
+test("trailing --json controls error rendering regardless of argument order", () => {
+  const result = runCli(["bogus", "--wat", "--json"]);
+  assert.equal(result.exitCode, EXIT_CODES.USAGE_ERROR);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.command, "bogus");
+  assert.equal(payload.error.code, "USAGE_UNKNOWN_OPTION");
 });
 
 test("reserved command fails clearly instead of silently succeeding", () => {
@@ -67,6 +85,16 @@ test("machine-readable errors use the same envelope and deterministic exit code"
   assert.equal(payload.ok, false);
   assert.equal(payload.data, null);
   assert.equal(payload.error.code, "USAGE_UNKNOWN_COMMAND");
+});
+
+test("documented npm JSON invocation emits exactly one parseable JSON object", () => {
+  const result = spawnDocumentedJsonCli(["version"]);
+  assert.equal(result.status, EXIT_CODES.SUCCESS);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.command, "version");
+  assert.equal(payload.schemaVersion, OUTPUT_SCHEMA_VERSION);
 });
 
 test("process-level help/version/invalid/unimplemented exit behavior matches core contract", () => {
