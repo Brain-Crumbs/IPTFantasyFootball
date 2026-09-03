@@ -109,3 +109,19 @@ test("independent DAG components are valid and ordered deterministically", () =>
   assert.equal(result.satisfaction.get("BOOT-002")?.satisfied, true);
   assert.equal(result.satisfaction.get("BOOT-011")?.satisfied, true);
 });
+
+test("equivalent registry contents resolve identically regardless of insertion order", () => {
+  const tasks = [
+    task("BOOT-001"),
+    task("BOOT-002", ["BOOT-001"]),
+    task("BOOT-003", ["BOOT-001"]),
+    task("BOOT-004", ["BOOT-003", "BOOT-002"]),
+  ];
+
+  const forward = resolveDependencyDag(registry(tasks), ["BOOT-001", "BOOT-002"]);
+  const reverse = resolveDependencyDag(registry([...tasks].reverse()), ["BOOT-001", "BOOT-002"]);
+
+  assert.deepEqual(forward.taskOrder, reverse.taskOrder);
+  assert.deepEqual([...forward.tasks.entries()], [...reverse.tasks.entries()]);
+  assert.deepEqual([...forward.satisfaction.entries()], [...reverse.satisfaction.entries()]);
+});
