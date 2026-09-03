@@ -11,7 +11,7 @@ This document defines the required contract bundle for reusable repository modul
 A conforming module contract has two adjacent representations:
 
 1. **Human-readable README** — explains intent, interfaces, semantic promises, consumers, dependency policy, examples, and edge cases.
-2. **Machine-readable manifest** — conforms to `ipt.module-contract` schema version `1.0.0`.
+2. **Machine-readable manifest** — conforms to `ipt.module-contract` schema version `1.1.0` for the full BOOT-004 range semantics. The v1 schema remains backward-compatible with `1.0.0` records.
 
 The representations describe the same promises. Neither may silently weaken or contradict the other.
 
@@ -67,11 +67,39 @@ Each consumer entry records:
 - `consumerId` — stable identifier for the direct consumer.
 - `expectations` — semantic assumptions that matter to the consumer.
 - `requiredCapabilities` — producer capabilities the consumer depends on.
-- `acceptedRanges` — value/range behavior the consumer needs or can accept.
+- `acceptedRanges` — producer output ranges the consumer can safely receive.
+- `requiredReachableRanges` — producer output ranges the consumer requires to remain reachable.
 
-The human-readable README must also describe why those expectations matter.
+These two range concepts are intentionally separate because they have opposite compatibility directions.
 
-A consumer requirement is not optional documentation. If a producer change violates a declared expectation or accepted range, that is architectural risk even when local tests pass.
+### Accepted-range compatibility
+
+Let:
+
+- `P` = the producer's reachable output set/range.
+- `A` = the consumer's accepted input set/range.
+
+Compatibility requires:
+
+`P ⊆ A`
+
+A producer must not emit values the consumer cannot safely accept.
+
+### Required-reachability compatibility
+
+Let:
+
+- `R` = the consumer's required reachable producer output set/range.
+
+Compatibility requires:
+
+`R ⊆ P`
+
+A producer must continue to make every consumer-required output reachable.
+
+**Overlap is not sufficient.** For example, if `R = [90,100]` and a producer narrows from `[0,100]` to `[0,95]`, the ranges still overlap but values `96–100` are no longer reachable. That is a semantic incompatibility because `R ⊄ P`.
+
+The human-readable README must also describe why each accepted or required range matters.
 
 ## 5. Dependency direction
 
@@ -103,9 +131,10 @@ A conforming module README must contain, at minimum:
 6. **Dependencies**
 7. **Known consumers**
 8. **Consumer expectations and accepted ranges**
-9. **Examples**
-10. **Edge cases**
-11. **Change-impact checklist**
+9. **Consumer-required reachable ranges**
+10. **Examples**
+11. **Edge cases**
+12. **Change-impact checklist**
 
 Use `contracts/MODULE_README_TEMPLATE.md` as the canonical section template.
 
@@ -119,8 +148,8 @@ Before changing a module contract, review all of the following:
 - Did any invariant change?
 - Did an edge-case behavior change?
 - Did dependency direction change?
-- Does any known consumer expectation become unsatisfied?
-- Does any consumer's accepted range no longer overlap the producer's guaranteed range?
+- Is the producer's reachable range still fully contained by every relevant consumer accepted range?
+- Is every consumer-required reachable range still fully contained by the producer's reachable range?
 
 If structural compatibility remains but any semantic answer changes, architecture review must consider downstream impact explicitly.
 
@@ -146,37 +175,43 @@ Producer structural type:
 
 `getScore(): number`
 
-Original semantic range:
+Original producer reachable range:
 
-`score is an integer in [0, 100]`
+`P = [0,100]`
 
-Known consumer requirement:
+Known consumer:
 
-`consumer.alerting` relies on scores in `[90, 100]` to trigger its high-severity path.
+- accepts any score in `A = [0,100]`;
+- requires the producer to keep `R = [90,100]` reachable for its high-severity path.
 
-A proposed implementation changes the actual producer range to `[0, 80]` without changing `getScore(): number`.
+A proposed implementation changes the producer reachable range to `P' = [0,95]` without changing `getScore(): number`.
 
-Structural result: **compatible**.  
+Structural result: **compatible**.
+
+Accepted-input check:
+
+`P' ⊆ A` → **PASS**
+
+Required-reachability check:
+
+`R ⊆ P'` → **FAIL**, because `96–100` are no longer reachable.
+
 Semantic result: **incompatible**.
 
-The manifest exposes the problem because:
-
-- the producer's behavioral constraint declares `[0, 100]`;
-- the consumer entry declares accepted/required high-end range `[90, 100]`;
-- narrowing the producer guarantee to `[0, 80]` would remove overlap with the consumer-required range.
-
-An Architect can therefore flag the downstream break without depending on type changes.
+An Architect can therefore flag a partial downstream break that a simple overlap test would miss.
 
 ## 10. Versioning
 
-The manifest must use the version constants defined by the schema:
+The manifest uses:
 
 - `schemaId: "ipt.module-contract"`
-- `schemaVersion: "1.0.0"`
+- `schemaVersion: "1.1.0"` for the BOOT-004 standard.
+
+The existing `1.0.0` record shape remains valid under the same v1 schema. Version `1.1.0` adds the optional `requiredReachableRanges` field without invalidating prior records or changing the meaning of existing fields, consistent with `schemas/VERSIONING.md`.
 
 `moduleVersion` is the version of the module contract itself and must follow `MAJOR.MINOR.PATCH`.
 
-A semantic breaking change should be treated as contract-significant even when the structural interface is unchanged. The exact repository-wide compatibility/version-bump policy may be refined by later bootstrap tasks; BOOT-004 does not invent enforcement beyond this standard.
+A semantic breaking change should be treated as contract-significant even when the structural interface is unchanged.
 
 ## 11. Scope boundary
 
