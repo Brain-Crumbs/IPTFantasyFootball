@@ -32,7 +32,8 @@
       "resolution refuses partial graph output when validation diagnostics exist",
       "satisfaction uses only explicit satisfiedTaskIds input",
       "direct blockers identify immediate unsatisfied dependencies",
-      "disconnected components are valid and ordered deterministically"
+      "disconnected components are valid and ordered deterministically",
+      "shared transitive prerequisites are deduplicated and per-task transitive closures are reused so repeated fan-in does not cause path-exponential traversal"
     ],
     "invariants": [
       "no next-task priority selection occurs",
@@ -45,12 +46,14 @@
       "chain A to B to C resolves in dependency order",
       "diamond dependencies resolve before their shared dependent",
       "two independent DAG components are valid",
-      "missing references self-dependencies and cycles fail with actionable diagnostics"
+      "missing references self-dependencies and cycles fail with actionable diagnostics",
+      "layered repeated fan-in reuses transitive closures instead of recursively expanding every path"
     ],
     "edgeCases": [
       "empty registry resolves to empty maps",
       "multi-node cycle reports a cycle path",
-      "unsatisfied transitive dependencies are exposed separately from direct blockers"
+      "unsatisfied transitive dependencies are exposed separately from direct blockers",
+      "repeated fan-in returns each transitive prerequisite once without path-exponential traversal"
     ]
   },
   "allowedDependencies": [
