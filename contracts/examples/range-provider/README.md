@@ -20,14 +20,14 @@ The public type remains `number` in both the compatible and breaking scenarios.
 
 ## Behavioral constraints and ranges
 
-- `getScore` returns an integer in `[0, 100]`.
-- Scores in `[90, 100]` are reachable valid outputs.
+- Producer reachable range: `P = [0,100]`.
+- Scores in `[90,100]` are reachable valid outputs.
 
 ## Invariants
 
 - Every successful call returns a finite integer.
 - Both boundaries, `0` and `100`, are valid.
-- The high range `[90, 100]` is part of the promised behavior, not an implementation accident.
+- The high range `[90,100]` is part of the promised behavior, not an implementation accident.
 
 ## Dependencies
 
@@ -58,12 +58,26 @@ Required capability:
 
 Expectations:
 
-- Scores in `[90, 100]` can occur.
-- The consumer's high-severity path depends on those values remaining reachable.
+- The consumer can safely receive every producer output from `0` through `100`.
+- Values outside `[0,100]` are not part of this contract.
 
-Accepted/required range:
+Accepted producer-output range:
 
-- Producer must continue to support `[90, 100]` as reachable valid output.
+- `A = [0,100]`
+
+Compatibility requires the producer reachable range to satisfy `P ⊆ A`.
+
+## Consumer-required reachable ranges
+
+### consumer.alerting
+
+Required reachable producer-output range:
+
+- `R = [90,100]`
+
+The high-severity path depends on every value in this range remaining reachable.
+
+Compatibility requires `R ⊆ P`. Mere overlap is insufficient.
 
 ## Examples
 
@@ -76,17 +90,26 @@ Accepted/required range:
 
 ## Semantic-break scenario
 
-Assume a proposed implementation changes the producer so that it can only return integers in `[0, 80]`, while leaving the signature exactly:
+Assume a proposed implementation narrows the producer reachable range from:
+
+`P = [0,100]`
+
+to:
+
+`P' = [0,95]`
+
+while leaving the structural signature exactly:
 
 `getScore(): number`
 
 A type checker sees no public structural break. Producer-local tests that only assert `typeof score === "number"` could also pass.
 
-The contract exposes the architectural break:
+The contract exposes the architectural break with two distinct containment checks:
 
-1. The producer currently promises `[0, 100]` and explicitly states that `[90, 100]` is reachable.
-2. `consumer.alerting` declares a first-class dependency on reachable outputs in `[90, 100]`.
-3. A proposed producer guarantee of `[0, 80]` no longer satisfies that declared consumer requirement.
+1. **Accepted-input safety:** `P' ⊆ A` is true, because `[0,95] ⊆ [0,100]`.
+2. **Required reachability:** `R ⊆ P'` is false, because required values `96–100` are no longer reachable.
+
+The old overlap rule would incorrectly pass because `[90,100]` overlaps `[0,95]`. The containment rule correctly detects the partial break.
 
 **Architecture result: FAIL until the producer or consumer contract is deliberately reconciled.**
 
@@ -94,13 +117,13 @@ This is the issue #1 example: structural compatibility does not imply semantic c
 
 ## Change-impact checklist
 
-For the hypothetical narrowing to `[0, 80]`:
+For the hypothetical narrowing to `[0,95]`:
 
 - [x] Public interface/type/schema changed? **No.**
-- [x] Capability disappeared or became conditional? **Partially: high-score production is removed.**
+- [x] Capability disappeared or became conditional? **Partially: some high-score production is removed.**
 - [x] Behavioral range narrowed or expanded? **Yes, narrowed.**
-- [x] Invariant changed? **Yes, high-range reachability is violated.**
+- [x] Invariant changed? **Yes, full high-range reachability is violated.**
 - [x] Edge-case behavior changed? **Yes, `100` is no longer valid.**
 - [x] Dependency direction changed? **No.**
-- [x] Known consumer expectation unsatisfied? **Yes.**
-- [x] Consumer-required range stops overlapping producer guarantee? **Yes: `[90, 100]` versus `[0, 80]`.**
+- [x] Producer reachable range remains inside consumer accepted range? **Yes: `[0,95] ⊆ [0,100]`.**
+- [x] Consumer-required reachable range remains inside producer reachable range? **No: `[90,100] ⊄ [0,95]`.**
