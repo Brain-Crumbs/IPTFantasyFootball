@@ -33,3 +33,23 @@ export type {
   DependencySatisfaction,
   ResolvedDependencyTask,
 } from "./dependency-graph.js";
+
+export {
+  NEXT_TASK_ELIGIBLE_STATES,
+  TASK_LIFECYCLE_STATES,
+  selectNextEligibleTask,
+} from "./next-task.js";
+
+export type {
+  BlockedNextTaskResult,
+  BlockedTask,
+  CompleteNextTaskResult,
+  EmptyNextTaskResult,
+  NextTaskBlocker,
+  NextTaskBlockerCode,
+  NextTaskEligibleState,
+  NextTaskResult,
+  NextTaskSelectionOptions,
+  SelectedNextTask,
+  TaskLifecycleState,
+} from "./next-task.js";
