@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test tests/cli.test.mjs tests/task-registry.test.mjs tests/dependency-graph.test.mjs",
+    "test": "npm run build && node --test tests/cli.test.mjs tests/task-registry.test.mjs tests/dependency-graph.test.mjs tests/next-task.test.mjs",
     "preagent": "npm run build",
     "agent": "node dist/cli/cli.js"
   },
