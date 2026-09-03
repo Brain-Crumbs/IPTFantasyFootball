@@ -18,35 +18,35 @@ function spawnDocumentedJsonCli(args) {
   });
 }
 
-test("help describes the control-plane purpose and bootstrap command surface", () => {
-  const result = runCli(["help"]);
+test("help describes the control-plane purpose and bootstrap command surface", async () => {
+  const result = await runCli(["help"]);
   assert.equal(result.exitCode, EXIT_CODES.SUCCESS);
   assert.match(result.stdout, /Deterministic, provider-neutral/);
   assert.match(result.stdout, /next/);
   assert.match(result.stdout, /BOOT-008/);
-  assert.match(result.stdout, /reserved/);
+  assert.match(result.stdout, /implemented/);
 });
 
-test("version is stable across repeated invocations", () => {
-  assert.deepEqual(runCli(["version"]), runCli(["version"]));
+test("version is stable across repeated invocations", async () => {
+  assert.deepEqual(await runCli(["version"]), await runCli(["version"]));
 });
 
-test("invalid command returns deterministic non-zero usage error", () => {
-  const first = runCli(["not-a-command"]);
-  const second = runCli(["not-a-command"]);
+test("invalid command returns deterministic non-zero usage error", async () => {
+  const first = await runCli(["not-a-command"]);
+  const second = await runCli(["not-a-command"]);
   assert.deepEqual(first, second);
   assert.equal(first.exitCode, EXIT_CODES.USAGE_ERROR);
   assert.match(first.stderr, /^USAGE_UNKNOWN_COMMAND:/);
 });
 
-test("unknown option is a deterministic usage error", () => {
-  const result = runCli(["--wat"]);
+test("unknown option is a deterministic usage error", async () => {
+  const result = await runCli(["--wat"]);
   assert.equal(result.exitCode, EXIT_CODES.USAGE_ERROR);
   assert.match(result.stderr, /^USAGE_UNKNOWN_OPTION:/);
 });
 
-test("trailing --json controls error rendering regardless of argument order", () => {
-  const result = runCli(["bogus", "--wat", "--json"]);
+test("trailing --json controls error rendering regardless of argument order", async () => {
+  const result = await runCli(["bogus", "--wat", "--json"]);
   assert.equal(result.exitCode, EXIT_CODES.USAGE_ERROR);
   assert.equal(result.stderr, "");
   const payload = JSON.parse(result.stdout);
@@ -55,15 +55,15 @@ test("trailing --json controls error rendering regardless of argument order", ()
   assert.equal(payload.error.code, "USAGE_UNKNOWN_OPTION");
 });
 
-test("reserved command fails clearly instead of silently succeeding", () => {
-  const result = runCli(["next"]);
+test("reserved command fails clearly instead of silently succeeding", async () => {
+  const result = await runCli(["start"]);
   assert.equal(result.exitCode, EXIT_CODES.NOT_IMPLEMENTED);
   assert.match(result.stderr, /^COMMAND_NOT_IMPLEMENTED:/);
-  assert.match(result.stderr, /BOOT-008/);
+  assert.match(result.stderr, /BOOT-013/);
 });
 
-test("machine-readable success output uses stable envelope", () => {
-  const result = runCli(["--json", "version"]);
+test("machine-readable success output uses stable envelope", async () => {
+  const result = await runCli(["--json", "version"]);
   assert.equal(result.exitCode, EXIT_CODES.SUCCESS);
   assert.equal(result.stderr, "");
   const payload = JSON.parse(result.stdout);
@@ -74,9 +74,9 @@ test("machine-readable success output uses stable envelope", () => {
   assert.equal(payload.error, null);
 });
 
-test("machine-readable errors use the same envelope and deterministic exit code", () => {
-  const first = runCli(["--json", "not-a-command"]);
-  const second = runCli(["--json", "not-a-command"]);
+test("machine-readable errors use the same envelope and deterministic exit code", async () => {
+  const first = await runCli(["--json", "not-a-command"]);
+  const second = await runCli(["--json", "not-a-command"]);
   assert.deepEqual(first, second);
   assert.equal(first.exitCode, EXIT_CODES.USAGE_ERROR);
   assert.equal(first.stderr, "");
@@ -97,11 +97,12 @@ test("documented npm JSON invocation emits exactly one parseable JSON object", (
   assert.equal(payload.schemaVersion, OUTPUT_SCHEMA_VERSION);
 });
 
-test("process-level help/version/invalid/unimplemented exit behavior matches core contract", () => {
+test("process-level help/version/invalid/reserved/next exit behavior matches core contract", () => {
   assert.equal(spawnCli(["help"]).status, EXIT_CODES.SUCCESS);
   assert.equal(spawnCli(["version"]).status, EXIT_CODES.SUCCESS);
   assert.equal(spawnCli(["not-a-command"]).status, EXIT_CODES.USAGE_ERROR);
-  assert.equal(spawnCli(["next"]).status, EXIT_CODES.NOT_IMPLEMENTED);
+  assert.equal(spawnCli(["start"]).status, EXIT_CODES.NOT_IMPLEMENTED);
+  assert.equal(spawnCli(["next"]).status, EXIT_CODES.SUCCESS);
 });
 
 test("CLI shell runs without provider credentials or provider environment", () => {
