@@ -5,11 +5,12 @@ This file documents the **temporary manual bootstrap regime** established by [is
 ## Current bootstrap position
 
 - Initial seed: **BOOT-000 — Seed repository skeleton and bootstrap constitution** / [issue #2](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/2)
-- Current shell task: **BOOT-005 — CLI application shell and command contract** / [issue #7](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/7)
-- Canonical BOOT-005 branch: `bootstrap/boot-005-cli-shell`
+- CLI shell: **BOOT-005 — CLI application shell and command contract** / [issue #7](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/7)
+- Current task: **BOOT-006 — Task registry loader and schema validation** / [issue #8](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/8)
+- Canonical BOOT-006 branch: `bootstrap/boot-006-task-registry`
 - Bootstrap marker: see [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION)
 
-BOOT-005 makes only the CLI shell operational: help/version, documented output/exit contracts, and explicit failures for reserved future commands. Task discovery, assignment, lifecycle transitions, validation gates, review workflows, orchestration, and controlled completion remain manual/unimplemented until their owning BOOT tasks land.
+BOOT-005 makes the CLI shell operational: help/version, documented output/exit contracts, and explicit failures for reserved future commands. BOOT-006 adds local schema-validated task registry loading from `tasks/definitions/*.task.json`. Dependency resolution, next-task selection, assignment, lifecycle transitions, validation gates, review workflows, orchestration, and controlled completion remain manual/unimplemented until their owning BOOT tasks land.
 
 ## Temporary source-of-truth rule
 
@@ -45,7 +46,7 @@ BOOT-000 itself did **not** implement:
 - workflow recovery tooling;
 - fantasy-football product behavior.
 
-Later BOOT issues own those capabilities. BOOT-005 now implements only the CLI shell portion described above.
+Later BOOT issues own those capabilities. BOOT-005 implements the CLI shell and BOOT-006 implements only the local task registry loading/validation portion described above.
 
 ## Bootstrap validation principle
 
@@ -56,4 +57,5 @@ A clean checkout should be understandable without relying on hidden context:
 - placeholders distinguish future behavior from implemented behavior;
 - the constitution contains every invariant named by the master plan;
 - the CLI documentation states exactly which shell commands are operational;
+- the task-registry documentation distinguishes local loading from dependency resolution/next-task selection;
 - no downstream workflow behavior is falsely described as already implemented.

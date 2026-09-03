@@ -2,13 +2,13 @@
 
 IPTFantasyFootball is currently in **agentic-development bootstrap**, not fantasy-football product implementation.
 
-The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with [issue #2 — BOOT-000](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/2); BOOT-005 / [issue #7](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/7) introduces the first operational CLI shell.
+The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with [issue #2 — BOOT-000](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/2); BOOT-005 / [issue #7](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/7) introduced the first operational CLI shell; BOOT-006 / [issue #8](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/8) adds local schema-validated task registry loading.
 
 ## Bootstrap purpose
 
 Before product features are built, this repository is establishing a deterministic, auditable development control plane. Durable project rules and state belong in the repository/GitHub rather than in an AI agent's conversation memory or self-report.
 
-BOOT-000 created the minimum written constitution and repository skeleton needed by later bootstrap tasks. The repository still does **not** implement the task engine, orchestration, review automation, or any fantasy-football feature.
+BOOT-000 created the minimum written constitution and repository skeleton needed by later bootstrap tasks. The repository still does **not** implement dependency resolution, next-task selection, lifecycle/assignment control, orchestration, review automation, or any fantasy-football feature.
 
 ## Governing documents
 
@@ -23,7 +23,7 @@ BOOT-000 created the minimum written constitution and repository skeleton needed
 | --- | --- |
 | `bootstrap/` | Bootstrap-only notes and placeholders that describe the evolving control plane without implementing later phases early. |
 | `docs/` | Human-readable architecture and operating documentation introduced by later tasks. |
-| `tasks/` | Future repository-native task definitions and task documentation. BOOT-000 provides only the boundary placeholder. |
+| `tasks/` | Repository-native task definitions. BOOT-006 loads direct `tasks/definitions/*.task.json` files against the v1 task schema. |
 | `schemas/` | Versioned machine-readable schemas introduced by BOOT-003. |
 | `contracts/` | Module semantic-contract definitions standardized by BOOT-004. |
 | `reviews/` | Future structured review definitions/artifacts. Later BOOT tasks own their schemas and workflows. |
@@ -52,3 +52,9 @@ npm run agent -- help
 ```
 
 Only the shell contract is operational at this stage. Reserved task, validation, review, and status commands fail explicitly until their owning BOOT issues implement them.
+
+## Task registry loader
+
+BOOT-006 adds the local, provider-neutral task registry library documented in [docs/TASK_REGISTRY.md](docs/TASK_REGISTRY.md). It discovers `tasks/definitions/*.task.json`, validates against the local v1 task schema, rejects malformed/duplicate/unsupported-version records, and returns a deterministic task-ID-sorted registry.
+
+This is **not** yet task discovery for agents: BOOT-007 owns dependency resolution and BOOT-008 owns next-eligible-task selection. GitHub issues remain authoritative for choosing the next bootstrap task until that later workflow is operational.
