@@ -10,7 +10,8 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 
 ## Structural contract
 
-- `npm run agent -- [--json] <command>`
+- Human mode: `npm run agent -- <command>`
+- Machine mode: `npm run --silent agent -- --json <command>`
 - JSON envelope: `{ schemaVersion, ok, command, data, error }`
 - Exit codes: `0` success, `2` usage error, `3` recognized/unimplemented, `70` unexpected internal error.
 
@@ -28,6 +29,7 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 - Reserved unimplemented commands exit `3`.
 - Unexpected internal failures exit `70`.
 - JSON mode emits exactly one top-level envelope object for normal success or expected command failure.
+- The documented npm machine invocation uses `--silent` so npm lifecycle logging cannot pollute CLI stdout.
 
 ## Invariants
 
@@ -93,7 +95,7 @@ Compatibility rule: each required reachable outcome must remain reachable; overl
 
 ## Examples
 
-- `npm run agent -- --json version` emits a success envelope and exits `0`.
+- `npm run --silent agent -- --json version` emits only a success envelope on stdout and exits `0`.
 - `npm run agent -- next` exits `3` until BOOT-008 implements task selection.
 
 ## Edge cases
