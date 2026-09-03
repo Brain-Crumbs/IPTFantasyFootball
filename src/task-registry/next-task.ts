@@ -170,13 +170,14 @@ export function selectNextEligibleTask(
 
   const taskStates = options.taskStates ?? new Map<string, TaskLifecycleState>();
   const allTaskIds = [...registry.keys()].sort(compareText);
+  const satisfiedTaskIds = allTaskIds.filter((taskId) => taskState(taskId, taskStates) === "DONE");
+  const resolution = resolveDependencyDag(registry, satisfiedTaskIds);
+
   const allDone = allTaskIds.every((taskId) => taskState(taskId, taskStates) === "DONE");
   if (allDone) {
     return Object.freeze({ kind: "complete", reason: "ALL_TASKS_DONE" });
   }
 
-  const satisfiedTaskIds = allTaskIds.filter((taskId) => taskState(taskId, taskStates) === "DONE");
-  const resolution = resolveDependencyDag(registry, satisfiedTaskIds);
   const dagOrder = new Map(resolution.taskOrder.map((taskId, index) => [taskId, index] as const));
   const candidates: Array<{ task: RegisteredTask; state: NextTaskEligibleState }> = [];
   const blockedTasks: BlockedTask[] = [];
