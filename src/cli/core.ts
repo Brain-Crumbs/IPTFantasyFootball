@@ -1,3 +1,10 @@
+import {
+  loadTaskRegistry,
+  selectNextEligibleTask,
+  type NextTaskResult,
+  type TaskLifecycleState,
+  type TaskRegistry,
+} from "../task-registry/index.js";
 import { ALL_COMMANDS, IMPLEMENTED_COMMANDS, RESERVED_COMMANDS, isReservedCommand } from "./commands.js";
 import {
   CLI_VERSION,
@@ -12,6 +19,12 @@ export interface CliRunResult {
   exitCode: ExitCode;
   stdout: string;
   stderr: string;
+}
+
+export interface CliRunContext {
+  repositoryRoot?: string;
+  taskRegistry?: TaskRegistry;
+  taskStates?: ReadonlyMap<string, TaskLifecycleState>;
 }
 
 interface ParsedArgs {
@@ -85,7 +98,7 @@ function helpText(): string {
     "IPT Agent Control Plane CLI",
     "",
     "Deterministic, provider-neutral command surface for the repository development control plane.",
-    "BOOT-005 implements the shell only; reserved commands fail until their owning BOOT task implements them.",
+    "BOOT-008 implements deterministic next-task selection; later workflow commands remain reserved until their owning BOOT task lands.",
     "",
     "Usage:",
     "  agent [--json] <command>",
@@ -108,7 +121,45 @@ function helpText(): string {
   return lines.join("\n");
 }
 
-export function runCli(argv: readonly string[]): CliRunResult {
+function nextHuman(result: NextTaskResult): string {
+  if (result.kind === "selected") {
+    return [
+      `Next task: ${result.taskId} — ${result.title}`,
+      `Branch: ${result.canonicalBranch}`,
+      `State: ${result.state}`,
+    ].join("\n");
+  }
+
+  if (result.kind === "empty") {
+    return "No registered tasks are available for selection.";
+  }
+
+  if (result.kind === "complete") {
+    return "No eligible task: all registered tasks are DONE.";
+  }
+
+  const lines = ["No eligible task: registered work is blocked."];
+  for (const task of result.blockedTasks) {
+    const reasons = task.blockers.map((blocker) => blocker.reason).join("; ");
+    lines.push(`- ${task.taskId} [${task.state}]: ${reasons}`);
+  }
+  return lines.join("\n");
+}
+
+async function registryFor(context: CliRunContext): Promise<TaskRegistry> {
+  if (context.taskRegistry !== undefined) {
+    return context.taskRegistry;
+  }
+
+  return loadTaskRegistry(
+    context.repositoryRoot === undefined ? {} : { repositoryRoot: context.repositoryRoot },
+  );
+}
+
+export async function runCli(
+  argv: readonly string[],
+  context: CliRunContext = {},
+): Promise<CliRunResult> {
   const parsed = parseArgs(argv);
 
   if (parsed.parseError !== null) {
@@ -148,6 +199,30 @@ export function runCli(argv: readonly string[]): CliRunResult {
       { cliVersion: CLI_VERSION, outputSchemaVersion: OUTPUT_SCHEMA_VERSION },
       `ipt-agent ${CLI_VERSION} (output schema ${OUTPUT_SCHEMA_VERSION})`,
     );
+  }
+
+  if (parsed.command === "next") {
+    if (parsed.rest.length > 0) {
+      return fail("next", parsed.json, EXIT_CODES.USAGE_ERROR, {
+        code: "USAGE_UNEXPECTED_ARGUMENT",
+        message: `Command 'next' does not accept arguments: ${parsed.rest.join(" ")}`,
+      });
+    }
+
+    try {
+      const registry = await registryFor(context);
+      const result = selectNextEligibleTask(
+        registry,
+        context.taskStates === undefined ? {} : { taskStates: context.taskStates },
+      );
+      return succeed("next", parsed.json, result, nextHuman(result));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Unknown next-task resolution failure.";
+      return fail("next", parsed.json, EXIT_CODES.INTERNAL_ERROR, {
+        code: "INTERNAL_ERROR",
+        message,
+      });
+    }
   }
 
   if (isReservedCommand(parsed.command)) {
