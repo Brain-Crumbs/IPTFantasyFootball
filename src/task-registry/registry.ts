@@ -88,7 +88,7 @@ function stableStringify(value: unknown): string {
       .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`);
     return `{${entries.join(",")}}`;
   }
-  return JSON.stringify(value);
+  return JSON.stringify(value) ?? "undefined";
 }
 
 function isObject(value: unknown): value is JsonObject {
@@ -474,8 +474,9 @@ export async function loadTaskRegistry(options: TaskRegistryLoadOptions = {}): P
     ]);
   }
 
+  const schemaPath = options.schemaPath ?? join(repositoryRoot, TASK_SCHEMA_RELATIVE_PATH);
   return loadTaskRegistryFromPaths(paths, {
     repositoryRoot,
-    schemaPath: options.schemaPath,
+    schemaPath,
   });
 }
