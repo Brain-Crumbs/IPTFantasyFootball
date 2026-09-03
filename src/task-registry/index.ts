@@ -18,3 +18,18 @@ export type {
   TaskRegistryDiagnosticCode,
   TaskRegistryLoadOptions,
 } from "./registry.js";
+
+export {
+  DependencyDagValidationError,
+  resolveDependencyDag,
+  validateDependencyDag,
+} from "./dependency-graph.js";
+
+export type {
+  DependencyBlocker,
+  DependencyDagDiagnostic,
+  DependencyDagDiagnosticCode,
+  DependencyDagResolution,
+  DependencySatisfaction,
+  ResolvedDependencyTask,
+} from "./dependency-graph.js";
