@@ -4,6 +4,8 @@ import { join, relative, sep } from "node:path";
 export const TASK_DEFINITIONS_RELATIVE_PATH = "tasks/definitions";
 export const TASK_SCHEMA_RELATIVE_PATH = "schemas/v1/task.schema.json";
 export const TASK_FILE_SUFFIX = ".task.json";
+export const SUPPORTED_TASK_SCHEMA_ID = "ipt.task";
+export const SUPPORTED_TASK_SCHEMA_VERSION = "1.0.0";
 
 type JsonObject = Record<string, unknown>;
 
@@ -285,11 +287,23 @@ async function loadTaskSchema(repositoryRoot: string, schemaPath: string): Promi
   if (parseSemVer(schemaVersionProperty.const) === null) {
     throw schemaConfigurationError(displayPath, "Task schema version const must use MAJOR.MINOR.PATCH");
   }
+  if (schemaIdProperty.const !== SUPPORTED_TASK_SCHEMA_ID) {
+    throw schemaConfigurationError(
+      displayPath,
+      `Reader supports schemaId '${SUPPORTED_TASK_SCHEMA_ID}', but local schema declares '${schemaIdProperty.const}'`,
+    );
+  }
+  if (schemaVersionProperty.const !== SUPPORTED_TASK_SCHEMA_VERSION) {
+    throw schemaConfigurationError(
+      displayPath,
+      `Reader explicitly supports task schema version '${SUPPORTED_TASK_SCHEMA_VERSION}', but local schema declares '${schemaVersionProperty.const}'`,
+    );
+  }
 
   return {
     schema: raw,
-    schemaId: schemaIdProperty.const,
-    schemaVersion: schemaVersionProperty.const,
+    schemaId: SUPPORTED_TASK_SCHEMA_ID,
+    schemaVersion: SUPPORTED_TASK_SCHEMA_VERSION,
   };
 }
 
