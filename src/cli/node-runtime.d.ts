@@ -4,6 +4,7 @@ interface IptCliStream {
 
 interface IptCliProcess {
   argv: string[];
+  cwd(): string;
   stdout: IptCliStream;
   stderr: IptCliStream;
   exitCode?: number;
