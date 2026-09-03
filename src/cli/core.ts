@@ -47,12 +47,11 @@ function succeed<T>(command: string, json: boolean, data: T, human: string): Cli
 }
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
-  let json = false;
+  const json = argv.includes("--json");
   const positional: string[] = [];
 
   for (const arg of argv) {
     if (arg === "--json") {
-      json = true;
       continue;
     }
     if (arg === "--help" || arg === "-h") {
