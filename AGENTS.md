@@ -27,20 +27,23 @@ Before changing any file:
 
 Do not infer a task from nearby TODOs, open issues, repository gaps, or conversation history. Work only an explicitly assigned task.
 
-### Bootstrap exception: task discovery and start are still manual
+### Bootstrap exception: next-task query is read-only; task start is still manual
 
-BOOT-005 provides an operational CLI **shell** for help/version, stable output, exit codes, and explicit reserved-command failures. BOOT-006 provides a local, schema-validated task registry library. BOOT-007 provides deterministic dependency-DAG validation, ordering, transitive dependency resolution, and dependency-satisfaction facts. The next-task selector, lock manager, role-aware context compiler, validation engine, lifecycle controller, and their workflow commands described in issue #1 are **not yet operational**.
+BOOT-005 provides the operational CLI shell for help/version, stable output, exit codes, and explicit reserved-command failures. BOOT-006 provides a local, schema-validated task registry library. BOOT-007 provides deterministic dependency-DAG validation, ordering, transitive dependency resolution, and dependency-satisfaction facts. BOOT-008 provides deterministic read-only next-task eligibility/selection and the operational `agent next` query.
 
-Until those capabilities are implemented and the project explicitly cuts over to them:
+The lifecycle transition engine, lock manager, role-aware context compiler, validation engine, lifecycle controller, and their later workflow commands described in issue #1 are **not yet operational**. BOOT-009 owns authoritative lifecycle transition semantics and durable lifecycle integration; until that exists, BOOT-008 treats omitted lifecycle entries as `PLANNED` and does not mutate any state.
+
+Until those later capabilities are implemented and the project explicitly cuts over to the repository-native workflow:
 
 - GitHub issue #1 is the bootstrap architecture/master tracker.
 - The assigned BOOT child issue is authoritative for task-specific scope and acceptance criteria.
 - GitHub branch and PR state provide the integration boundary.
-- Starting work means manually reading the authoritative issues and checking/creating the exact canonical branch named by the task. The BOOT-006 registry and BOOT-007 dependency resolver do not yet determine next-task eligibility or authorize self-selection.
-- `npm run agent -- help` and `npm run agent -- version` are operational shell commands; reserved workflow commands fail explicitly until their owning BOOT task implements them.
-- Do not invent, simulate, or claim to have run future task-discovery, assignment, validation-gate, review, lifecycle, or completion behavior.
+- `agent next` may be used as a deterministic read-only query over registered task/dependency/lifecycle facts, but it does not by itself authorize self-selection, assignment, task start, or lifecycle transition during the manual bootstrap regime.
+- Starting work still means manually reading the authoritative issues and checking/creating the exact canonical branch named by the assigned task.
+- `npm run agent -- help`, `npm run agent -- version`, and `npm run agent -- next` are operational commands; later workflow commands such as `start`, `validate`, `review`, and `status` fail explicitly until their owning BOOT tasks implement them.
+- Do not invent, simulate, or claim to have run future assignment, validation-gate, review, lifecycle-transition, or completion behavior.
 
-When repository-native workflow commands later become operational, follow the documented command contract then in force rather than preserving this manual exception by habit.
+When repository-native workflow commands later become authoritative, follow the documented command contract then in force rather than preserving this manual exception by habit.
 
 ## 2. Authority and conflict handling
 
@@ -182,7 +185,7 @@ After the repository-native lifecycle controller is implemented, only its valid 
 
 A fresh agent should be able to answer these questions without conversation history:
 
-- **How do I start?** Read this file, the constitution/bootstrap docs, master issue #1, and the assigned task; verify dependencies and the canonical branch.
+- **How do I start?** Read this file, the constitution/bootstrap docs, master issue #1, and the assigned task; verify dependencies and the canonical branch. `agent next` is a read-only query during manual bootstrap, not assignment authority.
 - **What may I change?** Only the smallest coherent surface authorized by the assigned task.
 - **How do I validate?** Prove every acceptance criterion, run available deterministic checks and task scenarios, and inspect the final diff.
 - **How do I hand off?** Open a PR from the canonical task branch into `main` with issue links and validation evidence.
