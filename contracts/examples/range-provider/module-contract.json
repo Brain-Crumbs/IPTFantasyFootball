@@ -1,6 +1,6 @@
 {
   "schemaId": "ipt.module-contract",
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.1.0",
   "moduleId": "example.range-provider",
   "moduleVersion": "1.0.0",
   "structuralContract": {
@@ -43,7 +43,10 @@
         "produce-score"
       ],
       "acceptedRanges": [
-        "requires producer support for [90, 100] as reachable valid outputs"
+        "accepts producer outputs in [0, 100]"
+      ],
+      "requiredReachableRanges": [
+        "requires producer outputs in [90, 100] to remain reachable"
       ]
     }
   ]
