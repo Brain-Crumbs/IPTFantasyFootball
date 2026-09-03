@@ -5,7 +5,8 @@
   "moduleVersion": "1.0.0",
   "structuralContract": {
     "interfaces": [
-      "npm run agent -- [--json] <command>",
+      "Human mode: npm run agent -- <command>",
+      "Machine mode: npm run --silent agent -- --json <command>",
       "JSON envelope { schemaVersion, ok, command, data, error }",
       "Exit codes 0=SUCCESS, 2=USAGE_ERROR, 3=NOT_IMPLEMENTED, 70=INTERNAL_ERROR"
     ]
@@ -22,7 +23,8 @@
       "expected usage errors exit 2",
       "reserved unimplemented commands exit 3",
       "unexpected internal failures exit 70",
-      "JSON mode emits exactly one top-level envelope object for normal success or expected command failure"
+      "JSON mode emits exactly one top-level envelope object for normal success or expected command failure",
+      "documented npm machine invocation suppresses npm lifecycle logging so stdout remains exactly one CLI envelope"
     ],
     "invariants": [
       "identical argv and repository version produce deterministic normal shell results",
@@ -30,7 +32,7 @@
       "registration of a reserved command never implies implemented workflow semantics"
     ],
     "examples": [
-      "--json version emits a success envelope and exits 0",
+      "npm run --silent agent -- --json version emits only a success envelope on stdout and exits 0",
       "next exits 3 with COMMAND_NOT_IMPLEMENTED until BOOT-008"
     ],
     "edgeCases": [
