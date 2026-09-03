@@ -92,24 +92,19 @@ const RULE_SEEDS: readonly TransitionRuleSeed[] = [
   ["ASSIGNED", "IN_DEVELOPMENT", ["BRANCH_VERIFIED"]],
   ["IN_DEVELOPMENT", "DEV_VALIDATED", ["DEV_VALIDATION_PASSED"]],
   ["IN_DEVELOPMENT", "DEV_VALIDATION_FAILED", ["FAILURE_EVIDENCE_RECORDED"]],
-
   ["DEV_VALIDATED", "QA_REVIEW", ["QA_REVIEW_REQUESTED"]],
   ["DEV_VALIDATED", "ARCHITECTURE_REVIEW", ["ARCHITECTURE_REVIEW_REQUESTED"]],
   ["DEV_VALIDATED", "UAT_REVIEW", ["UAT_REVIEW_REQUESTED"]],
   ["DEV_VALIDATED", "MERGE_READY", ["REVIEW_GATES_SATISFIED"]],
-
   ["QA_REVIEW", "ARCHITECTURE_REVIEW", ["QA_PASSED", "ARCHITECTURE_REVIEW_REQUESTED"]],
   ["QA_REVIEW", "UAT_REVIEW", ["QA_PASSED", "UAT_REVIEW_REQUESTED"]],
   ["QA_REVIEW", "MERGE_READY", ["QA_PASSED", "REVIEW_GATES_SATISFIED"]],
   ["QA_REVIEW", "QA_FAILED", ["FAILURE_EVIDENCE_RECORDED"]],
-
   ["ARCHITECTURE_REVIEW", "UAT_REVIEW", ["ARCHITECTURE_PASSED", "UAT_REVIEW_REQUESTED"]],
   ["ARCHITECTURE_REVIEW", "MERGE_READY", ["ARCHITECTURE_PASSED", "REVIEW_GATES_SATISFIED"]],
   ["ARCHITECTURE_REVIEW", "ARCHITECTURE_FAILED", ["FAILURE_EVIDENCE_RECORDED"]],
-
   ["UAT_REVIEW", "MERGE_READY", ["UAT_PASSED", "REVIEW_GATES_SATISFIED"]],
   ["UAT_REVIEW", "UAT_FAILED", ["FAILURE_EVIDENCE_RECORDED"]],
-
   ["MERGE_READY", "MERGED", ["MERGE_COMPLETED"]],
   ["MERGE_READY", "MERGE_BLOCKED", ["BLOCKER_RECORDED"]],
   ["MERGED", "DONE", ["COMPLETION_RECORDED"]],
@@ -159,8 +154,8 @@ const REVIEW_STATE_BY_ROLE = new Map<ReviewRole, TaskLifecycleState>([
   ["Architect", "ARCHITECTURE_REVIEW"],
   ["UAT/Product", "UAT_REVIEW"],
 ]);
-
 const REVIEW_ORDER: readonly ReviewRole[] = ["QA", "Architect", "UAT/Product"];
+const VALID_REVIEW_ROLES: readonly ReviewRole[] = ["Developer", "QA", "Architect", "UAT/Product", "MergeController"];
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
 const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
@@ -267,8 +262,7 @@ function nextReviewTarget(fromState: TaskLifecycleState, requiredRoles: readonly
   if (startIndex < 0) return null;
 
   const required = new Set(requiredRoles);
-  for (let index = startIndex; index < REVIEW_ORDER.length; index += 1) {
-    const role = REVIEW_ORDER[index];
+  for (const role of REVIEW_ORDER.slice(startIndex)) {
     if (required.has(role)) return REVIEW_STATE_BY_ROLE.get(role) ?? null;
   }
   return "MERGE_READY";
@@ -299,6 +293,10 @@ function validateRequest(request: TransitionRequest): string | null {
 
   if (!RFC3339_PATTERN.test(request.occurredAt) || Number.isNaN(Date.parse(request.occurredAt))) {
     return "Transition occurredAt must be a valid RFC 3339 date-time.";
+  }
+
+  if (request.requiredReviewRoles.some((role) => !VALID_REVIEW_ROLES.includes(role))) {
+    return "Transition requiredReviewRoles contains an unsupported review role.";
   }
 
   if (new Set(request.requiredReviewRoles).size !== request.requiredReviewRoles.length) {
