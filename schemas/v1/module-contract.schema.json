@@ -20,7 +20,10 @@
       "const": "ipt.module-contract"
     },
     "schemaVersion": {
-      "const": "1.0.0"
+      "enum": [
+        "1.0.0",
+        "1.1.0"
+      ]
     },
     "moduleId": {
       "type": "string",
@@ -144,6 +147,15 @@
             "uniqueItems": true
           },
           "acceptedRanges": {
+            "description": "Producer output ranges the consumer can safely accept. For compatibility, the producer's reachable output range must be contained within these accepted ranges.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "requiredReachableRanges": {
+            "description": "Producer output ranges the consumer requires to remain reachable. For compatibility, these required ranges must be contained within the producer's reachable output range.",
             "type": "array",
             "items": {
               "type": "string",
