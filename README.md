@@ -40,3 +40,16 @@ Deterministic repository state, test/validation evidence, exact revision identit
 ## Current scope
 
 This seed intentionally contains no fantasy-football product code. Product systems—including player data, Yahoo ingestion, projections, trades, waivers, lineup optimization, auction tooling, or fantasy UI—remain out of scope until the development control plane is ready for them.
+
+
+## Agent CLI shell
+
+BOOT-005 introduces the provider-neutral CLI shell used by later bootstrap tasks. See [docs/CLI.md](docs/CLI.md) for clean-checkout setup, help/version commands, the JSON envelope, exit codes, and reserved-command behavior.
+
+```sh
+npm install
+npm test
+npm run agent -- help
+```
+
+Only the shell contract is operational at this stage. Reserved task, validation, review, and status commands fail explicitly until their owning BOOT issues implement them.
