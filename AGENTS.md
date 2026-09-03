@@ -29,14 +29,14 @@ Do not infer a task from nearby TODOs, open issues, repository gaps, or conversa
 
 ### Bootstrap exception: task discovery and start are still manual
 
-BOOT-005 provides an operational CLI **shell** for help/version, stable output, exit codes, and explicit reserved-command failures. The task registry, dependency resolver, lock manager, role-aware context compiler, validation engine, lifecycle controller, and their workflow commands described in issue #1 are **not yet operational**.
+BOOT-005 provides an operational CLI **shell** for help/version, stable output, exit codes, and explicit reserved-command failures. BOOT-006 provides a local, schema-validated task registry library. The dependency resolver, next-task selector, lock manager, role-aware context compiler, validation engine, lifecycle controller, and their workflow commands described in issue #1 are **not yet operational**.
 
 Until those capabilities are implemented and the project explicitly cuts over to them:
 
 - GitHub issue #1 is the bootstrap architecture/master tracker.
 - The assigned BOOT child issue is authoritative for task-specific scope and acceptance criteria.
 - GitHub branch and PR state provide the integration boundary.
-- Starting work means manually reading the authoritative issues and checking/creating the exact canonical branch named by the task.
+- Starting work means manually reading the authoritative issues and checking/creating the exact canonical branch named by the task. The BOOT-006 registry does not yet determine eligibility or authorize self-selection.
 - `npm run agent -- help` and `npm run agent -- version` are operational shell commands; reserved workflow commands fail explicitly until their owning BOOT task implements them.
 - Do not invent, simulate, or claim to have run future task-discovery, assignment, validation-gate, review, lifecycle, or completion behavior.
 
