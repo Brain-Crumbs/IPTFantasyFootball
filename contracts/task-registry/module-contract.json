@@ -8,6 +8,7 @@
       "canonical directory tasks/definitions/",
       "task filename suffix .task.json",
       "authoritative schema schemas/v1/task.schema.json",
+      "explicit reader support ipt.task@1.0.0",
       "ReadonlyMap<taskId, RegisteredTask>",
       "diagnostic { code, path, taskId, reason }",
       "loadTaskRegistry / discoverTaskDefinitionPaths / loadTaskRegistryFromPaths"
@@ -25,6 +26,7 @@
       "only direct files ending in .task.json are discovered",
       "unsupported major task schema versions are rejected without fallback",
       "same-major schema versions require explicit reader support",
+      "local task schema identity/version must match the reader's explicit ipt.task@1.0.0 support",
       "any malformed invalid or duplicate discovered task prevents a successful registry result",
       "filesystem enumeration or presented path order cannot change normalized registry output",
       "task array field order is preserved as authored"
@@ -32,6 +34,7 @@
     "invariants": [
       "registry key equals record taskId",
       "local repository task schema is authoritative",
+      "reader support does not advance automatically when the local schema version changes",
       "no remote schema or network lookup occurs",
       "dependency eligibility and lifecycle state are not interpreted",
       "diagnostics are sorted before exposure"
