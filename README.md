@@ -2,13 +2,13 @@
 
 IPTFantasyFootball is currently in **agentic-development bootstrap**, not fantasy-football product implementation.
 
-The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with [issue #2 — BOOT-000](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/2); BOOT-005 / [issue #7](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/7) introduced the first operational CLI shell; BOOT-006 / [issue #8](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/8) added local schema-validated task registry loading; BOOT-007 / [issue #9](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/9) adds deterministic dependency-DAG validation and resolution facts.
+The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with [issue #2 — BOOT-000](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/2); BOOT-005 / [issue #7](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/7) introduced the operational CLI shell; BOOT-006 / [issue #8](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/8) added local schema-validated task registry loading; BOOT-007 / [issue #9](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/9) added deterministic dependency-DAG facts; and BOOT-008 / [issue #10](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/10) adds deterministic next-eligible-task selection.
 
 ## Bootstrap purpose
 
 Before product features are built, this repository is establishing a deterministic, auditable development control plane. Durable project rules and state belong in the repository/GitHub rather than in an AI agent's conversation memory or self-report.
 
-BOOT-000 created the minimum written constitution and repository skeleton needed by later bootstrap tasks. The repository still does **not** implement next-task selection, lifecycle/assignment control, orchestration, review automation, or any fantasy-football feature.
+BOOT-000 created the minimum written constitution and repository skeleton needed by later bootstrap tasks. The repository now implements local task loading, dependency interpretation, and read-only next-task selection, but still does **not** implement authoritative lifecycle transitions, assignment/locks, orchestration, review automation, or any fantasy-football feature.
 
 ## Governing documents
 
@@ -37,30 +37,35 @@ Until Bootstrap v1 cutover, **GitHub Issues are the authoritative task tracker**
 
 Deterministic repository state, test/validation evidence, exact revision identity, and GitHub/PR facts outrank agent memory, chat history, or statements such as "done" or "tests passed."
 
+`agent next` is now a real deterministic query over repository-native task/dependency facts, but BOOT-008 does not itself establish authoritative lifecycle state or assignment. Until BOOT-009 and later workflow pieces are integrated and the project explicitly cuts over, the GitHub tracker remains authoritative for actual bootstrap work selection/status.
+
 ## Current scope
 
 The bootstrap contains no fantasy-football product code. Product systems—including player data, Yahoo ingestion, projections, trades, waivers, lineup optimization, auction tooling, or fantasy UI—remain out of scope until the development control plane is ready for them.
 
-## Agent CLI shell
+## Agent CLI
 
-BOOT-005 introduces the provider-neutral CLI shell used by later bootstrap tasks. See [docs/CLI.md](docs/CLI.md) for clean-checkout setup, help/version commands, the JSON envelope, exit codes, and reserved-command behavior.
+BOOT-005 introduced the provider-neutral CLI shell and BOOT-008 activates `next`. See [docs/CLI.md](docs/CLI.md) for clean-checkout setup, help/version/next commands, selection policy, JSON envelope, exit codes, and reserved-command behavior.
 
 ```sh
 npm install
 npm test
 npm run agent -- help
+npm run agent -- next
 ```
 
-Only the shell contract is operational at this stage. Reserved task, validation, review, and status commands fail explicitly until their owning BOOT issues implement them.
+`start`, `validate`, `review`, and `status` remain reserved until their owning BOOT issues implement them.
 
 ## Task registry loader
 
 BOOT-006 adds the local, provider-neutral task registry library documented in [docs/TASK_REGISTRY.md](docs/TASK_REGISTRY.md). It discovers `tasks/definitions/*.task.json`, validates against the local v1 task schema, rejects malformed/duplicate/unsupported-version records, and returns a deterministic task-ID-sorted registry.
 
-BOOT-007 consumes that registry to interpret dependency relationships; neither BOOT-006 nor BOOT-007 chooses work for an agent.
-
 ## Dependency DAG resolver
 
 BOOT-007 adds the provider-neutral dependency graph module documented in [contracts/dependency-dag/README.md](contracts/dependency-dag/README.md). It rejects missing references, self-dependencies, and cycles; produces deterministic dependency-before-dependent ordering; computes direct/transitive dependency facts; and exposes dependency blockers from an explicit satisfied-task snapshot.
 
-This is **not** yet task discovery for agents: BOOT-008 owns next-eligible-task selection and BOOT-009 owns lifecycle transitions. GitHub issues remain authoritative for choosing the next bootstrap task until that later workflow is operational.
+## Next-task selector
+
+BOOT-008 adds `control-plane.next-task`, documented in [contracts/next-task/README.md](contracts/next-task/README.md). It selects only `READY`/`PLANNED` work whose prerequisites are satisfied, prioritizes `READY` over `PLANNED`, then follows BOOT-007 task order/lexical tie-breaking. It returns selected task/branch metadata or explicit empty/complete/blocked outcomes with blocker reasons.
+
+The selector is deliberately read-only. Only `DONE` dependencies count as satisfied; assignment, locking, branch creation, and lifecycle transitions remain owned by later BOOT tasks.
