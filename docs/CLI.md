@@ -20,9 +20,19 @@ npm run agent -- version
 
 ## Invocation
 
+Human-readable commands can use the normal npm script:
+
 ```sh
-npm run agent -- [--json] <command>
+npm run agent -- <command>
 ```
+
+Machine-readable commands must suppress npm's own lifecycle banner so stdout contains only the CLI envelope:
+
+```sh
+npm run --silent agent -- --json <command>
+```
+
+The CLI parser accepts `--json` before or after the command token. When invoking through npm for machine consumption, keep `--silent` on the npm command itself.
 
 Implemented in BOOT-005:
 
