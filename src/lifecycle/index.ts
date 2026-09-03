@@ -10,6 +10,7 @@ export {
 export type {
   LifecycleHistoryEvent,
   LifecycleRecord,
+  ReviewRole,
   TransitionPrerequisiteKey,
   TransitionRejection,
   TransitionRejectionCode,
