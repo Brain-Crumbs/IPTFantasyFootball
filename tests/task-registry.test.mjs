@@ -6,6 +6,7 @@ import { test } from "node:test";
 import {
   TASK_DEFINITIONS_RELATIVE_PATH,
   TASK_SCHEMA_RELATIVE_PATH,
+  SUPPORTED_TASK_SCHEMA_VERSION,
   TaskRegistryLoadError,
   loadTaskRegistry,
   loadTaskRegistryFromPaths,
@@ -188,4 +189,8 @@ test("normalized registry is identical when file paths are presented in reverse 
       assert.deepEqual([...forward.keys()], ["BOOT-006", "BOOT-010"]);
     },
   );
+});
+
+test("reader declares the exact supported task schema version", () => {
+  assert.equal(SUPPORTED_TASK_SCHEMA_VERSION, "1.0.0");
 });
