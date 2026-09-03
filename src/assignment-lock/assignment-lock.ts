@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const ASSIGNMENT_LOCK_SCHEMA_ID = "ipt.assignment-lock" as const;
@@ -86,7 +86,20 @@ export interface AssignmentLockStore {
   getAudit(taskId: string): readonly LockAuditEvent[];
 }
 
+interface RecoveryClaim {
+  readonly taskId: string;
+  readonly expectedStaleLockId: string;
+  readonly recoveryActorId: string;
+  readonly recoveryRunId: string;
+  readonly recoveryReason: string;
+  readonly replacementLockId: string;
+  readonly replacementOwnerId: string;
+  readonly replacementRunId: string;
+  readonly claimedAt: string;
+}
+
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
+const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 export class FileAssignmentLockStore implements AssignmentLockStore {
   readonly #root: string;
@@ -96,9 +109,14 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     this.#root = root;
     mkdirSync(this.#root, { recursive: true });
     mkdirSync(this.#historyRoot(), { recursive: true });
+    mkdirSync(this.#claimsRoot(), { recursive: true });
   }
 
   acquire(request: AcquireAssignmentRequest): LockResult {
+    return this.#acquire(request, false);
+  }
+
+  #acquire(request: AcquireAssignmentRequest, allowRecoveryClaim: boolean): LockResult {
     const invalid = validateAcquire(request);
     if (invalid) return reject("INVALID_REQUEST", invalid);
     if (request.canonicalBranch !== request.expectedCanonicalBranch) {
@@ -106,29 +124,6 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
         "BRANCH_MISMATCH",
         `Task '${request.taskId}' requires canonical branch '${request.expectedCanonicalBranch}', not '${request.canonicalBranch}'.`,
       );
-    }
-
-    const activeDir = this.#activeDir(request.taskId);
-    try {
-      mkdirSync(activeDir);
-    } catch {
-      const current = this.get(request.taskId);
-      if (!current) return reject("LOCK_CONFLICT", `Task '${request.taskId}' assignment is already being acquired.`);
-      if (sameIdentity(current, request)) {
-        this.#appendAudit(request.taskId, {
-          action: "REACQUIRED",
-          occurredAt: request.acquiredAt,
-          actorId: request.ownerId,
-          runId: request.runId,
-          reason: "Idempotent reacquire by existing assignment identity.",
-          resultingLockId: current.lockId,
-        });
-        return Object.freeze({ ok: true, lock: current, idempotent: true });
-      }
-      if (isStale(current, request.acquiredAt)) {
-        return reject("LOCK_STALE", `Task '${request.taskId}' is held by a stale lock and requires explicit recovery.`, current);
-      }
-      return reject("LOCK_CONFLICT", `Task '${request.taskId}' is already assigned.`, current);
     }
 
     const lock = freezeLock({
@@ -143,21 +138,52 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
       acquiredAt: request.acquiredAt,
       ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
     });
+
     try {
-      writeFileSync(this.#recordPath(request.taskId), `${JSON.stringify(lock, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-      this.#appendAudit(request.taskId, {
-        action: "ACQUIRED",
-        occurredAt: request.acquiredAt,
-        actorId: request.ownerId,
-        runId: request.runId,
-        reason: "Assignment lock acquired.",
-        resultingLockId: request.lockId,
-      });
-      return Object.freeze({ ok: true, lock, idempotent: false });
-    } catch (error) {
-      this.#archiveActiveDir(request.taskId, `failed-${request.lockId}`);
-      throw error;
+      writeFileSync(this.#activePath(request.taskId), `${JSON.stringify(lock, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    } catch {
+      const current = this.get(request.taskId);
+      if (!current) {
+        return reject("LOCK_CONFLICT", `Task '${request.taskId}' assignment state changed during acquisition; retry from fresh state.`);
+      }
+      // Expiry is authoritative even for the same owner/run/lock identity. Ordinary
+      // reacquisition must never renew or adopt a stale lease implicitly.
+      if (isStale(current, request.acquiredAt)) {
+        return reject("LOCK_STALE", `Task '${request.taskId}' is held by a stale lock and requires explicit recovery.`, current);
+      }
+      if (sameIdentity(current, request)) {
+        this.#appendAudit(request.taskId, {
+          action: "REACQUIRED",
+          occurredAt: request.acquiredAt,
+          actorId: request.ownerId,
+          runId: request.runId,
+          reason: "Idempotent reacquire by existing active assignment identity.",
+          resultingLockId: current.lockId,
+        });
+        return Object.freeze({ ok: true, lock: current, idempotent: true });
+      }
+      return reject("LOCK_CONFLICT", `Task '${request.taskId}' is already assigned.`, current);
     }
+
+    // A recovery claim may be created by another process after this acquisition
+    // began but before the exclusive file create succeeded. Roll back this just-
+    // created assignment rather than allowing ordinary acquisition to bypass an
+    // in-flight explicit stale-recovery operation.
+    if (!allowRecoveryClaim && this.#hasRecoveryClaim(request.taskId)) {
+      const current = this.get(request.taskId);
+      if (current && sameIdentity(current, request)) unlinkSync(this.#activePath(request.taskId));
+      return reject("LOCK_CONFLICT", `Task '${request.taskId}' has an explicit stale recovery in progress.`);
+    }
+
+    this.#appendAudit(request.taskId, {
+      action: "ACQUIRED",
+      occurredAt: request.acquiredAt,
+      actorId: request.ownerId,
+      runId: request.runId,
+      reason: "Assignment lock acquired.",
+      resultingLockId: request.lockId,
+    });
+    return Object.freeze({ ok: true, lock, idempotent: false });
   }
 
   release(request: ReleaseAssignmentRequest): LockResult {
@@ -170,7 +196,7 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     }
 
     const released = freezeLock({ ...current, status: "RELEASED", releasedAt: request.occurredAt });
-    writeFileSync(this.#recordPath(request.taskId), `${JSON.stringify(released, null, 2)}\n`, { encoding: "utf8" });
+    writeFileSync(this.#activePath(request.taskId), `${JSON.stringify(released, null, 2)}\n`, { encoding: "utf8" });
     this.#appendAudit(request.taskId, {
       action: "RELEASED",
       occurredAt: request.occurredAt,
@@ -179,71 +205,148 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
       reason: request.reason,
       priorLockId: current.lockId,
     });
-    this.#archiveActiveDir(request.taskId, `${current.lockId}-released`);
+    renameSync(this.#activePath(request.taskId), this.#uniqueArchivePath(request.taskId, current.lockId, "released", request.occurredAt));
     return Object.freeze({ ok: true, lock: released, idempotent: false });
   }
 
   recoverStale(request: RecoverStaleAssignmentRequest): LockResult {
-    const invalid = validateAcquire(request) ?? requireText("recoveryActorId", request.recoveryActorId)
-      ?? requireText("recoveryRunId", request.recoveryRunId) ?? requireText("recoveryReason", request.recoveryReason);
+    const invalid = validateAcquire(request)
+      ?? requireText("expectedStaleLockId", request.expectedStaleLockId)
+      ?? requireText("recoveryActorId", request.recoveryActorId)
+      ?? requireText("recoveryRunId", request.recoveryRunId)
+      ?? requireText("recoveryReason", request.recoveryReason);
     if (invalid) return reject("INVALID_REQUEST", invalid);
     if (request.canonicalBranch !== request.expectedCanonicalBranch) {
       return reject("BRANCH_MISMATCH", `Task '${request.taskId}' requires canonical branch '${request.expectedCanonicalBranch}'.`);
     }
+
+    const claim: RecoveryClaim = Object.freeze({
+      taskId: request.taskId,
+      expectedStaleLockId: request.expectedStaleLockId,
+      recoveryActorId: request.recoveryActorId,
+      recoveryRunId: request.recoveryRunId,
+      recoveryReason: request.recoveryReason,
+      replacementLockId: request.lockId,
+      replacementOwnerId: request.ownerId,
+      replacementRunId: request.runId,
+      claimedAt: request.acquiredAt,
+    });
+    const claimResult = this.#claimRecovery(claim);
+    if (!claimResult.ok) return claimResult.result;
+
     const current = this.get(request.taskId);
-    if (!current) return reject("LOCK_NOT_FOUND", `Task '${request.taskId}' has no active assignment lock to recover.`);
-    if (current.lockId !== request.expectedStaleLockId) {
-      return reject("LOCK_ID_MISMATCH", "Stale recovery expected lock does not match the current assignment.", current);
-    }
-    if (!isStale(current, request.acquiredAt)) {
-      return reject("LOCK_NOT_STALE", `Task '${request.taskId}' lock is still active and cannot be recovered.`, current);
+    if (current) {
+      if (sameIdentity(current, request)) {
+        this.#finishRecoveryClaim(claim);
+        return Object.freeze({ ok: true, lock: current, idempotent: true });
+      }
+      if (current.lockId !== request.expectedStaleLockId) {
+        this.#finishRecoveryClaim(claim);
+        return reject("LOCK_ID_MISMATCH", "Stale recovery expected lock does not match the current assignment.", current);
+      }
+      if (!isStale(current, request.acquiredAt)) {
+        this.#finishRecoveryClaim(claim);
+        return reject("LOCK_NOT_STALE", `Task '${request.taskId}' lock is still active and cannot be recovered.`, current);
+      }
+
+      const stale = freezeLock({ ...current, status: "STALE", releasedAt: request.acquiredAt });
+      writeFileSync(this.#activePath(request.taskId), `${JSON.stringify(stale, null, 2)}\n`, { encoding: "utf8" });
+      renameSync(
+        this.#activePath(request.taskId),
+        this.#uniqueArchivePath(request.taskId, current.lockId, "stale", request.acquiredAt),
+      );
+    } else if (!claimResult.resumed) {
+      this.#finishRecoveryClaim(claim);
+      return reject("LOCK_NOT_FOUND", `Task '${request.taskId}' has no active assignment lock to recover.`);
     }
 
-    const stale = freezeLock({ ...current, status: "STALE", releasedAt: request.acquiredAt });
-    writeFileSync(this.#recordPath(request.taskId), `${JSON.stringify(stale, null, 2)}\n`, { encoding: "utf8" });
+    const replacement = this.#acquire(request, true);
+    if (!replacement.ok) {
+      // Keep a resumable claim only when no replacement is active. Otherwise this
+      // recovery no longer owns the current task state and must end deterministically.
+      if (this.get(request.taskId)) this.#finishRecoveryClaim(claim);
+      return replacement;
+    }
+
     this.#appendAudit(request.taskId, {
       action: "RECOVERED_STALE",
       occurredAt: request.acquiredAt,
       actorId: request.recoveryActorId,
       runId: request.recoveryRunId,
       reason: request.recoveryReason,
-      priorLockId: current.lockId,
+      priorLockId: request.expectedStaleLockId,
       resultingLockId: request.lockId,
     });
-    this.#archiveActiveDir(request.taskId, `${current.lockId}-stale`);
-    return this.acquire(request);
+    this.#finishRecoveryClaim(claim);
+    return replacement;
   }
 
   get(taskId: string): AssignmentLockRecord | null {
-    const path = this.#recordPath(taskId);
+    const path = this.#activePath(taskId);
     if (!existsSync(path)) return null;
     const parsed = JSON.parse(readFileSync(path, "utf8")) as AssignmentLockRecord;
     return freezeLock(parsed);
   }
 
   getAudit(taskId: string): readonly LockAuditEvent[] {
-    const events: LockAuditEvent[] = [];
-    const activeAudit = join(this.#activeDir(taskId), "audit.jsonl");
-    if (existsSync(activeAudit)) events.push(...parseAudit(activeAudit));
-    for (const name of readdirSync(this.#historyRoot()).filter((entry) => entry.startsWith(`${taskId}-`)).sort()) {
-      const archivedAudit = join(this.#historyRoot(), name, "audit.jsonl");
-      if (existsSync(archivedAudit)) events.push(...parseAudit(archivedAudit));
-    }
-    return Object.freeze(events.sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)));
+    const path = this.#auditPath(taskId);
+    if (!existsSync(path)) return Object.freeze([]);
+    return Object.freeze(parseAudit(path).sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)));
   }
 
-  #activeDir(taskId: string): string { return join(this.#root, taskId); }
-  #recordPath(taskId: string): string { return join(this.#activeDir(taskId), "lock.json"); }
+  #activePath(taskId: string): string { return join(this.#root, `${taskId}.lock.json`); }
   #historyRoot(): string { return join(this.#root, ".history"); }
+  #claimsRoot(): string { return join(this.#root, ".claims"); }
+  #auditPath(taskId: string): string { return join(this.#historyRoot(), `${taskId}.audit.jsonl`); }
+  #claimPath(taskId: string, staleLockId: string): string {
+    return join(this.#claimsRoot(), `${safePart(taskId)}-${safePart(staleLockId)}.recovery.json`);
+  }
 
   #appendAudit(taskId: string, event: LockAuditEvent): void {
-    writeFileSync(join(this.#activeDir(taskId), "audit.jsonl"), `${JSON.stringify(event)}\n`, { encoding: "utf8", flag: "a" });
+    writeFileSync(this.#auditPath(taskId), `${JSON.stringify(event)}\n`, { encoding: "utf8", flag: "a" });
   }
 
-  #archiveActiveDir(taskId: string, suffix: string): void {
-    const active = this.#activeDir(taskId);
-    if (!existsSync(active)) return;
-    renameSync(active, join(this.#historyRoot(), `${taskId}-${suffix}`));
+  #claimRecovery(claim: RecoveryClaim): { ok: true; resumed: boolean } | { ok: false; result: LockResult } {
+    const path = this.#claimPath(claim.taskId, claim.expectedStaleLockId);
+    try {
+      writeFileSync(path, `${JSON.stringify(claim, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+      return { ok: true, resumed: false };
+    } catch {
+      if (!existsSync(path)) {
+        return { ok: false, result: reject("LOCK_CONFLICT", `Task '${claim.taskId}' recovery claim changed concurrently; retry.`) };
+      }
+      const existing = JSON.parse(readFileSync(path, "utf8")) as RecoveryClaim;
+      const sameRecovery = existing.recoveryActorId === claim.recoveryActorId
+        && existing.recoveryRunId === claim.recoveryRunId
+        && existing.expectedStaleLockId === claim.expectedStaleLockId
+        && existing.replacementLockId === claim.replacementLockId
+        && existing.replacementOwnerId === claim.replacementOwnerId
+        && existing.replacementRunId === claim.replacementRunId;
+      if (sameRecovery) return { ok: true, resumed: true };
+      return {
+        ok: false,
+        result: reject("LOCK_CONFLICT", `Task '${claim.taskId}' stale lock is already claimed for explicit recovery.`),
+      };
+    }
+  }
+
+  #finishRecoveryClaim(claim: RecoveryClaim): void {
+    const path = this.#claimPath(claim.taskId, claim.expectedStaleLockId);
+    if (!existsSync(path)) return;
+    renameSync(path, this.#uniqueArchivePath(claim.taskId, claim.expectedStaleLockId, "recovery-claim", claim.claimedAt));
+  }
+
+  #hasRecoveryClaim(taskId: string): boolean {
+    const prefix = `${safePart(taskId)}-`;
+    return readdirSync(this.#claimsRoot()).some((name) => name.startsWith(prefix) && name.endsWith(".recovery.json"));
+  }
+
+  #uniqueArchivePath(taskId: string, lockId: string, action: string, occurredAt: string): string {
+    const stem = `${safePart(taskId)}-${safePart(lockId)}-${safePart(action)}-${safePart(occurredAt)}`;
+    for (let attempt = 0; ; attempt += 1) {
+      const candidate = join(this.#historyRoot(), `${stem}-${attempt}.json`);
+      if (!existsSync(candidate)) return candidate;
+    }
   }
 }
 
@@ -281,7 +384,9 @@ function requireText(name: string, value: string): string | null {
 }
 
 function requireDate(name: string, value: string): string | null {
-  return Number.isNaN(Date.parse(value)) ? `${name} must be a valid date-time.` : null;
+  return RFC3339_PATTERN.test(value) && !Number.isNaN(Date.parse(value))
+    ? null
+    : `${name} must be a valid RFC 3339 date-time.`;
 }
 
 function freezeLock(lock: AssignmentLockRecord): AssignmentLockRecord {
@@ -305,4 +410,8 @@ function reject(code: LockConflictCode, reason: string, current?: AssignmentLock
 
 function parseAudit(path: string): LockAuditEvent[] {
   return readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as LockAuditEvent);
+}
+
+function safePart(value: string): string {
+  return encodeURIComponent(value).replace(/%/g, "_");
 }
