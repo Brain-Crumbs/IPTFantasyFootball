@@ -1,0 +1,98 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.dependency-dag",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "validateDependencyDag(registry)",
+      "resolveDependencyDag(registry, satisfiedTaskIds?)",
+      "DependencyDagValidationError",
+      "diagnostic { code, taskId, dependencyId, sourcePath, reason, cycle }",
+      "resolution { taskOrder, tasks, satisfaction }"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "validated-dependency-dag",
+      "missing-reference-diagnostics",
+      "self-dependency-diagnostics",
+      "cycle-diagnostics",
+      "dependency-before-dependent-order",
+      "transitive-dependency-resolution",
+      "dependency-satisfaction",
+      "blocking-reasons",
+      "disconnected-component-support"
+    ],
+    "behavioralConstraints": [
+      "input tasks must come from schema-validated task registry records",
+      "dependencies are prerequisites and must appear before dependents in taskOrder",
+      "diagnostics are sorted deterministically before exposure",
+      "missing references and self-dependencies are validation failures",
+      "resolution refuses partial graph output when validation diagnostics exist",
+      "satisfaction uses only explicit satisfiedTaskIds input",
+      "direct blockers identify immediate unsatisfied dependencies",
+      "disconnected components are valid and ordered deterministically"
+    ],
+    "invariants": [
+      "no next-task priority selection occurs",
+      "no lifecycle state mutation occurs",
+      "no assignment or lock mutation occurs",
+      "no GitHub or agent-provider calls occur",
+      "equivalent inputs produce equivalent outputs"
+    ],
+    "examples": [
+      "chain A to B to C resolves in dependency order",
+      "diamond dependencies resolve before their shared dependent",
+      "two independent DAG components are valid",
+      "missing references self-dependencies and cycles fail with actionable diagnostics"
+    ],
+    "edgeCases": [
+      "empty registry resolves to empty maps",
+      "multi-node cycle reports a cycle path",
+      "unsatisfied transitive dependencies are exposed separately from direct blockers"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.task-registry"
+  ],
+  "forbiddenDependencies": [
+    "github-adapter/*",
+    "agent-provider/*",
+    "fantasy-product/*",
+    "lifecycle-mutation-engines/*",
+    "assignment-lock-managers/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "control-plane.next-task",
+      "expectations": [
+        "invalid dependency graphs fail before task selection begins",
+        "valid graph output is reproducible",
+        "blocked tasks expose unsatisfied direct dependencies",
+        "disconnected components remain valid"
+      ],
+      "requiredCapabilities": [
+        "validated-dependency-dag",
+        "dependency-before-dependent-order",
+        "dependency-satisfaction",
+        "blocking-reasons",
+        "disconnected-component-support"
+      ],
+      "acceptedRanges": [
+        "empty valid graph",
+        "single valid component",
+        "multiple disconnected valid components",
+        "failure with sorted actionable diagnostics"
+      ],
+      "requiredReachableRanges": [
+        "simple chain",
+        "diamond graph",
+        "missing reference",
+        "self-cycle",
+        "multi-node cycle",
+        "independent DAG components"
+      ]
+    }
+  ]
+}
