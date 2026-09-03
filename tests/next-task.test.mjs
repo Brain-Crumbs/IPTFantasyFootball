@@ -156,3 +156,35 @@ test("CLI JSON selection includes task ID and canonical branch metadata", async 
   assert.equal(payload.data.taskId, "BOOT-008");
   assert.equal(payload.data.canonicalBranch, "bootstrap/boot-008-task");
 });
+
+test("CLI distinguishes empty, complete, and blocked next-task outcomes", async () => {
+  const emptyPayload = JSON.parse(
+    (await runCli(["--json", "next"], { taskRegistry: new Map() })).stdout,
+  );
+  assert.equal(emptyPayload.data.kind, "empty");
+  assert.equal(emptyPayload.data.reason, "NO_TASKS");
+
+  const oneTask = registry([task("BOOT-001")]);
+  const completePayload = JSON.parse(
+    (
+      await runCli(["--json", "next"], {
+        taskRegistry: oneTask,
+        taskStates: new Map([["BOOT-001", "DONE"]]),
+      })
+    ).stdout,
+  );
+  assert.equal(completePayload.data.kind, "complete");
+  assert.equal(completePayload.data.reason, "ALL_TASKS_DONE");
+
+  const blockedPayload = JSON.parse(
+    (
+      await runCli(["--json", "next"], {
+        taskRegistry: oneTask,
+        taskStates: new Map([["BOOT-001", "ASSIGNED"]]),
+      })
+    ).stdout,
+  );
+  assert.equal(blockedPayload.data.kind, "blocked");
+  assert.equal(blockedPayload.data.reason, "NO_ELIGIBLE_TASK");
+  assert.equal(blockedPayload.data.blockedTasks[0].blockers[0].code, "TASK_STATE_INELIGIBLE");
+});
