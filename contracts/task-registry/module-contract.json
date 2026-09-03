@@ -1,0 +1,87 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.task-registry",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "canonical directory tasks/definitions/",
+      "task filename suffix .task.json",
+      "authoritative schema schemas/v1/task.schema.json",
+      "ReadonlyMap<taskId, RegisteredTask>",
+      "diagnostic { code, path, taskId, reason }",
+      "loadTaskRegistry / discoverTaskDefinitionPaths / loadTaskRegistryFromPaths"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "schema-validated-task-records",
+      "stable-task-id-registry",
+      "deterministic-registry-order",
+      "deterministic-diagnostics",
+      "network-free-local-loading"
+    ],
+    "behavioralConstraints": [
+      "only direct files ending in .task.json are discovered",
+      "unsupported major task schema versions are rejected without fallback",
+      "same-major schema versions require explicit reader support",
+      "any malformed invalid or duplicate discovered task prevents a successful registry result",
+      "filesystem enumeration or presented path order cannot change normalized registry output",
+      "task array field order is preserved as authored"
+    ],
+    "invariants": [
+      "registry key equals record taskId",
+      "local repository task schema is authoritative",
+      "no remote schema or network lookup occurs",
+      "dependency eligibility and lifecycle state are not interpreted",
+      "diagnostics are sorted before exposure"
+    ],
+    "examples": [
+      "reverse file presentation still yields identical task-id-sorted registry entries",
+      "schemaVersion 2.0.0 fails with TASK_SCHEMA_VERSION_UNSUPPORTED",
+      "duplicate valid task IDs fail with TASK_ID_DUPLICATE"
+    ],
+    "edgeCases": [
+      "non-.task.json files are ignored",
+      "empty canonical directory returns an empty registry",
+      "malformed JSON reports its source path",
+      "nested directories are not traversed"
+    ]
+  },
+  "allowedDependencies": [
+    "node:fs/promises",
+    "node:path",
+    "schemas/v1/task.schema.json"
+  ],
+  "forbiddenDependencies": [
+    "github-adapter/*",
+    "agent-provider/*",
+    "fantasy-product/*",
+    "remote-schema-registry/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "control-plane.dependency-dag",
+      "expectations": [
+        "every returned entry is valid under the supported task schema",
+        "duplicate task IDs cannot reach the consumer",
+        "registry keys equal record taskId values",
+        "dependency arrays are preserved exactly as authored"
+      ],
+      "requiredCapabilities": [
+        "schema-validated-task-records",
+        "stable-task-id-registry",
+        "deterministic-registry-order"
+      ],
+      "acceptedRanges": [
+        "zero or more valid task records keyed by unique task ID",
+        "failure instead of partial success when any discovered task is invalid"
+      ],
+      "requiredReachableRanges": [
+        "empty valid registry",
+        "multi-task valid registry",
+        "deterministic invalid or duplicate record rejection"
+      ]
+    }
+  ]
+}
