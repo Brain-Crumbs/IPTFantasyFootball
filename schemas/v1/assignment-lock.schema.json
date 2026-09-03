@@ -19,7 +19,7 @@
       "const": "ipt.assignment-lock"
     },
     "schemaVersion": {
-      "const": "1.0.0"
+      "enum": ["1.0.0", "1.1.0"]
     },
     "lockId": {
       "type": "string",
@@ -34,6 +34,10 @@
       "minLength": 1
     },
     "ownerId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runId": {
       "type": "string",
       "minLength": 1
     },
@@ -56,5 +60,16 @@
       "type": "string",
       "format": "date-time"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": "1.1.0" } },
+        "required": ["schemaVersion"]
+      },
+      "then": {
+        "required": ["runId"]
+      }
+    }
+  ]
 }
