@@ -13,6 +13,7 @@ Loads local repository task definitions into a deterministic, schema-validated r
 - Canonical directory: `tasks/definitions/`
 - Supported task filename suffix: `.task.json`
 - Authoritative schema: `schemas/v1/task.schema.json`
+- Explicitly supported task schema: `ipt.task@1.0.0`
 - Public APIs: `loadTaskRegistry`, `discoverTaskDefinitionPaths`, `loadTaskRegistryFromPaths`
 - Registry shape: `ReadonlyMap<taskId, RegisteredTask>`
 - Diagnostic shape: `{ code, path, taskId, reason }`
@@ -32,6 +33,7 @@ Loads local repository task definitions into a deterministic, schema-validated r
 - Only direct files ending in `.task.json` are discovered.
 - Unsupported major versions are rejected before structural fallback.
 - Same-major versions are accepted only when explicitly supported by the reader.
+- A local task schema version change does not silently advance reader support; it is a configuration error until the reader is deliberately updated.
 - Any malformed/invalid/duplicate task prevents a successful registry result.
 - File discovery order cannot change normalized registry output.
 - Source arrays preserve author order; only registry entry order is normalized.
