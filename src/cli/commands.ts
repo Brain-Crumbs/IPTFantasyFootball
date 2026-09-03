@@ -11,14 +11,14 @@ export const IMPLEMENTED_COMMANDS: readonly CommandDescriptor[] = [
     summary: "Print the CLI contract version.",
     status: "implemented",
   },
+  {
+    name: "next",
+    summary: "Resolve the next eligible task deterministically (BOOT-008).",
+    status: "implemented",
+  },
 ] as const;
 
 export const RESERVED_COMMANDS: readonly CommandDescriptor[] = [
-  {
-    name: "next",
-    summary: "Resolve the next eligible task (owned by BOOT-008).",
-    status: "reserved",
-  },
   {
     name: "start",
     summary: "Begin the developer task-start workflow (owned by BOOT-013).",
