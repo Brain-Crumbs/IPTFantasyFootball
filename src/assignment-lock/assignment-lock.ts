@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const ASSIGNMENT_LOCK_SCHEMA_ID = "ipt.assignment-lock" as const;
@@ -126,11 +126,7 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
         return Object.freeze({ ok: true, lock: current, idempotent: true });
       }
       if (isStale(current, request.acquiredAt)) {
-        return reject(
-          "LOCK_STALE",
-          `Task '${request.taskId}' is held by a stale lock and requires explicit recovery.`,
-          current,
-        );
+        return reject("LOCK_STALE", `Task '${request.taskId}' is held by a stale lock and requires explicit recovery.`, current);
       }
       return reject("LOCK_CONFLICT", `Task '${request.taskId}' is already assigned.`, current);
     }
@@ -191,6 +187,9 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     const invalid = validateAcquire(request) ?? requireText("recoveryActorId", request.recoveryActorId)
       ?? requireText("recoveryRunId", request.recoveryRunId) ?? requireText("recoveryReason", request.recoveryReason);
     if (invalid) return reject("INVALID_REQUEST", invalid);
+    if (request.canonicalBranch !== request.expectedCanonicalBranch) {
+      return reject("BRANCH_MISMATCH", `Task '${request.taskId}' requires canonical branch '${request.expectedCanonicalBranch}'.`);
+    }
     const current = this.get(request.taskId);
     if (!current) return reject("LOCK_NOT_FOUND", `Task '${request.taskId}' has no active assignment lock to recover.`);
     if (current.lockId !== request.expectedStaleLockId) {
@@ -224,12 +223,13 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
 
   getAudit(taskId: string): readonly LockAuditEvent[] {
     const events: LockAuditEvent[] = [];
-    const prefixes = [this.#activeDir(taskId), this.#historyRoot()];
-    for (const base of prefixes) {
-      const direct = join(base, "audit.jsonl");
-      if (existsSync(direct)) events.push(...parseAudit(direct));
+    const activeAudit = join(this.#activeDir(taskId), "audit.jsonl");
+    if (existsSync(activeAudit)) events.push(...parseAudit(activeAudit));
+    for (const name of readdirSync(this.#historyRoot()).filter((entry) => entry.startsWith(`${taskId}-`)).sort()) {
+      const archivedAudit = join(this.#historyRoot(), name, "audit.jsonl");
+      if (existsSync(archivedAudit)) events.push(...parseAudit(archivedAudit));
     }
-    return Object.freeze(events);
+    return Object.freeze(events.sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)));
   }
 
   #activeDir(taskId: string): string { return join(this.#root, taskId); }
