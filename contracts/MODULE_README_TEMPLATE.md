@@ -24,7 +24,7 @@ Describe what the module promises it can do.
 
 State semantic limits explicitly, including numeric ranges, enum coverage, ordering, nullability behavior, timing constraints, or other observable guarantees.
 
-- `<constraint or range>`
+- `<producer reachable constraint or range>`
 
 ## Invariants
 
@@ -64,9 +64,21 @@ Expectations:
 
 - `<semantic expectation>`
 
-Accepted/required ranges:
+Accepted producer-output ranges:
 
-- `<range or behavior>`
+- `<range the consumer can safely receive>`
+
+Compatibility rule: the producer's reachable output range must be contained by the consumer's accepted range.
+
+## Consumer-required reachable ranges
+
+### <consumer-id>
+
+Required reachable producer-output ranges:
+
+- `<range the producer must keep reachable>`
+
+Compatibility rule: every required reachable range must be contained by the producer's reachable output range. Mere overlap is insufficient.
 
 ## Examples
 
@@ -86,7 +98,7 @@ For every proposed change, answer:
 - [ ] Did an invariant change?
 - [ ] Did an edge-case behavior change?
 - [ ] Did dependency direction change?
-- [ ] Does any known consumer expectation become unsatisfied?
-- [ ] Does any consumer-required range stop overlapping the producer guarantee?
+- [ ] Is the producer reachable range still contained by each relevant consumer accepted range?
+- [ ] Is each consumer-required reachable range still contained by the producer reachable range?
 
 If structural compatibility remains but semantic behavior changes, explicitly route the change for downstream semantic compatibility review.
