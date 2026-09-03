@@ -29,12 +29,12 @@ schemas/v1/task.schema.json
 
 ## Reader version policy
 
-The loader derives the expected `schemaId` and exact supported `schemaVersion` from the local repository schema. In accordance with `schemas/VERSIONING.md`:
+The BOOT-006 reader explicitly declares support for `schemaId: "ipt.task"` at `schemaVersion: "1.0.0"` in code and verifies that the local repository schema declares the same identity/version. In accordance with `schemas/VERSIONING.md`:
 
 - missing or malformed versions are rejected;
 - unsupported major versions are rejected without coercion or fallback;
 - same-major minor/patch versions are accepted only when explicitly supported;
-- BOOT-006 explicitly supports the exact version declared by the current v1 task schema.
+- BOOT-006 explicitly supports only task schema `1.0.0`; changing the local schema version without a reviewed reader update is a configuration error.
 
 The loader never downloads a schema or consults a registry service.
 
