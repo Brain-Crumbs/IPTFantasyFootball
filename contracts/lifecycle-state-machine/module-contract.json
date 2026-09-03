@@ -1,0 +1,98 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.lifecycle-state-machine",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "createLifecycleRecord(taskId)",
+      "getTransitionRule(fromState, toState)",
+      "transitionLifecycle(record, request)",
+      "request.requiredReviewRoles: ReviewRole[]",
+      "result: success with immutable record/event or rejection with unchanged record"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "deterministic-lifecycle-transitions",
+      "explicit-transition-prerequisites",
+      "task-specific-review-routing",
+      "stale-state-rejection",
+      "schema-safe-history-events",
+      "append-only-transition-history",
+      "failure-and-rework-routing",
+      "pre-development-gate-preservation"
+    ],
+    "behavioralConstraints": [
+      "PLANNED to READY requires DEPENDENCIES_SATISFIED",
+      "READY to ASSIGNED requires ASSIGNMENT_ACTIVE",
+      "ASSIGNED to IN_DEVELOPMENT requires BRANCH_VERIFIED",
+      "PLANNED READY and ASSIGNED cannot enter generic BLOCKED recovery",
+      "review progression follows the task requiredReviewRoles in QA then Architect then UAT/Product order",
+      "unrequired review stages are skipped without requiring fabricated approvals",
+      "all successful transitions require schema-valid event identity reason evidence and timestamp metadata",
+      "illegal stale invalid or under-evidenced transitions return the original record unchanged",
+      "failure and rework transitions retain all earlier history"
+    ],
+    "invariants": [
+      "transition authority is deterministic code rather than agent prose",
+      "the engine never executes reviews validation Git operations or persistence",
+      "history is append-only on successful transitions",
+      "a failed transition never mutates lifecycle state or history",
+      "pre-development dependency assignment and branch gates cannot be bypassed through BLOCKED",
+      "DONE is reachable only after MERGED and COMPLETION_RECORDED"
+    ],
+    "examples": [
+      "a task requiring QA Architect and UAT/Product follows all three review states",
+      "a task requiring only Architect moves DEV_VALIDATED to ARCHITECTURE_REVIEW and then MERGE_READY",
+      "a stale expected state is rejected without mutation",
+      "a QA failure moves through REWORK_REQUIRED before returning to IN_DEVELOPMENT"
+    ],
+    "edgeCases": [
+      "empty reason evidenceRef or eventId is rejected",
+      "invalid occurredAt date-time is rejected",
+      "duplicate required review roles are rejected",
+      "attempting PLANNED READY or ASSIGNED to BLOCKED is rejected",
+      "review target inconsistent with requiredReviewRoles is rejected"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.task-registry",
+    "schemas/v1/lifecycle-state.schema.json",
+    "schemas/v1/task.schema.json"
+  ],
+  "forbiddenDependencies": [
+    "assignment-lock-managers/*",
+    "validation-executors/*",
+    "review-executors/*",
+    "github-adapter/*",
+    "agent-provider/*",
+    "fantasy-product/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-bootstrap-workflow-consumers",
+      "expectations": [
+        "BOOT-010 and later orchestration modules can request transitions without editing state directly",
+        "task-specific required review roles determine which review gates are traversed",
+        "rejections preserve the exact input record for deterministic recovery"
+      ],
+      "requiredCapabilities": [
+        "deterministic-lifecycle-transitions",
+        "explicit-transition-prerequisites",
+        "task-specific-review-routing",
+        "stale-state-rejection"
+      ],
+      "acceptedRanges": [
+        "all lifecycle states declared by TaskLifecycleState",
+        "success and structured rejection results"
+      ],
+      "requiredReachableRanges": [
+        "PLANNED through DONE happy path",
+        "review paths with QA Architect and UAT/Product omitted when not required",
+        "failure states through REWORK_REQUIRED back to IN_DEVELOPMENT",
+        "generic BLOCKED only after development has begun"
+      ]
+    }
+  ]
+}
