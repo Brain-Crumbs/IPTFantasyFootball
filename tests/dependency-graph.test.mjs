@@ -31,6 +31,36 @@ function registry(tasks) {
   return new Map(tasks.map((item) => [item.taskId, item]));
 }
 
+class CountingRegistry extends Map {
+  getCalls = 0;
+
+  get(key) {
+    this.getCalls += 1;
+    return super.get(key);
+  }
+}
+
+function layeredFanInRegistry(layerCount) {
+  const tasks = [];
+  let nextId = 1;
+  const makeId = () => `BOOT-${String(nextId++).padStart(3, "0")}`;
+
+  const rootId = makeId();
+  tasks.push(task(rootId));
+  let previousLayer = [rootId];
+
+  for (let layer = 0; layer < layerCount; layer += 1) {
+    const leftId = makeId();
+    const rightId = makeId();
+    tasks.push(task(leftId, previousLayer), task(rightId, previousLayer));
+    previousLayer = [leftId, rightId];
+  }
+
+  const sinkId = makeId();
+  tasks.push(task(sinkId, previousLayer));
+  return { registry: new CountingRegistry(tasks.map((item) => [item.taskId, item])), sinkId, taskCount: tasks.length };
+}
+
 test("simple chain resolves dependencies before dependents and exposes blockers", () => {
   const result = resolveDependencyDag(
     registry([task("BOOT-001"), task("BOOT-002", ["BOOT-001"]), task("BOOT-003", ["BOOT-002"])]),
@@ -124,4 +154,17 @@ test("equivalent registry contents resolve identically regardless of insertion o
   assert.deepEqual(forward.taskOrder, reverse.taskOrder);
   assert.deepEqual([...forward.tasks.entries()], [...reverse.tasks.entries()]);
   assert.deepEqual([...forward.satisfaction.entries()], [...reverse.satisfaction.entries()]);
+});
+
+test("layered fan-in reuses transitive closures instead of revisiting shared prerequisites exponentially", () => {
+  const fixture = layeredFanInRegistry(20);
+  const result = resolveDependencyDag(fixture.registry);
+  const sinkDependencies = result.tasks.get(fixture.sinkId)?.transitiveDependencies;
+
+  assert.equal(sinkDependencies?.length, fixture.taskCount - 1);
+  assert.equal(new Set(sinkDependencies).size, fixture.taskCount - 1);
+  assert.ok(
+    fixture.registry.getCalls < fixture.taskCount * fixture.taskCount * 6,
+    `expected bounded registry traversal, received ${fixture.registry.getCalls} get() calls for ${fixture.taskCount} tasks`,
+  );
 });
