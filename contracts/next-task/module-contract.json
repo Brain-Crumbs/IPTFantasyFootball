@@ -1,0 +1,118 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.next-task",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "selectNextEligibleTask(registry, options?)",
+      "options.taskStates: ReadonlyMap<taskId, TaskLifecycleState>",
+      "result kinds: selected | empty | complete | blocked",
+      "selected { taskId, title, canonicalBranch, state }",
+      "blocked task { taskId, title, canonicalBranch, state, blockers }"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "deterministic-next-task-selection",
+      "lifecycle-state-eligibility",
+      "dependency-eligibility",
+      "priority-selection",
+      "deterministic-tie-breaking",
+      "blocking-reasons",
+      "empty-complete-blocked-distinction",
+      "canonical-branch-metadata"
+    ],
+    "behavioralConstraints": [
+      "eligible states are READY and PLANNED",
+      "READY outranks PLANNED",
+      "equal-priority selection follows BOOT-007 taskOrder with lexical task-ID tie-breaking",
+      "only DONE dependencies count as satisfied",
+      "direct or transitive unsatisfied dependencies prevent selection",
+      "blocked higher-priority work does not prevent lower-priority eligible work from being selected",
+      "missing lifecycle snapshot entries are treated as PLANNED until BOOT-009 provides authoritative lifecycle integration",
+      "invalid dependency graphs fail before selection output is returned",
+      "equivalent registry and lifecycle snapshots produce equivalent selection results"
+    ],
+    "invariants": [
+      "selection does not mutate lifecycle state",
+      "selection does not assign or lock tasks",
+      "selection does not create or change branches",
+      "selection does not call GitHub or agent providers",
+      "MERGED and other pre-DONE states never satisfy dependencies",
+      "no fantasy-product behavior is introduced"
+    ],
+    "examples": [
+      "two READY independent tasks select the lexically earlier task ID through BOOT-007 ordering",
+      "a blocked READY task is skipped when an independent PLANNED task is eligible",
+      "all DONE tasks return complete",
+      "tasks with only blockers return blocked with concrete reasons"
+    ],
+    "edgeCases": [
+      "empty registry returns empty",
+      "missing lifecycle entries default to PLANNED during BOOT-008",
+      "an inconsistent DONE intermediate state cannot hide an unfinished transitive prerequisite",
+      "invalid dependency graphs are rejected by BOOT-007 before selection"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.task-registry",
+    "control-plane.dependency-dag",
+    "schemas/v1/lifecycle-state.schema.json"
+  ],
+  "forbiddenDependencies": [
+    "assignment-lock-managers/*",
+    "lifecycle-mutation-engines/*",
+    "github-adapter/*",
+    "agent-provider/*",
+    "fantasy-product/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "control-plane.cli-shell",
+      "expectations": [
+        "selection outcomes fit the stable top-level CLI envelope",
+        "selected results always include taskId and canonicalBranch"
+      ],
+      "requiredCapabilities": [
+        "deterministic-next-task-selection",
+        "empty-complete-blocked-distinction",
+        "canonical-branch-metadata"
+      ],
+      "acceptedRanges": [
+        "selected",
+        "empty",
+        "complete",
+        "blocked"
+      ],
+      "requiredReachableRanges": [
+        "selected task with canonical branch metadata",
+        "empty registry",
+        "all tasks DONE",
+        "all remaining tasks blocked"
+      ]
+    },
+    {
+      "consumerId": "future-bootstrap-workflow-consumers",
+      "expectations": [
+        "BOOT-010 BOOT-013 and BOOT-030 can share one eligibility policy",
+        "selection remains read-only and exposes blocker reasons"
+      ],
+      "requiredCapabilities": [
+        "deterministic-next-task-selection",
+        "lifecycle-state-eligibility",
+        "dependency-eligibility",
+        "priority-selection",
+        "blocking-reasons"
+      ],
+      "acceptedRanges": [
+        "all valid BOOT-008 selection result kinds"
+      ],
+      "requiredReachableRanges": [
+        "multiple eligible tasks with deterministic tie-break",
+        "higher-priority blocked task with lower-priority eligible task",
+        "tasks present but all blocked"
+      ]
+    }
+  ]
+}

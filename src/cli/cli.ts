@@ -3,9 +3,9 @@
 import { runCli } from "./core.js";
 import { EXIT_CODES, OUTPUT_SCHEMA_VERSION } from "./contracts.js";
 
-function main(): number {
+async function main(): Promise<number> {
   try {
-    const result = runCli(process.argv.slice(2));
+    const result = await runCli(process.argv.slice(2));
 
     if (result.stdout.length > 0) {
       process.stdout.write(result.stdout);
@@ -32,4 +32,4 @@ function main(): number {
   }
 }
 
-process.exitCode = main();
+process.exitCode = await main();
