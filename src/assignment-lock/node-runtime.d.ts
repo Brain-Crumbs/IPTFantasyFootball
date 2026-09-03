@@ -4,6 +4,7 @@ declare module "node:fs" {
   export function writeFileSync(path: string, data: string, options?: { encoding?: "utf8"; flag?: string }): void;
   export function renameSync(oldPath: string, newPath: string): void;
   export function existsSync(path: string): boolean;
+  export function readdirSync(path: string): string[];
 }
 
 declare module "node:path" {
