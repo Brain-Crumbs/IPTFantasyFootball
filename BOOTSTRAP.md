@@ -2,12 +2,14 @@
 
 This file documents the **temporary manual bootstrap regime** established by [issue #1](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1).
 
-## Current seed
+## Current bootstrap position
 
-- Task: **BOOT-000 — Seed repository skeleton and bootstrap constitution**
-- Issue: [#2](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/2)
-- Canonical branch: `bootstrap/boot-000-seed-constitution`
+- Initial seed: **BOOT-000 — Seed repository skeleton and bootstrap constitution** / [issue #2](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/2)
+- Current shell task: **BOOT-005 — CLI application shell and command contract** / [issue #7](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/7)
+- Canonical BOOT-005 branch: `bootstrap/boot-005-cli-shell`
 - Bootstrap marker: see [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION)
+
+BOOT-005 makes only the CLI shell operational: help/version, documented output/exit contracts, and explicit failures for reserved future commands. Task discovery, assignment, lifecycle transitions, validation gates, review workflows, orchestration, and controlled completion remain manual/unimplemented until their owning BOOT tasks land.
 
 ## Temporary source-of-truth rule
 
@@ -23,9 +25,9 @@ When the repository-native task system becomes operational, authority will migra
 
 ## BOOT-000 phase boundary
 
-BOOT-000 is a manual seed. It establishes documentation and folder responsibilities only.
+BOOT-000 was a manual seed. It established documentation and folder responsibilities only.
 
-It does **not** implement:
+BOOT-000 itself did **not** implement:
 
 - a CLI;
 - task registry loading;
@@ -43,14 +45,15 @@ It does **not** implement:
 - workflow recovery tooling;
 - fantasy-football product behavior.
 
-Those capabilities belong to later BOOT issues listed in the master plan.
+Later BOOT issues own those capabilities. BOOT-005 now implements only the CLI shell portion described above.
 
-## Seed validation principle
+## Bootstrap validation principle
 
-A clean checkout of this branch should be understandable without relying on hidden context:
+A clean checkout should be understandable without relying on hidden context:
 
 - root documentation explains purpose and authority;
 - all referenced skeleton directories exist;
-- each placeholder says what later task owns the actual implementation;
+- placeholders distinguish future behavior from implemented behavior;
 - the constitution contains every invariant named by the master plan;
-- no downstream behavior is falsely described as already implemented.
+- the CLI documentation states exactly which shell commands are operational;
+- no downstream workflow behavior is falsely described as already implemented.

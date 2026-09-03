@@ -1,0 +1,76 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.cli-shell",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "Human mode: npm run agent -- <command>",
+      "Machine mode: npm run --silent agent -- --json <command>",
+      "JSON envelope { schemaVersion, ok, command, data, error }",
+      "Exit codes 0=SUCCESS, 2=USAGE_ERROR, 3=NOT_IMPLEMENTED, 70=INTERNAL_ERROR"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "deterministic-envelope",
+      "deterministic-exit-codes",
+      "reserved-command-failure",
+      "provider-neutral-shell"
+    ],
+    "behavioralConstraints": [
+      "successful commands exit 0",
+      "expected usage errors exit 2",
+      "reserved unimplemented commands exit 3",
+      "unexpected internal failures exit 70",
+      "JSON mode emits exactly one top-level envelope object for normal success or expected command failure",
+      "documented npm machine invocation suppresses npm lifecycle logging so stdout remains exactly one CLI envelope"
+    ],
+    "invariants": [
+      "identical argv and repository version produce deterministic normal shell results",
+      "shell behavior does not require an AI provider",
+      "registration of a reserved command never implies implemented workflow semantics"
+    ],
+    "examples": [
+      "npm run --silent agent -- --json version emits only a success envelope on stdout and exits 0",
+      "next exits 3 with COMMAND_NOT_IMPLEMENTED until BOOT-008"
+    ],
+    "edgeCases": [
+      "empty argv resolves to help",
+      "unknown option exits 2 with USAGE_UNKNOWN_OPTION",
+      "unknown command exits 2 with USAGE_UNKNOWN_COMMAND",
+      "--json may appear before or after the command token"
+    ]
+  },
+  "allowedDependencies": [
+    "node:core",
+    "contracts/*"
+  ],
+  "forbiddenDependencies": [
+    "agent-provider/*",
+    "fantasy-product/*",
+    "github-adapter/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-bootstrap-command-modules",
+      "expectations": [
+        "stable top-level envelope and documented exit-code meanings",
+        "registered reserved commands do not report success without implemented behavior"
+      ],
+      "requiredCapabilities": [
+        "deterministic-envelope",
+        "deterministic-exit-codes",
+        "reserved-command-failure"
+      ],
+      "acceptedRanges": [
+        "exit codes {0, 2, 3, 70}"
+      ],
+      "requiredReachableRanges": [
+        "exit 0 success",
+        "exit 2 invalid usage",
+        "exit 3 reserved unimplemented"
+      ]
+    }
+  ]
+}
