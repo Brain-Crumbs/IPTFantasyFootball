@@ -1,0 +1,110 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.assignment-lock",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "FileAssignmentLockStore(root)",
+      "AssignmentLockStore.acquire(request): LockResult",
+      "AssignmentLockStore.release(request): LockResult",
+      "AssignmentLockStore.recoverStale(request): LockResult",
+      "AssignmentLockStore.get(taskId): AssignmentLockRecord | null",
+      "AssignmentLockStore.getAudit(taskId): readonly LockAuditEvent[]",
+      "durable records: schemas/v1/assignment-lock.schema.json v1.1"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "atomic-single-winner-assignment",
+      "canonical-branch-binding",
+      "same-identity-idempotent-reacquisition",
+      "deterministic-assignment-conflicts",
+      "explicit-stale-recovery",
+      "atomic-stale-recovery-claim",
+      "auditable-release-recovery",
+      "collision-safe-lock-archive"
+    ],
+    "behavioralConstraints": [
+      "at most one active task lock file is authoritative for a task",
+      "canonicalBranch must exactly equal task metadata supplied by the caller",
+      "all durable date-time values are RFC 3339 and schema-compatible",
+      "expiresAt when supplied is later than acquiredAt",
+      "expiry is checked before same-identity idempotent reacquisition",
+      "ordinary acquisition of an expired lock returns LOCK_STALE",
+      "stale recovery must name the exact stale lock and win an exclusive recovery claim",
+      "a matching recovery identity may resume its interrupted claim while a competing recovery identity receives LOCK_CONFLICT",
+      "archive paths are collision-safe when lock IDs are reused"
+    ],
+    "invariants": [
+      "two competing assignment attempts cannot both succeed for the same task",
+      "an active assignment is bound to one task canonical branch owner run and lock identity",
+      "expired work is never silently renewed or stolen",
+      "a recovery contender that did not win the stale-lock claim cannot archive or replace that assignment",
+      "an active non-stale lock cannot be recovered through the stale path",
+      "runtime-persisted records satisfy the assignment-lock schema contract",
+      "release and stale-recovery actions remain auditable"
+    ],
+    "examples": [
+      "Agent A acquires a task and Agent B receives LOCK_CONFLICT",
+      "Agent A reacquires the same active identity before expiry and receives idempotent success",
+      "after expiry ordinary reacquisition returns LOCK_STALE even for Agent A",
+      "two recoveries targeting the same stale lock compete for one recovery claim and only the winner may publish a replacement",
+      "a released lock ID may be reused without colliding with archived history"
+    ],
+    "edgeCases": [
+      "same identity retry after expiry returns LOCK_STALE",
+      "competing stale recovery claim returns LOCK_CONFLICT without changing active ownership",
+      "interrupted recovery may be resumed by the matching recovery identity",
+      "date-only timestamp strings are rejected",
+      "legacy empty task directories do not block atomic lock-file acquisition",
+      "reused lock IDs produce distinct archive destinations"
+    ]
+  },
+  "allowedDependencies": [
+    "node:fs",
+    "node:path",
+    "schemas/v1/assignment-lock.schema.json",
+    "control-plane.task-registry task identity metadata"
+  ],
+  "forbiddenDependencies": [
+    "git-branch-lifecycle/*",
+    "next-task-selection-policy/*",
+    "review-executors/*",
+    "validation-executors/*",
+    "agent-provider/*",
+    "fantasy-product/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-bootstrap-task-start-workflow",
+      "expectations": [
+        "acquisition succeeds only after exclusive assignment ownership is established",
+        "same active assignment can resume idempotently before expiry",
+        "competing identities receive deterministic structured rejection",
+        "expired locks require explicit audited recovery rather than implicit takeover"
+      ],
+      "requiredCapabilities": [
+        "atomic-single-winner-assignment",
+        "canonical-branch-binding",
+        "deterministic-assignment-conflicts",
+        "explicit-stale-recovery",
+        "atomic-stale-recovery-claim"
+      ],
+      "acceptedRanges": [
+        "success with ACTIVE AssignmentLockRecord and idempotent flag",
+        "structured LockConflictCode rejection",
+        "archived RELEASED or STALE terminal lock records"
+      ],
+      "requiredReachableRanges": [
+        "fresh acquisition success",
+        "same-identity pre-expiry idempotent success",
+        "competing-identity conflict",
+        "expired-lock LOCK_STALE rejection",
+        "explicit stale recovery success",
+        "competing stale recovery conflict",
+        "release followed by acquisition by a new identity"
+      ]
+    }
+  ]
+}
