@@ -37,7 +37,7 @@ export class BranchLifecycleError extends Error {
 
 export interface GitBranchOperations {
   currentBranch(): string;
-  refExists(ref: string): boolean;
+  localBranchExists(branch: string): boolean;
   isAncestor(ancestorRef: string, descendantRef: string): boolean;
   createBranch(branch: string, baseRef: string): void;
   checkoutBranch(branch: string): void;
@@ -50,9 +50,9 @@ export class LocalGitBranchOperations implements GitBranchOperations {
     return this.git(["branch", "--show-current"]).trim();
   }
 
-  refExists(ref: string): boolean {
+  localBranchExists(branch: string): boolean {
     try {
-      this.git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+      this.git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
       return true;
     } catch {
       return false;
@@ -61,7 +61,12 @@ export class LocalGitBranchOperations implements GitBranchOperations {
 
   isAncestor(ancestorRef: string, descendantRef: string): boolean {
     try {
-      this.git(["merge-base", "--is-ancestor", ancestorRef, descendantRef]);
+      this.git([
+        "merge-base",
+        "--is-ancestor",
+        `refs/heads/${ancestorRef}`,
+        `refs/heads/${descendantRef}`,
+      ]);
       return true;
     } catch {
       return false;
@@ -69,7 +74,7 @@ export class LocalGitBranchOperations implements GitBranchOperations {
   }
 
   createBranch(branch: string, baseRef: string): void {
-    this.git(["branch", branch, baseRef]);
+    this.git(["branch", branch, `refs/heads/${baseRef}`]);
   }
 
   checkoutBranch(branch: string): void {
@@ -100,11 +105,17 @@ export class GitBranchLifecycleAdapter {
   ) {}
 
   canonicalBranch(task: TaskBranchMetadata): string {
-    const branch = task.canonicalBranch.trim();
+    const branch = task.canonicalBranch;
     if (branch.length === 0) {
       throw new BranchLifecycleError(
         "INVALID_TASK_BRANCH",
         `Task ${task.taskId} does not declare a non-empty canonicalBranch.`,
+      );
+    }
+    if (branch !== branch.trim()) {
+      throw new BranchLifecycleError(
+        "INVALID_TASK_BRANCH",
+        `Task ${task.taskId} canonicalBranch '${branch}' contains leading or trailing whitespace. Canonical branch identifiers must be used exactly as recorded and may not be normalized.`,
       );
     }
     return branch;
@@ -140,14 +151,14 @@ export class GitBranchLifecycleAdapter {
         `Task ${task.taskId} must use bootstrap integration target '${this.integrationTarget}' as its base, not '${baseRef}'.`,
       );
     }
-    if (!this.git.refExists(baseRef)) {
+    if (!this.git.localBranchExists(baseRef)) {
       throw new BranchLifecycleError(
         "BASE_REF_NOT_FOUND",
-        `Required base ref '${baseRef}' does not exist. Fetch or restore '${baseRef}' before creating '${canonical}'.`,
+        `Required local base branch '${baseRef}' does not exist at 'refs/heads/${baseRef}'. Fetch or restore '${baseRef}' before creating '${canonical}'.`,
       );
     }
 
-    const branchExists = this.git.refExists(canonical);
+    const branchExists = this.git.localBranchExists(canonical);
     if (!branchExists) {
       const current = this.git.currentBranch();
       if (current !== baseRef) {
@@ -164,7 +175,7 @@ export class GitBranchLifecycleAdapter {
     if (!this.git.isAncestor(baseRef, canonical)) {
       throw new BranchLifecycleError(
         "BRANCH_DIVERGED",
-        `Canonical branch '${canonical}' is not based on required ref '${baseRef}'. Do not force-move it; inspect and recover the branch explicitly.`,
+        `Canonical branch '${canonical}' is not based on required local branch '${baseRef}'. Do not force-move it; inspect and recover the branch explicitly.`,
       );
     }
 
