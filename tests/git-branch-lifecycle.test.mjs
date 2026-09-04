@@ -44,13 +44,13 @@ function expectCode(fn, code) {
 test("creates a missing canonical branch from main and checks it out", () => {
   const repo = fixture();
   try {
-    const base = git(repo, "rev-parse", "main");
+    const base = git(repo, "rev-parse", "refs/heads/main");
     const adapter = new GitBranchLifecycleAdapter(new LocalGitBranchOperations(repo));
     const result = adapter.ensureTaskBranch(task);
 
     assert.equal(result.created, true);
     assert.equal(git(repo, "branch", "--show-current"), task.canonicalBranch);
-    assert.equal(git(repo, "rev-parse", task.canonicalBranch), base);
+    assert.equal(git(repo, "rev-parse", `refs/heads/${task.canonicalBranch}`), base);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
@@ -84,6 +84,24 @@ test("rejects wrong branch identity with an actionable error", () => {
   }
 });
 
+test("rejects canonical branch metadata with leading or trailing whitespace", () => {
+  const repo = fixture();
+  try {
+    const adapter = new GitBranchLifecycleAdapter(new LocalGitBranchOperations(repo));
+    expectCode(
+      () => adapter.ensureTaskBranch({ ...task, canonicalBranch: ` ${task.canonicalBranch}` }),
+      "INVALID_TASK_BRANCH",
+    );
+    expectCode(
+      () => adapter.ensureTaskBranch({ ...task, canonicalBranch: `${task.canonicalBranch} ` }),
+      "INVALID_TASK_BRANCH",
+    );
+    assert.equal(git(repo, "branch", "--show-current"), "main");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("rejects missing and incorrect base refs", () => {
   const repo = fixture();
   try {
@@ -95,6 +113,37 @@ test("rejects missing and incorrect base refs", () => {
       () => adapter.ensureTaskBranch(task, { baseRef: "trunk" }),
       "BASE_REF_MISMATCH",
     );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("does not treat a same-named tag as the canonical local branch", () => {
+  const repo = fixture();
+  try {
+    git(repo, "tag", task.canonicalBranch);
+    const adapter = new GitBranchLifecycleAdapter(new LocalGitBranchOperations(repo));
+    const result = adapter.ensureTaskBranch(task);
+
+    assert.equal(result.created, true);
+    assert.equal(git(repo, "branch", "--show-current"), task.canonicalBranch);
+    assert.equal(
+      git(repo, "rev-parse", `refs/heads/${task.canonicalBranch}`),
+      git(repo, "rev-parse", "refs/heads/main"),
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("does not treat a same-named tag as the required main base branch", () => {
+  const repo = fixture();
+  try {
+    git(repo, "tag", "main");
+    git(repo, "branch", "-m", "main", "trunk");
+    const adapter = new GitBranchLifecycleAdapter(new LocalGitBranchOperations(repo));
+
+    expectCode(() => adapter.ensureTaskBranch(task), "BASE_REF_NOT_FOUND");
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
