@@ -1,0 +1,85 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.git-branch-lifecycle",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "GitBranchLifecycleAdapter.canonicalBranch(task): string",
+      "GitBranchLifecycleAdapter.ensureTaskBranch(task, options?): BranchEnsureResult",
+      "GitBranchLifecycleAdapter.assertCurrentTaskBranch(task): void",
+      "GitBranchOperations source-control adapter boundary"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "canonical-task-branch-resolution",
+      "idempotent-task-branch-ensure",
+      "main-base-enforcement",
+      "wrong-branch-rejection",
+      "divergence-detection",
+      "git-operation-encapsulation"
+    ],
+    "behavioralConstraints": [
+      "task canonicalBranch is authoritative and must be non-empty",
+      "main is the default bootstrap integration target",
+      "missing canonical branches are created from main only when the repository is currently on main",
+      "existing canonical branches are reused without force-moving",
+      "unrelated active branches are rejected rather than silently switched",
+      "Git shell commands are confined to LocalGitBranchOperations"
+    ],
+    "invariants": [
+      "task-domain callers do not need Git process details",
+      "branch identity cannot silently differ from task metadata",
+      "branch creation never force-moves an existing branch",
+      "an existing canonical branch must retain main as an ancestor"
+    ],
+    "examples": [
+      "BOOT-011 on main creates bootstrap/boot-011-branch-lifecycle from main and checks it out",
+      "re-running ensure on the canonical branch returns created=false",
+      "requesting bootstrap/wrong for BOOT-011 fails with WRONG_BRANCH"
+    ],
+    "edgeCases": [
+      "missing main fails with BASE_REF_NOT_FOUND",
+      "non-main requested base fails with BASE_REF_MISMATCH",
+      "detached or unrelated branch fails with WRONG_BRANCH",
+      "canonical branch not descended from main fails with BRANCH_DIVERGED"
+    ]
+  },
+  "allowedDependencies": [
+    "node:child_process",
+    "control-plane task canonicalBranch metadata"
+  ],
+  "forbiddenDependencies": [
+    "pull-request-lifecycle/*",
+    "merge-controller/*",
+    "agent-provider/*",
+    "fantasy-product/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-bootstrap-task-start-workflow",
+      "expectations": [
+        "receive the exact canonical task branch from task metadata",
+        "ensure a missing canonical branch from main safely",
+        "receive deterministic actionable rejection for wrong or invalid branch state"
+      ],
+      "requiredCapabilities": [
+        "canonical-task-branch-resolution",
+        "idempotent-task-branch-ensure",
+        "wrong-branch-rejection"
+      ],
+      "acceptedRanges": [
+        "BranchEnsureResult with created true or false",
+        "structured BranchLifecycleError codes"
+      ],
+      "requiredReachableRanges": [
+        "missing branch creation success",
+        "idempotent existing branch success",
+        "wrong branch rejection",
+        "missing base rejection",
+        "divergence rejection"
+      ]
+    }
+  ]
+}
