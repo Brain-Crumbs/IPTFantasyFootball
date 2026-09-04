@@ -6,11 +6,12 @@ Encapsulates task-branch Git operations behind a provider-neutral source-control
 
 ## Public behavior
 
-- `canonicalBranch(task)` returns the exact non-empty branch declared by task metadata.
-- `ensureTaskBranch(task, options?)` creates a missing canonical branch from `main`, checks it out, and returns whether creation occurred.
+- `canonicalBranch(task)` returns the exact non-empty branch declared by task metadata and rejects leading/trailing whitespace rather than normalizing the authoritative identifier.
+- `ensureTaskBranch(task, options?)` creates a missing canonical local branch from the local `main` branch, checks it out, and returns whether creation occurred.
+- Branch existence checks are restricted to `refs/heads/<name>`; tags and other refs with the same short name do not satisfy task-branch or base-branch identity.
 - Re-running `ensureTaskBranch` on a valid existing canonical branch is idempotent and never force-moves it.
 - `assertCurrentTaskBranch(task)` rejects wrong or detached branch use with actionable diagnostics.
-- Existing branches that are not descended from the required `main` ref are rejected as divergent.
+- Existing canonical branches that are not descended from the required local `main` branch are rejected as divergent.
 
 ## Boundary
 
