@@ -16,14 +16,18 @@
       "canonical-task-branch-resolution",
       "idempotent-task-branch-ensure",
       "main-base-enforcement",
+      "local-head-ref-enforcement",
       "wrong-branch-rejection",
       "divergence-detection",
       "git-operation-encapsulation"
     ],
     "behavioralConstraints": [
-      "task canonicalBranch is authoritative and must be non-empty",
+      "task canonicalBranch is authoritative, non-empty, and never whitespace-normalized",
+      "leading or trailing whitespace in canonicalBranch is rejected with INVALID_TASK_BRANCH",
       "main is the default bootstrap integration target",
-      "missing canonical branches are created from main only when the repository is currently on main",
+      "task and base branch existence are checked only as local refs/heads entries",
+      "tags and other non-head refs cannot satisfy canonical branch or base branch identity",
+      "missing canonical branches are created from the local main branch only when the repository is currently on main",
       "existing canonical branches are reused without force-moving",
       "unrelated active branches are rejected rather than silently switched",
       "Git shell commands are confined to LocalGitBranchOperations"
@@ -31,19 +35,23 @@
     "invariants": [
       "task-domain callers do not need Git process details",
       "branch identity cannot silently differ from task metadata",
+      "branch identity refers to local branch heads rather than ambiguous short refs",
       "branch creation never force-moves an existing branch",
-      "an existing canonical branch must retain main as an ancestor"
+      "an existing canonical branch must retain local main as an ancestor"
     ],
     "examples": [
-      "BOOT-011 on main creates bootstrap/boot-011-branch-lifecycle from main and checks it out",
+      "BOOT-011 on main creates bootstrap/boot-011-branch-lifecycle from refs/heads/main and checks it out",
       "re-running ensure on the canonical branch returns created=false",
       "requesting bootstrap/wrong for BOOT-011 fails with WRONG_BRANCH"
     ],
     "edgeCases": [
-      "missing main fails with BASE_REF_NOT_FOUND",
+      "canonicalBranch with leading or trailing whitespace fails with INVALID_TASK_BRANCH",
+      "same-named tag without a local canonical branch does not count as branch existence",
+      "same-named main tag without refs/heads/main fails with BASE_REF_NOT_FOUND",
+      "missing local main fails with BASE_REF_NOT_FOUND",
       "non-main requested base fails with BASE_REF_MISMATCH",
       "detached or unrelated branch fails with WRONG_BRANCH",
-      "canonical branch not descended from main fails with BRANCH_DIVERGED"
+      "canonical branch not descended from local main fails with BRANCH_DIVERGED"
     ]
   },
   "allowedDependencies": [
@@ -60,13 +68,15 @@
     {
       "consumerId": "future-bootstrap-task-start-workflow",
       "expectations": [
-        "receive the exact canonical task branch from task metadata",
-        "ensure a missing canonical branch from main safely",
+        "receive the exact canonical task branch from task metadata without normalization",
+        "ensure a missing canonical local branch from local main safely",
+        "never confuse tags or other refs for task/base branch heads",
         "receive deterministic actionable rejection for wrong or invalid branch state"
       ],
       "requiredCapabilities": [
         "canonical-task-branch-resolution",
         "idempotent-task-branch-ensure",
+        "local-head-ref-enforcement",
         "wrong-branch-rejection"
       ],
       "acceptedRanges": [
@@ -76,6 +86,8 @@
       "requiredReachableRanges": [
         "missing branch creation success",
         "idempotent existing branch success",
+        "whitespace-bearing canonical branch rejection",
+        "same-named tag ignored for local branch existence",
         "wrong branch rejection",
         "missing base rejection",
         "divergence rejection"
