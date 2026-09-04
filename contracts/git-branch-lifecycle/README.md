@@ -1,0 +1,25 @@
+# Git Branch Lifecycle Adapter
+
+## Purpose
+
+Encapsulates task-branch Git operations behind a provider-neutral source-control boundary. The task's `canonicalBranch` metadata is authoritative; bootstrap integration defaults to `main`.
+
+## Public behavior
+
+- `canonicalBranch(task)` returns the exact non-empty branch declared by task metadata.
+- `ensureTaskBranch(task, options?)` creates a missing canonical branch from `main`, checks it out, and returns whether creation occurred.
+- Re-running `ensureTaskBranch` on a valid existing canonical branch is idempotent and never force-moves it.
+- `assertCurrentTaskBranch(task)` rejects wrong or detached branch use with actionable diagnostics.
+- Existing branches that are not descended from the required `main` ref are rejected as divergent.
+
+## Boundary
+
+`GitBranchLifecycleAdapter` depends only on the `GitBranchOperations` interface. `LocalGitBranchOperations` is the concrete adapter that invokes the local `git` executable. Task-domain modules must not shell out to Git directly.
+
+## Explicit non-capabilities
+
+This module does not create or update pull requests, merge branches, manage arbitrary Git administration, acquire task locks, or transition lifecycle state.
+
+## Consumers
+
+BOOT-013's developer task-start workflow is expected to consume this adapter after assignment/lock checks and before development begins.
