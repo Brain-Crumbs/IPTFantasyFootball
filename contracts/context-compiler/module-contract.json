@@ -1,0 +1,129 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.context-compiler",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "compileRoleContext(input): ContextPackage",
+      "ContextRole = Developer | QA | Architect | UAT/Product | MergeController",
+      "ContextCompileInput { role, task, registry, revision, artifacts }",
+      "ContextPackage { schemaVersion, role, taskId, sourceRevision, task, artifacts, manifest }",
+      "ContextCompilationError { code, reference }"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "deterministic-role-context-compilation",
+      "role-local-task-projection",
+      "direct-dependency-context-resolution",
+      "downstream-consumer-semantic-context",
+      "revision-bound-diff-and-evidence",
+      "developer-narrative-isolation",
+      "explicit-missing-artifact-failure",
+      "included-excluded-context-manifest"
+    ],
+    "behavioralConstraints": [
+      "Developer receives implementation-local task scope requirements direct dependency context relevant contracts and local fixtures/scenarios",
+      "QA receives requirements acceptance/validation context exact-revision diff relevant local contracts fixtures/scenarios and revision-bound evidence but excludes developer narrative as authority",
+      "Architect receives affected and direct-dependency contracts exact-revision diff/evidence architecture policy and downstream consumer semantics",
+      "UAT/Product receives outcome-focused task fields local scenarios and QA/Architecture evidence without broad implementation detail",
+      "MergeController receives task/branch/review-role identity policy and exact-revision evidence facts without broad implementation detail",
+      "Developer QA and Architect fail explicitly when referenced requirement or required relevant contract artifacts are missing",
+      "QA and Architect fail explicitly when an exact-revision diff is missing",
+      "equivalent input snapshots produce equivalent package content and artifact ordering regardless of artifact input order"
+    ],
+    "invariants": [
+      "compiler is read-only and does not mutate lifecycle assignment lock or branch state",
+      "compiler invokes no agent provider and performs no review judgment",
+      "non-Developer roles exclude artifacts marked developer-narrative authority",
+      "Architect context is intentionally broader than Developer and QA for semantic consumer compatibility",
+      "every package identifies its exact source revision and every included artifact"
+    ],
+    "examples": [
+      "Architect derives consumer-requirement artifacts from knownConsumers in affected module contracts while Developer omits them",
+      "QA includes deterministic Developer validation evidence for the exact revision but excludes developer narrative justification",
+      "recompiling Architect with the same artifact set in reverse input order yields an equivalent package"
+    ],
+    "edgeCases": [
+      "missing direct dependency task fails for Developer and Architect",
+      "wrong-revision diff cannot satisfy QA or Architect compilation",
+      "duplicate artifact IDs are rejected",
+      "empty or whitespace-padded revision identity is rejected",
+      "contract without parseable knownConsumers remains usable without derived consumer artifacts"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.task-registry",
+    "control-plane.dependency-dag",
+    "contracts/*",
+    "docs/ROLE_MODEL.md"
+  ],
+  "forbiddenDependencies": [
+    "agent-provider/*",
+    "review-executor/*",
+    "lifecycle-mutation-engines/*",
+    "github-adapter/*",
+    "fantasy-product/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "control-plane.dev-start",
+      "expectations": [
+        "Developer packages remain local and deterministic",
+        "required missing artifacts fail explicitly instead of silently reducing context"
+      ],
+      "requiredCapabilities": [
+        "deterministic-role-context-compilation",
+        "role-local-task-projection",
+        "direct-dependency-context-resolution",
+        "explicit-missing-artifact-failure"
+      ],
+      "acceptedRanges": [
+        "Developer ContextPackage for any valid task and exact revision"
+      ],
+      "requiredReachableRanges": [
+        "Developer package with task requirement direct dependency contract fixture and scenario context"
+      ]
+    },
+    {
+      "consumerId": "future-review-workflows",
+      "expectations": [
+        "QA Architect and UAT/Product receive intentionally different context",
+        "Architect can inspect downstream consumer semantic expectations and ranges",
+        "QA never treats developer narrative self-justification as authority"
+      ],
+      "requiredCapabilities": [
+        "deterministic-role-context-compilation",
+        "downstream-consumer-semantic-context",
+        "revision-bound-diff-and-evidence",
+        "developer-narrative-isolation"
+      ],
+      "acceptedRanges": [
+        "QA Architect and UAT/Product ContextPackage variants"
+      ],
+      "requiredReachableRanges": [
+        "QA exact-revision context",
+        "Architect producer-consumer semantic context",
+        "UAT/Product outcome-focused context"
+      ]
+    },
+    {
+      "consumerId": "future-merge-policy",
+      "expectations": [
+        "MergeController context remains facts-only and exact-revision bound"
+      ],
+      "requiredCapabilities": [
+        "deterministic-role-context-compilation",
+        "revision-bound-diff-and-evidence",
+        "included-excluded-context-manifest"
+      ],
+      "acceptedRanges": [
+        "MergeController ContextPackage"
+      ],
+      "requiredReachableRanges": [
+        "task identity canonical branch required review roles policy and exact-revision evidence"
+      ]
+    }
+  ]
+}
