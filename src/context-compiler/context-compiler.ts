@@ -204,14 +204,27 @@ function ensureUniqueArtifactIds(artifacts: readonly ContextArtifact[]): void {
   }
 }
 
+function revisionMatches(artifact: ContextArtifact, revision: string): boolean {
+  if (artifact.kind === "diff" || artifact.kind === "evidence") {
+    return artifact.revision === revision;
+  }
+  return artifact.revision === undefined || artifact.revision === revision;
+}
+
 function findReference(
   artifacts: readonly ContextArtifact[],
   kind: ContextSourceArtifactKind,
   referenceId: string,
+  revision: string,
 ): ContextArtifact | undefined {
   return [...artifacts]
     .sort(sourceArtifactSort)
-    .find((artifact) => artifact.kind === kind && artifact.referenceId === referenceId);
+    .find(
+      (artifact) =>
+        artifact.kind === kind &&
+        artifact.referenceId === referenceId &&
+        revisionMatches(artifact, revision),
+    );
 }
 
 function dependencyTasksForRole(input: ContextCompileInput): readonly RegisteredTask[] {
@@ -238,11 +251,11 @@ function dependencyTasksForRole(input: ContextCompileInput): readonly Registered
 function requireReferencedArtifacts(input: ContextCompileInput, dependencyTasks: readonly RegisteredTask[]): void {
   if (input.role === "Developer" || input.role === "QA" || input.role === "Architect") {
     for (const requirementId of [...input.task.requirements].sort(compareText)) {
-      if (findReference(input.artifacts, "requirement", requirementId) === undefined) {
+      if (findReference(input.artifacts, "requirement", requirementId, input.revision) === undefined) {
         throw new ContextCompilationError(
           "REQUIREMENT_ARTIFACT_MISSING",
           requirementId,
-          `Required requirement artifact '${requirementId}' is missing for ${input.task.taskId}`,
+          `Required requirement artifact '${requirementId}' is missing for ${input.task.taskId}@${input.revision}`,
         );
       }
     }
@@ -255,12 +268,13 @@ function requireReferencedArtifacts(input: ContextCompileInput, dependencyTasks:
         }
       }
     }
+
     for (const contractId of [...contractIds].sort(compareText)) {
-      if (findReference(input.artifacts, "contract", contractId) === undefined) {
+      if (findReference(input.artifacts, "contract", contractId, input.revision) === undefined) {
         throw new ContextCompilationError(
           "CONTRACT_ARTIFACT_MISSING",
           contractId,
-          `Required contract artifact '${contractId}' is missing for ${input.task.taskId}`,
+          `Required contract artifact '${contractId}' is missing for ${input.task.taskId}@${input.revision}`,
         );
       }
     }
@@ -289,13 +303,6 @@ function relatedToTask(artifact: ContextArtifact, taskId: string): boolean {
 
 function relatedToContracts(artifact: ContextArtifact, contractIds: ReadonlySet<string>): boolean {
   return artifact.contractIds?.some((contractId) => contractIds.has(contractId)) ?? false;
-}
-
-function revisionMatches(artifact: ContextArtifact, revision: string): boolean {
-  if (artifact.kind === "diff" || artifact.kind === "evidence") {
-    return artifact.revision === revision;
-  }
-  return artifact.revision === undefined || artifact.revision === revision;
 }
 
 function includeExternalArtifact(
@@ -492,16 +499,14 @@ export function compileRoleContext(input: ContextCompileInput): ContextPackage {
   }
 
   if (input.role === "Architect") {
-    included.push(
-      ...derivedConsumerArtifacts(
-        input.artifacts.filter(
-          (artifact) =>
-            artifact.kind === "contract" &&
-            artifact.referenceId !== undefined &&
-            input.task.affectedContracts.includes(artifact.referenceId),
-        ),
-      ),
+    const currentAffectedContracts = input.artifacts.filter(
+      (artifact) =>
+        artifact.kind === "contract" &&
+        artifact.referenceId !== undefined &&
+        input.task.affectedContracts.includes(artifact.referenceId) &&
+        revisionMatches(artifact, input.revision),
     );
+    included.push(...derivedConsumerArtifacts(currentAffectedContracts));
   }
 
   const excluded: ContextManifestExcludedEntry[] = [];
