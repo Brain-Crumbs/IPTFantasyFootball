@@ -1,67 +1,83 @@
 # Bootstrap Status and Authority
 
-This file documents the **temporary manual bootstrap regime** established by [issue #1](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1).
+This file documents the **temporary manual bootstrap regime** established by [issue #1](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1) and the repository-native capabilities implemented beneath it.
 
 ## Current bootstrap position
 
-- Initial seed: **BOOT-000 — Seed repository skeleton and bootstrap constitution** / [issue #2](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/2)
-- CLI shell: **BOOT-005 — CLI application shell and command contract** / [issue #7](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/7)
-- Task registry: **BOOT-006 — Task registry loader and schema validation** / [issue #8](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/8)
-- Dependency resolver: **BOOT-007 — Dependency DAG validator and resolver** / [issue #9](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/9)
-- Current task: **BOOT-008 — Next-eligible-task selection** / [issue #10](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/10)
-- Canonical BOOT-008 branch: `bootstrap/boot-008-next-task`
+Implemented foundation through the task-start boundary:
+
+- BOOT-000 — seed repository/constitution
+- BOOT-005 — CLI application shell and command contract
+- BOOT-006 — task registry loader and schema validation
+- BOOT-007 — dependency DAG validator/resolver
+- BOOT-008 — deterministic next-eligible-task selection
+- BOOT-009 — lifecycle state transition engine
+- BOOT-010 — task assignment locks
+- BOOT-011 — Git task-branch lifecycle adapter
+- BOOT-012 — role-aware context compiler
+- **Current implementation task: BOOT-013 — Developer task-start workflow / issue #15**
+- Canonical BOOT-013 branch: `bootstrap/boot-013-dev-start`
 - Bootstrap marker: see [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION)
 
-BOOT-005 makes the CLI shell operational: help/version, documented output/exit contracts, and explicit failures for reserved future commands. BOOT-006 adds local schema-validated task registry loading from `tasks/definitions/*.task.json`. BOOT-007 adds deterministic dependency-DAG validation, dependency-before-dependent ordering, transitive dependency resolution, and dependency-satisfaction facts from explicit satisfied-task input. BOOT-008 adds the read-only deterministic next-task selector and operational `agent next` command over those facts.
+The repository-native control plane can now load and order tasks, evaluate next-task eligibility, enforce lifecycle transition prerequisites, acquire assignment locks, ensure canonical local branches, resolve exact source revision, compile bounded Developer context, and compose those capabilities through `agent start <owner-id> <run-id>`.
 
-BOOT-008 does **not** implement assignment, locks, lifecycle transitions, validation gates, review workflows, orchestration, or controlled completion. BOOT-009 owns authoritative lifecycle transition semantics and durable lifecycle integration. Until that lands, BOOT-008 accepts/readies an explicit lifecycle snapshot programmatically and treats omitted task states as `PLANNED`; the executable local query therefore remains subordinate to the manual GitHub bootstrap authority described below.
+BOOT-013 is a start-only workflow. It does not run deterministic developer validation, invoke an AI provider, execute independent reviews, create/manage pull requests, merge, or establish completion. Those remain later BOOT responsibilities.
 
 ## Temporary source-of-truth rule
 
-Until the repository-native task engine reaches Bootstrap v1 cutover:
+Until Bootstrap v1 cutover is **explicitly declared** in issue #1:
 
 1. GitHub issue #1 is the authoritative bootstrap architecture/master tracker.
 2. Dedicated child BOOT issues are authoritative for task-specific implementation scope and acceptance criteria.
-3. Pull requests and repository state provide implementation and review evidence.
-4. Agent memory, conversation history, or self-reported status are never authoritative.
-5. Deterministic facts—files, refs, commits, validation output, exact revision identity, and recorded review evidence—take precedence over narrative claims.
+3. Pull requests and repository state provide implementation/review evidence.
+4. Repository-native lifecycle/lock facts are deterministic operational facts for the commands that own them, but their existence alone does not supersede the manual GitHub tracker for bootstrap authorization.
+5. Agent memory, conversation history, or self-reported status are never authoritative.
+6. Deterministic facts—files, refs, commits, lifecycle/lock records, validation output, exact revision identity, and recorded review evidence—take precedence over narrative claims.
 
-`agent next` is now an operational deterministic selector over repository-native task records and lifecycle facts supplied to it, but its existence does not itself cut the project over from the manual GitHub tracker. Authority migrates only when the master plan's repository-native lifecycle/assignment/evidence pieces are integrated and the project explicitly declares that cutover.
+`agent next` is an operational read-only selector. `agent start` is an operational start-only orchestration command. During the manual bootstrap regime neither command grants an agent permission to ignore an explicitly assigned BOOT issue or self-select unrelated work.
 
-## BOOT-000 phase boundary
+## BOOT-013 start boundary
 
-BOOT-000 was a manual seed. It established documentation and folder responsibilities only.
+A fresh BOOT-013 start composes existing modules without weakening their contracts:
 
-BOOT-000 itself did **not** implement:
+1. read lifecycle state and select eligible work;
+2. acquire the assignment lock bound to the canonical branch and owner/run identity;
+3. stage prerequisite lifecycle transitions in memory;
+4. ensure/assert the canonical branch;
+5. resolve exact current `HEAD` revision through the Git adapter;
+6. gather repository requirement/contract artifacts and compile Developer context;
+7. stage `IN_DEVELOPMENT`;
+8. persist lifecycle state only after all start gates succeed.
 
-- a CLI;
-- task registry loading;
-- task/dependency schemas;
-- lifecycle transitions;
-- locks or assignment;
-- branch automation;
-- role-aware context compilation;
-- validation executors;
-- evidence persistence;
-- QA/Architecture/UAT automation;
-- PR/CI/merge policy automation;
-- an agent provider runner;
-- orchestration;
-- workflow recovery tooling;
+This ordering preserves the master-plan recoverability invariant. A fresh failure before lifecycle commit releases the lock and retains the prior lifecycle state; a created canonical branch may remain because branch ensure is itself idempotent. A same-owner/run retry can reuse the active assignment and committed development state without duplicating transition history.
+
+Local runtime state created by the BOOT-013 composition lives under ignored `.agent/state/` paths. This state is repository-local operational state, not a substitute for GitHub's temporary bootstrap task authorization before cutover.
+
+## Bootstrap phase boundary
+
+The repository still contains no fantasy-football product implementation. The bootstrap has progressed beyond documentation-only scaffolding, but these downstream capabilities remain outside the current start boundary:
+
+- deterministic developer validation/evidence capture;
+- validation evidence persistence/correlation;
+- QA/Architecture/UAT execution and verdict normalization;
+- review retry/rework orchestration;
+- PR creation/update and revision-bound review invalidation;
+- merge policy/controller and controlled completion;
+- agent provider adapters/runners;
+- sequential orchestration/cutover tooling;
 - fantasy-football product behavior.
 
-Later BOOT issues own those capabilities. BOOT-005 implements the CLI shell, BOOT-006 implements local task registry loading/validation, BOOT-007 implements dependency-DAG validation/resolution facts, and BOOT-008 implements only deterministic next-task eligibility/selection plus the `next` query. BOOT-008 does not assign work, lock tasks, create branches, or transition lifecycle state.
+Later BOOT issues own those capabilities and must not be pulled into BOOT-013.
 
 ## Bootstrap validation principle
 
-A clean checkout should be understandable without relying on hidden context:
+A clean checkout should remain understandable without hidden conversation context:
 
-- root documentation explains purpose and authority;
-- all referenced skeleton directories exist;
-- placeholders distinguish future behavior from implemented behavior;
-- the constitution contains every invariant named by the master plan;
-- the CLI documentation states exactly which commands are operational;
-- the task-registry documentation distinguishes local loading from workflow authority;
-- the dependency-DAG contract distinguishes graph facts from lifecycle mutation;
-- the next-task contract documents eligibility, priority, tie-breaking, blocker, and terminal-result semantics;
-- no downstream assignment/lifecycle/review/merge behavior is falsely described as already implemented.
+- root documentation explains authority and current implemented boundary;
+- task definitions and schemas remain repository-visible;
+- module contracts state both structural and semantic expectations;
+- assignment, lifecycle, branch, and context facts are explicit rather than prompt convention;
+- `agent start` identifies its task, branch, revision, assignment identity, acceptance criteria/context, and next instructions;
+- expected start conflicts fail explicitly;
+- same-assignment reruns have documented resume behavior;
+- no downstream validation/review/merge behavior is falsely described as implemented.
