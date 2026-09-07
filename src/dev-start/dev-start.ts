@@ -133,7 +133,7 @@ export class DeveloperStartWorkflow {
     const initialRecord = this.lifecycleRecord(task.taskId);
     const initialState = initialRecord.currentState;
 
-    if (owned === undefined && initialState === "ASSIGNED") {
+    if (owned === null && initialState === "ASSIGNED") {
       throw new DeveloperStartError(
         "TASK_STATE_NOT_STARTABLE",
         `Task '${task.taskId}' is ASSIGNED but the requested owner/run does not hold its active assignment. Explicit recovery is required.`,
@@ -238,7 +238,7 @@ export class DeveloperStartWorkflow {
       }
 
       return freezeResult({
-        kind: owned !== undefined || lockResult.idempotent || initialState === "ASSIGNED" || initialState === "IN_DEVELOPMENT"
+        kind: owned !== null || lockResult.idempotent || initialState === "ASSIGNED" || initialState === "IN_DEVELOPMENT"
           ? "resumed"
           : "started",
         taskId: task.taskId,
