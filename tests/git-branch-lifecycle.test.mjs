@@ -56,6 +56,17 @@ test("creates a missing canonical branch from main and checks it out", () => {
   }
 });
 
+test("returns the exact current HEAD revision through the adapter boundary", () => {
+  const repo = fixture();
+  try {
+    const adapter = new GitBranchLifecycleAdapter(new LocalGitBranchOperations(repo));
+    const expected = git(repo, "rev-parse", "HEAD");
+    assert.equal(adapter.currentRevision(), expected);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("re-running ensure is idempotent", () => {
   const repo = fixture();
   try {
