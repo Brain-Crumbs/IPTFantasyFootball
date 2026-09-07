@@ -37,6 +37,7 @@ export class BranchLifecycleError extends Error {
 
 export interface GitBranchOperations {
   currentBranch(): string;
+  currentRevision(): string;
   localBranchExists(branch: string): boolean;
   isAncestor(ancestorRef: string, descendantRef: string): boolean;
   createBranch(branch: string, baseRef: string): void;
@@ -48,6 +49,17 @@ export class LocalGitBranchOperations implements GitBranchOperations {
 
   currentBranch(): string {
     return this.git(["branch", "--show-current"]).trim();
+  }
+
+  currentRevision(): string {
+    const revision = this.git(["rev-parse", "HEAD"]).trim();
+    if (revision.length === 0) {
+      throw new BranchLifecycleError(
+        "GIT_COMMAND_FAILED",
+        `Git returned an empty HEAD revision in ${this.repoRoot}.`,
+      );
+    }
+    return revision;
   }
 
   localBranchExists(branch: string): boolean {
@@ -119,6 +131,10 @@ export class GitBranchLifecycleAdapter {
       );
     }
     return branch;
+  }
+
+  currentRevision(): string {
+    return this.git.currentRevision();
   }
 
   assertCurrentTaskBranch(task: TaskBranchMetadata): void {
