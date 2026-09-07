@@ -1,9 +1,9 @@
 # Agent Control Plane CLI contract
 
-**Task:** BOOT-005 / issue #7, extended by BOOT-008 / issue #10  
+**Task:** BOOT-005 / issue #7, extended by BOOT-008 / issue #10 and BOOT-013 / issue #15  
 **Parent architecture:** issue #1
 
-The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic next-task selection. Later BOOT tasks still own assignment, lifecycle transitions, validation, review, orchestration, and merge behavior.
+The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic read-only next-task selection. BOOT-013 adds the canonical start-only Developer workflow. Later BOOT tasks still own validation, review, PR/merge orchestration, automated agent invocation, and controlled completion.
 
 ## Clean-checkout setup
 
@@ -17,67 +17,101 @@ npm run agent -- version
 npm run agent -- next
 ```
 
-`npm test` builds the TypeScript CLI before running the test suite. A clean checkout does not need an AI provider, provider credential, network service beyond dependency installation, or fantasy-football data source to execute the CLI shell and local next-task query.
+`npm test` builds TypeScript before running the test suite. A clean checkout does not need an AI provider, provider credential, network service beyond dependency installation, or fantasy-football data source to execute the local control-plane code.
 
 ## Invocation
 
-Human-readable commands can use the normal npm script:
+Human-readable commands use:
 
 ```sh
 npm run agent -- <command>
 ```
 
-Machine-readable commands must suppress npm's own lifecycle banner so stdout contains only the CLI envelope:
+Machine-readable commands suppress npm's lifecycle banner so stdout contains only the CLI envelope:
 
 ```sh
 npm run --silent agent -- --json <command>
 ```
 
-The CLI parser accepts `--json` before or after the command token. When invoking through npm for machine consumption, keep `--silent` on the npm command itself.
+The parser accepts `--json` before or after the command token.
 
 Implemented:
 
 - `help` (also `--help`, `-h`) — BOOT-005
 - `version` (also `--version`, `-v`) — BOOT-005
 - `next` — BOOT-008
+- `start <owner-id> <run-id>` — BOOT-013
 
-Reserved shell commands remain registered only to stabilize vocabulary. They deliberately fail until their owning BOOT task supplies behavior:
+Reserved commands deliberately fail until their owning task supplies behavior:
 
-- `start` — BOOT-013
 - `validate` — BOOT-014/016
 - `review` — BOOT-017+
 - `status` — BOOT-030
 
+## Manual-bootstrap authority
+
+Operational repository-native commands do not by themselves declare Bootstrap v1 cutover. Until issue #1 explicitly records that cutover, GitHub issue #1 and the explicitly assigned child BOOT issue remain authoritative for real bootstrap work selection and scope. In that regime an agent must not use `start` as permission to self-select unrelated work.
+
 ## `next` command
 
-`agent next` loads the schema-validated local task registry and applies `control-plane.next-task` selection policy over BOOT-007 dependency facts.
+`agent next` loads the schema-validated local task registry and applies `control-plane.next-task` over supplied/default lifecycle facts.
 
-The deterministic BOOT-008 policy is:
+The BOOT-008 policy is:
 
-1. a task must be in `READY` or `PLANNED`;
-2. all direct and transitive prerequisites must be satisfied;
+1. a task must be `READY` or `PLANNED`;
+2. direct and transitive prerequisites must be satisfied;
 3. only a dependency in `DONE` counts as satisfied;
 4. `READY` outranks `PLANNED`;
-5. within the same state priority, BOOT-007 `taskOrder` is used, including its lexical task-ID tie-break across equally ready/disconnected work;
-6. a blocked higher-priority task is skipped if lower-priority eligible work exists.
+5. within the same state priority, BOOT-007 task order and lexical task-ID tie-breaking apply;
+6. a blocked higher-priority task is skipped when lower-priority eligible work exists.
 
-Possible successful result kinds are:
+Result kinds are `selected`, `empty`, `complete`, or `blocked`. `next` remains read-only and does not assign, lock, create branches, or mutate lifecycle state.
 
-- `selected` — contains `taskId`, `title`, `canonicalBranch`, and lifecycle `state`;
-- `empty` — no registered task definitions exist;
-- `complete` — every registered task is `DONE`;
-- `blocked` — tasks exist but none is eligible; each blocked task includes concrete state/dependency reasons.
+During the continuing manual bootstrap, executable `next` without an explicit lifecycle snapshot retains BOOT-008's transitional behavior for omitted entries. The BOOT-013 `start` workflow does not rely on that omission behavior: it reads its own persisted start-state snapshot before selecting work.
 
-BOOT-008 is deliberately read-only. Its selector accepts a lifecycle snapshot and does not transition or persist lifecycle state. Until BOOT-009 supplies the authoritative lifecycle engine/store, a missing lifecycle entry is interpreted as `PLANNED`. The executable `agent next` therefore uses the local registry plus that BOOT-008 transitional default; GitHub issue #1 and child BOOT issues remain the bootstrap authority until the repository-native workflow explicitly cuts over.
+## `start` command
 
-Examples:
+Canonical invocation:
 
 ```sh
-npm run agent -- next
-npm run --silent agent -- --json next
+npm run agent -- start <owner-id> <run-id>
+npm run --silent agent -- --json start <owner-id> <run-id>
 ```
 
-The current repository may legitimately return `empty` because `tasks/definitions/` can contain no `.task.json` records during manual bootstrap. That is distinct from a malformed dependency graph or from registered work that is blocked.
+`owner-id` identifies the Developer assignment owner and `run-id` identifies the resumable run. Both are required and must be non-empty, trimmed values.
+
+A fresh successful start composes existing deterministic modules in this order:
+
+1. load lifecycle state and resolve the next eligible task;
+2. acquire the exact task/canonical-branch assignment lock;
+3. stage pre-development lifecycle transitions in memory;
+4. ensure and assert the canonical task branch;
+5. resolve exact current `HEAD` revision through the Git adapter;
+6. gather repository requirement/contract artifacts and compile the Developer role context;
+7. stage `ASSIGNED -> IN_DEVELOPMENT`;
+8. persist lifecycle state only after all start checks succeed.
+
+A successful result includes:
+
+- `kind`: `started` or `resumed`;
+- task ID and title;
+- canonical branch and whether it was newly created;
+- exact source revision;
+- lifecycle state `IN_DEVELOPMENT`;
+- assignment owner/run/lock identity;
+- acceptance criteria;
+- `contextLocation: "inline"` and the complete compiled Developer context package;
+- bounded next instructions.
+
+### Failure and retry behavior
+
+A lock conflict, invalid branch state, missing context artifact, or lifecycle/state conflict fails explicitly instead of silently continuing. From a fresh `PLANNED`/`READY` start, a pre-commit failure releases the acquired lock and leaves the prior lifecycle state authoritative. A canonical branch created before a later failure is retained and safely reused on retry.
+
+If a matching active assignment already exists for the same owner/run, `start` resumes that task, re-verifies branch/context, and does not duplicate already-committed lifecycle history. A competing owner/run cannot adopt the lock. Stale assignments require the explicit assignment-lock recovery path rather than implicit takeover.
+
+If cleanup itself fails, start returns a recovery-required diagnostic and leaves durable lock/audit facts as the recovery authority.
+
+BOOT-013 is start-only. It does not run developer validation, invoke an AI provider, request independent reviews, create a PR, merge, or mark work complete.
 
 ## Machine-readable envelope
 
@@ -95,45 +129,26 @@ The current repository may legitimately return `empty` because `tasks/definition
 
 Top-level fields in envelope version `1.0.0` are:
 
-- `schemaVersion` — envelope contract version.
-- `ok` — whether the command succeeded.
-- `command` — normalized command name.
-- `data` — command-specific success payload or `null`.
+- `schemaVersion` — envelope contract version;
+- `ok` — whether the command succeeded;
+- `command` — normalized command name;
+- `data` — command-specific success payload or `null`;
 - `error` — `{ code, message }` on failure or `null`.
 
-Expected command errors remain machine-readable on stdout and are distinguished by their non-zero process exit code. Human-readable command errors are written to stderr.
-
-Breaking changes to these top-level meanings require a new envelope major version. Additive command-specific `data` changes must remain documented by the owning command task.
+Expected command errors remain machine-readable on stdout and are distinguished by a non-zero process exit code. Human-readable command errors are written to stderr.
 
 ## Exit-code contract
 
 | Exit | Name | Meaning |
 | ---: | --- | --- |
-| `0` | `SUCCESS` | Command completed successfully, including `next` selected/empty/complete/blocked outcomes. |
-| `2` | `USAGE_ERROR` | Unknown command/option or invalid arguments. |
+| `0` | `SUCCESS` | Command completed successfully. |
+| `2` | `USAGE_ERROR` | Unknown command/option or invalid command arguments. |
 | `3` | `NOT_IMPLEMENTED` | Recognized reserved command whose owning BOOT task is not implemented. |
-| `70` | `INTERNAL_ERROR` | Unexpected runtime failure, including invalid task/dependency repository input that prevents a trustworthy selection. |
+| `4` | `WORKFLOW_BLOCKED` | `start` was understood but a deterministic workflow prerequisite/conflict prevented start or resume. |
+| `70` | `INTERNAL_ERROR` | Unexpected runtime failure or repository input that cannot be trusted. |
 
-All errors are non-zero. The meanings above remain part of the public CLI shell contract.
-
-## Reserved vs unknown commands
-
-A reserved command is known to the bootstrap plan but does not yet have operational behavior:
-
-```sh
-npm run agent -- start
-# exits 3 with COMMAND_NOT_IMPLEMENTED until BOOT-013
-```
-
-An unknown command is outside the registered shell vocabulary:
-
-```sh
-npm run agent -- not-a-command
-# exits 2 with USAGE_UNKNOWN_COMMAND
-```
-
-Registration is not implementation. A reserved command must never silently return success.
+All errors are non-zero. The top-level JSON envelope remains unchanged by BOOT-013; `WORKFLOW_BLOCKED` is an additive exit-code meaning and `start` has its own command-specific data shape.
 
 ## Provider neutrality
 
-The CLI imports no AI SDK and requires no provider credential. Provider runners/adapters belong to BOOT-026 and later tasks. Help, version, parsing, next-task selection, envelope rendering, and deterministic shell errors remain provider independent.
+The CLI imports no AI SDK and requires no provider credential. Provider runners/adapters belong to BOOT-026 and later. BOOT-013 composes repository-native state, source-control, task, lock, and context boundaries only.
