@@ -13,37 +13,40 @@ Before changing any file:
 1. Read this document.
 2. Read [CONSTITUTION.md](CONSTITUTION.md) and [BOOTSTRAP.md](BOOTSTRAP.md).
 3. Read the bootstrap master architecture issue (#1) in full.
-4. Read the specific task issue you were assigned in full, including:
-   - objective;
-   - dependencies;
-   - in-scope and out-of-scope work;
-   - acceptance criteria;
-   - validation scenarios;
-   - required review perspective;
-   - canonical branch.
+4. Read the specific task issue you were assigned in full, including objective, dependencies, scope, acceptance criteria, validation scenarios, required review perspective, and canonical branch.
 5. Verify every declared dependency that must already exist is actually present on the authoritative base branch.
 6. Verify the canonical task branch. Work only on that branch.
 7. Only then begin implementation.
 
-Do not infer a task from nearby TODOs, open issues, repository gaps, or conversation history. Work only an explicitly assigned task.
+Do not infer authorization from nearby TODOs, open issues, repository gaps, or conversation history. During the manual bootstrap regime, work only the explicitly assigned child issue even though repository-native selection/start commands are becoming operational.
 
-### Bootstrap exception: next-task query is read-only; task start is still manual
+### Bootstrap exception: repository-native start is operational; GitHub authorization is still manual
 
-BOOT-005 provides the operational CLI shell for help/version, stable output, exit codes, and explicit reserved-command failures. BOOT-006 provides a local, schema-validated task registry library. BOOT-007 provides deterministic dependency-DAG validation, ordering, transitive dependency resolution, and dependency-satisfaction facts. BOOT-008 provides deterministic read-only next-task eligibility/selection and the operational `agent next` query.
+The control-plane foundation currently includes:
 
-The lifecycle transition engine, lock manager, role-aware context compiler, validation engine, lifecycle controller, and their later workflow commands described in issue #1 are **not yet operational**. BOOT-009 owns authoritative lifecycle transition semantics and durable lifecycle integration; until that exists, BOOT-008 treats omitted lifecycle entries as `PLANNED` and does not mutate any state.
+- BOOT-005 — CLI shell;
+- BOOT-006 — schema-validated task registry;
+- BOOT-007 — deterministic dependency DAG;
+- BOOT-008 — read-only next-task selection / `agent next`;
+- BOOT-009 — deterministic lifecycle transition engine;
+- BOOT-010 — assignment locks and explicit stale recovery;
+- BOOT-011 — canonical task-branch lifecycle adapter;
+- BOOT-012 — role-aware context compiler;
+- BOOT-013 — start-only Developer workflow / `agent start <owner-id> <run-id>`.
 
-Until those later capabilities are implemented and the project explicitly cuts over to the repository-native workflow:
+`agent start` composes next-task resolution, assignment locking, lifecycle pre-development gates, canonical branch ensure/assertion, exact revision lookup, and Developer context compilation. It is idempotent/resumable for the same active assignment and fails explicitly on lock, branch, context, lifecycle, or persistence blockers.
+
+However, the project has **not** thereby declared Bootstrap v1 cutover. Until issue #1 explicitly does so:
 
 - GitHub issue #1 is the bootstrap architecture/master tracker.
-- The assigned BOOT child issue is authoritative for task-specific scope and acceptance criteria.
+- The assigned BOOT child issue is authoritative for task-specific scope and authorization.
 - GitHub branch and PR state provide the integration boundary.
-- `agent next` may be used as a deterministic read-only query over registered task/dependency/lifecycle facts, but it does not by itself authorize self-selection, assignment, task start, or lifecycle transition during the manual bootstrap regime.
-- Starting work still means manually reading the authoritative issues and checking/creating the exact canonical branch named by the assigned task.
-- `npm run agent -- help`, `npm run agent -- version`, and `npm run agent -- next` are operational commands; later workflow commands such as `start`, `validate`, `review`, and `status` fail explicitly until their owning BOOT tasks implement them.
-- Do not invent, simulate, or claim to have run future assignment, validation-gate, review, lifecycle-transition, or completion behavior.
+- `agent next` remains a read-only query and does not authorize self-selection.
+- `agent start` is an operational workflow primitive, not permission to replace an explicit assignment with unrelated automatically selected work during the manual regime.
+- `validate`, `review`, and `status` remain unavailable until their owning BOOT tasks land.
+- Do not invent, simulate, or claim future validation, review, PR/merge, completion, or agent-provider behavior.
 
-When repository-native workflow commands later become authoritative, follow the documented command contract then in force rather than preserving this manual exception by habit.
+When repository-native workflow control is explicitly declared authoritative, follow the documented command contract then in force instead of preserving the manual exception by habit.
 
 ## 2. Authority and conflict handling
 
@@ -63,9 +66,9 @@ If two authoritative requirements genuinely conflict, or if complying with the t
 
 If required context, a dependency, an expected file, an authoritative branch, or another prerequisite is missing:
 
-- do not recreate the missing dependency locally;
+- do not recreate a missing dependency locally unless the assigned task explicitly owns it;
 - do not substitute an assumed equivalent;
-- stop the affected work and report the blocker with the evidence you checked.
+- stop the affected work and report the blocker with the evidence checked.
 
 A harmless implementation detail that is not specified may be resolved conservatively when it does not alter public contracts, architecture, scope, or acceptance criteria. Document material assumptions in the PR.
 
@@ -88,7 +91,7 @@ You must not:
 - implement downstream BOOT tasks early;
 - add fantasy-football product functionality during bootstrap unless an authoritative bootstrap task explicitly requires it;
 - make unrelated refactors, dependency upgrades, formatting sweeps, or architecture changes;
-- manually edit authoritative lifecycle/evidence state to make the task appear complete.
+- manually edit authoritative lifecycle/evidence state to make a task appear complete.
 
 ## 4. Branch discipline
 
@@ -105,6 +108,8 @@ Required behavior:
 
 If the canonical branch already exists, inspect it before changing it. Do not overwrite or force-move work you do not understand.
 
+BOOT-011/013 can enforce/create canonical local branches for repository-native task definitions, but that capability does not authorize force-moving a GitHub branch or bypassing the manual task assignment rules above.
+
 ## 5. Implementation rules
 
 While implementing:
@@ -117,6 +122,8 @@ While implementing:
 - distinguish placeholders/specification from operational code.
 
 For changes to a public contract, shared schema, or cross-module behavior, evaluate downstream semantic compatibility, not only compilation/type compatibility. Ask whether existing consumers can still rely on the capability, ranges, invariants, and behavior they require.
+
+For BOOT-013 specifically, start-only orchestration must not be extended into developer validation, independent review, agent invocation, PR management, merge control, or completion. Same-assignment retries must preserve recoverability rather than manufacturing a new assignment identity.
 
 ## 6. Validation before PR
 
@@ -133,13 +140,13 @@ For every acceptance criterion in the assigned issue:
 
 A test command passing is not sufficient when the acceptance criterion is semantic or documentation-oriented; validate the actual promised behavior.
 
-### Bootstrap exception: validation may be manual but must be explicit
+### Bootstrap exception: validation evidence is still partly manual until its owning tasks land
 
-Until the deterministic validation/evidence framework exists, use the strongest reproducible checks currently available. For documentation-only bootstrap tasks this can include exact file inspection, repository/path verification, diff inspection, searches for prohibited claims, and acceptance-criteria mapping.
+Until BOOT-014/015/016 make deterministic validation/evidence capture operational end-to-end, use the strongest reproducible checks currently available. This can include build/test execution, exact file inspection, repository/path verification, diff inspection, and explicit acceptance-criteria mapping.
 
 Do not label manual inspection as a future automated validation gate. State exactly what was checked and what evidence exists.
 
-If required validation fails, fix the implementation within scope and rerun the affected checks. Do not create a "passing" handoff by ignoring, deleting, or relabeling failures.
+If required validation fails, fix the implementation within scope and rerun the affected checks. Do not create a “passing” handoff by ignoring, deleting, or relabeling failures.
 
 ## 7. Review and handoff
 
@@ -166,29 +173,30 @@ The PR must:
 - identify known limitations, risks, assumptions, and follow-up work;
 - explicitly call out public-contract/shared-schema/cross-module implications when applicable.
 
-After PR creation, hand off for the independent review required by the current bootstrap process. Later repository-native review orchestration, when operational, becomes authoritative.
+After PR creation, hand off for the independent review required by the current bootstrap process. Later repository-native review orchestration becomes authoritative only when its owning tasks and cutover policy are operational.
 
 ## 8. Status authority and prohibited completion actions
 
-An agent's statement that work is "done," "approved," "green," or "complete" is never authoritative by itself.
+An agent's statement that work is “done,” “approved,” “green,” or “complete” is never authoritative by itself.
 
 During the manual bootstrap phase:
 
 - GitHub issues/PRs and repository state are the temporary authoritative workflow record.
+- Repository-native BOOT-013 lifecycle/lock state is an operational start fact, not a substitute for independent review/completion evidence.
 - The implementation agent may report that implementation and developer validation are complete.
 - The implementation agent must **not** close its task issue, mark its own implementation approved, or manufacture review evidence on behalf of an independent role.
 - Merge/completion must follow the review/integration procedure then in force.
 
-After the repository-native lifecycle controller is implemented, only its valid evidence-backed transitions may establish task status.
+After explicit repository-native lifecycle cutover, only valid evidence-backed transitions may establish task status.
 
 ## 9. Fresh-agent handoff checklist
 
 A fresh agent should be able to answer these questions without conversation history:
 
-- **How do I start?** Read this file, the constitution/bootstrap docs, master issue #1, and the assigned task; verify dependencies and the canonical branch. `agent next` is a read-only query during manual bootstrap, not assignment authority.
+- **How do I start?** Read this file, constitution/bootstrap docs, master issue #1, and the assigned task; verify dependencies and canonical branch. Repository-native `next`/`start` are operational tools but manual GitHub assignment remains authoritative until cutover.
 - **What may I change?** Only the smallest coherent surface authorized by the assigned task.
 - **How do I validate?** Prove every acceptance criterion, run available deterministic checks and task scenarios, and inspect the final diff.
 - **How do I hand off?** Open a PR from the canonical task branch into `main` with issue links and validation evidence.
-- **What must I not do?** Do not self-select work, expand scope, invent unavailable tooling, self-approve, self-complete, or overwrite authoritative state.
+- **What must I not do?** Do not self-select unauthorized work, expand scope, invent unavailable tooling, self-approve, self-complete, or overwrite authoritative state.
 
 If any of those answers cannot be determined from repository/GitHub state, treat that ambiguity as a blocker rather than filling it from model memory.
