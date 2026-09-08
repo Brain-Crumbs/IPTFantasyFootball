@@ -18,12 +18,42 @@ function spawnDocumentedJsonCli(args) {
   });
 }
 
+function fakeStartResult(request) {
+  return Object.freeze({
+    kind: "started",
+    taskId: "BOOT-013",
+    title: "Developer task-start workflow",
+    canonicalBranch: "bootstrap/boot-013-dev-start",
+    sourceRevision: "abc123",
+    lifecycleState: "IN_DEVELOPMENT",
+    branchCreated: true,
+    assignment: Object.freeze({
+      ownerId: request.ownerId,
+      runId: request.runId,
+      lockId: `dev-start:BOOT-013:${request.ownerId}:${request.runId}`,
+    }),
+    acceptanceCriteria: Object.freeze(["safe start", "resume"]),
+    contextLocation: "inline",
+    context: Object.freeze({
+      schemaVersion: "1.0.0",
+      role: "Developer",
+      taskId: "BOOT-013",
+      sourceRevision: "abc123",
+      task: Object.freeze({ taskId: "BOOT-013" }),
+      artifacts: Object.freeze([]),
+      manifest: Object.freeze({ included: Object.freeze([]), excluded: Object.freeze([]) }),
+    }),
+    nextInstructions: Object.freeze(["work only BOOT-013"]),
+  });
+}
+
 test("help describes the control-plane purpose and bootstrap command surface", async () => {
   const result = await runCli(["help"]);
   assert.equal(result.exitCode, EXIT_CODES.SUCCESS);
   assert.match(result.stdout, /Deterministic, provider-neutral/);
   assert.match(result.stdout, /next/);
-  assert.match(result.stdout, /BOOT-008/);
+  assert.match(result.stdout, /start/);
+  assert.match(result.stdout, /BOOT-013/);
   assert.match(result.stdout, /implemented/);
 });
 
@@ -55,11 +85,56 @@ test("trailing --json controls error rendering regardless of argument order", as
   assert.equal(payload.error.code, "USAGE_UNKNOWN_OPTION");
 });
 
-test("reserved command fails clearly instead of silently succeeding", async () => {
-  const result = await runCli(["start"]);
+test("still-reserved validation command fails clearly instead of silently succeeding", async () => {
+  const result = await runCli(["validate"]);
   assert.equal(result.exitCode, EXIT_CODES.NOT_IMPLEMENTED);
   assert.match(result.stderr, /^COMMAND_NOT_IMPLEMENTED:/);
-  assert.match(result.stderr, /BOOT-013/);
+  assert.match(result.stderr, /BOOT-014\/016/);
+});
+
+test("start requires explicit owner and run identity", async () => {
+  const missing = await runCli(["start"]);
+  const extra = await runCli(["start", "agent-a", "run-1", "extra"]);
+  assert.equal(missing.exitCode, EXIT_CODES.USAGE_ERROR);
+  assert.equal(extra.exitCode, EXIT_CODES.USAGE_ERROR);
+  assert.match(missing.stderr, /requires exactly <owner-id> <run-id>/);
+});
+
+test("start emits task, branch, acceptance/context, and assignment identity", async () => {
+  let seenRequest = null;
+  const result = await runCli(
+    ["--json", "start", "agent-a", "run-1"],
+    {
+      developerStartWorkflow: {
+        start(request) {
+          seenRequest = request;
+          return fakeStartResult(request);
+        },
+      },
+      now: () => "2026-09-07T19:00:00.000Z",
+    },
+  );
+
+  assert.equal(result.exitCode, EXIT_CODES.SUCCESS);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(seenRequest, {
+    ownerId: "agent-a",
+    runId: "run-1",
+    occurredAt: "2026-09-07T19:00:00.000Z",
+  });
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.command, "start");
+  assert.equal(payload.data.taskId, "BOOT-013");
+  assert.equal(payload.data.canonicalBranch, "bootstrap/boot-013-dev-start");
+  assert.deepEqual(payload.data.acceptanceCriteria, ["safe start", "resume"]);
+  assert.equal(payload.data.contextLocation, "inline");
+  assert.equal(payload.data.context.role, "Developer");
+  assert.deepEqual(payload.data.assignment, {
+    ownerId: "agent-a",
+    runId: "run-1",
+    lockId: "dev-start:BOOT-013:agent-a:run-1",
+  });
 });
 
 test("machine-readable success output uses stable envelope", async () => {
@@ -97,11 +172,12 @@ test("documented npm JSON invocation emits exactly one parseable JSON object", (
   assert.equal(payload.schemaVersion, OUTPUT_SCHEMA_VERSION);
 });
 
-test("process-level help/version/invalid/reserved/next exit behavior matches core contract", () => {
+test("process-level help/version/invalid/reserved/start-usage/next exit behavior matches core contract", () => {
   assert.equal(spawnCli(["help"]).status, EXIT_CODES.SUCCESS);
   assert.equal(spawnCli(["version"]).status, EXIT_CODES.SUCCESS);
   assert.equal(spawnCli(["not-a-command"]).status, EXIT_CODES.USAGE_ERROR);
-  assert.equal(spawnCli(["start"]).status, EXIT_CODES.NOT_IMPLEMENTED);
+  assert.equal(spawnCli(["validate"]).status, EXIT_CODES.NOT_IMPLEMENTED);
+  assert.equal(spawnCli(["start"]).status, EXIT_CODES.USAGE_ERROR);
   assert.equal(spawnCli(["next"]).status, EXIT_CODES.SUCCESS);
 });
 

@@ -1,4 +1,10 @@
 import {
+  DeveloperStartError,
+  createLocalDeveloperStartWorkflow,
+  type DeveloperStartResult,
+  type DeveloperStartWorkflow,
+} from "../dev-start/index.js";
+import {
   loadTaskRegistry,
   selectNextEligibleTask,
   type NextTaskResult,
@@ -25,6 +31,8 @@ export interface CliRunContext {
   repositoryRoot?: string;
   taskRegistry?: TaskRegistry;
   taskStates?: ReadonlyMap<string, TaskLifecycleState>;
+  developerStartWorkflow?: Pick<DeveloperStartWorkflow, "start">;
+  now?: () => string;
 }
 
 interface ParsedArgs {
@@ -98,10 +106,11 @@ function helpText(): string {
     "IPT Agent Control Plane CLI",
     "",
     "Deterministic, provider-neutral command surface for the repository development control plane.",
-    "BOOT-008 implements deterministic next-task selection; later workflow commands remain reserved until their owning BOOT task lands.",
+    "BOOT-008 implements next-task selection and BOOT-013 implements developer task start; later validation/review commands remain reserved until their owning BOOT task lands.",
     "",
     "Usage:",
     "  agent [--json] <command>",
+    "  agent [--json] start <owner-id> <run-id>",
     "",
     "Commands:",
   ];
@@ -144,6 +153,21 @@ function nextHuman(result: NextTaskResult): string {
     lines.push(`- ${task.taskId} [${task.state}]: ${reasons}`);
   }
   return lines.join("\n");
+}
+
+function startHuman(result: DeveloperStartResult): string {
+  return [
+    `${result.kind === "resumed" ? "Resumed" : "Started"} task: ${result.taskId} — ${result.title}`,
+    `Branch: ${result.canonicalBranch}${result.branchCreated ? " (created)" : ""}`,
+    `Revision: ${result.sourceRevision}`,
+    `Assignment: owner=${result.assignment.ownerId} run=${result.assignment.runId} lock=${result.assignment.lockId}`,
+    `State: ${result.lifecycleState}`,
+    "Acceptance criteria:",
+    ...result.acceptanceCriteria.map((criterion) => `- ${criterion}`),
+    "Context: inline in the start result (use --json for the complete Developer package).",
+    "Next instructions:",
+    ...result.nextInstructions.map((instruction) => `- ${instruction}`),
+  ].join("\n");
 }
 
 async function registryFor(context: CliRunContext): Promise<TaskRegistry> {
@@ -219,6 +243,49 @@ export async function runCli(
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown next-task resolution failure.";
       return fail("next", parsed.json, EXIT_CODES.INTERNAL_ERROR, {
+        code: "INTERNAL_ERROR",
+        message,
+      });
+    }
+  }
+
+  if (parsed.command === "start") {
+    if (parsed.rest.length !== 2) {
+      return fail("start", parsed.json, EXIT_CODES.USAGE_ERROR, {
+        code: "USAGE_UNEXPECTED_ARGUMENT",
+        message: "Command 'start' requires exactly <owner-id> <run-id>.",
+      });
+    }
+    const ownerId = parsed.rest[0];
+    const runId = parsed.rest[1];
+    if (ownerId === undefined || runId === undefined) {
+      throw new Error("start argument length was validated but identity arguments are missing");
+    }
+
+    try {
+      const workflow = context.developerStartWorkflow
+        ?? await createLocalDeveloperStartWorkflow(context.repositoryRoot ?? ".");
+      const result = workflow.start({
+        ownerId,
+        runId,
+        occurredAt: (context.now ?? (() => new Date().toISOString()))(),
+      });
+      return succeed("start", parsed.json, result, startHuman(result));
+    } catch (error: unknown) {
+      if (error instanceof DeveloperStartError) {
+        if (error.code === "INVALID_REQUEST") {
+          return fail("start", parsed.json, EXIT_CODES.USAGE_ERROR, {
+            code: "USAGE_UNEXPECTED_ARGUMENT",
+            message: error.message,
+          });
+        }
+        return fail("start", parsed.json, EXIT_CODES.WORKFLOW_BLOCKED, {
+          code: "START_WORKFLOW_BLOCKED",
+          message: `${error.code}: ${error.message}`,
+        });
+      }
+      const message = error instanceof Error ? error.message : "Unknown developer-start failure.";
+      return fail("start", parsed.json, EXIT_CODES.INTERNAL_ERROR, {
         code: "INTERNAL_ERROR",
         message,
       });

@@ -2,13 +2,14 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.git-branch-lifecycle",
-  "moduleVersion": "1.0.0",
+  "moduleVersion": "1.1.0",
   "structuralContract": {
     "interfaces": [
       "GitBranchLifecycleAdapter.canonicalBranch(task): string",
       "GitBranchLifecycleAdapter.ensureTaskBranch(task, options?): BranchEnsureResult",
       "GitBranchLifecycleAdapter.assertCurrentTaskBranch(task): void",
-      "GitBranchOperations source-control adapter boundary"
+      "GitBranchLifecycleAdapter.currentRevision(): string",
+      "GitBranchOperations source-control adapter boundary including currentRevision()"
     ]
   },
   "semanticContract": {
@@ -17,6 +18,7 @@
       "idempotent-task-branch-ensure",
       "main-base-enforcement",
       "local-head-ref-enforcement",
+      "exact-current-revision-resolution",
       "wrong-branch-rejection",
       "divergence-detection",
       "git-operation-encapsulation"
@@ -30,6 +32,7 @@
       "missing canonical branches are created from the local main branch only when the repository is currently on main",
       "existing canonical branches are reused without force-moving",
       "unrelated active branches are rejected rather than silently switched",
+      "currentRevision returns the exact non-empty current HEAD revision through GitBranchOperations",
       "Git shell commands are confined to LocalGitBranchOperations"
     ],
     "invariants": [
@@ -37,12 +40,14 @@
       "branch identity cannot silently differ from task metadata",
       "branch identity refers to local branch heads rather than ambiguous short refs",
       "branch creation never force-moves an existing branch",
-      "an existing canonical branch must retain local main as an ancestor"
+      "an existing canonical branch must retain local main as an ancestor",
+      "workflow consumers obtain revision identity without shelling out to Git outside the adapter boundary"
     ],
     "examples": [
       "BOOT-011 on main creates bootstrap/boot-011-branch-lifecycle from refs/heads/main and checks it out",
       "re-running ensure on the canonical branch returns created=false",
-      "requesting bootstrap/wrong for BOOT-011 fails with WRONG_BRANCH"
+      "requesting bootstrap/wrong for BOOT-011 fails with WRONG_BRANCH",
+      "BOOT-013 obtains the current task-branch HEAD SHA through currentRevision before compiling Developer context"
     ],
     "edgeCases": [
       "canonicalBranch with leading or trailing whitespace fails with INVALID_TASK_BRANCH",
@@ -51,7 +56,8 @@
       "missing local main fails with BASE_REF_NOT_FOUND",
       "non-main requested base fails with BASE_REF_MISMATCH",
       "detached or unrelated branch fails with WRONG_BRANCH",
-      "canonical branch not descended from local main fails with BRANCH_DIVERGED"
+      "canonical branch not descended from local main fails with BRANCH_DIVERGED",
+      "empty current HEAD output is rejected as GIT_COMMAND_FAILED"
     ]
   },
   "allowedDependencies": [
@@ -66,26 +72,30 @@
   ],
   "knownConsumers": [
     {
-      "consumerId": "future-bootstrap-task-start-workflow",
+      "consumerId": "control-plane.dev-start",
       "expectations": [
         "receive the exact canonical task branch from task metadata without normalization",
         "ensure a missing canonical local branch from local main safely",
         "never confuse tags or other refs for task/base branch heads",
-        "receive deterministic actionable rejection for wrong or invalid branch state"
+        "receive deterministic actionable rejection for wrong or invalid branch state",
+        "resolve exact current HEAD revision through the adapter boundary"
       ],
       "requiredCapabilities": [
         "canonical-task-branch-resolution",
         "idempotent-task-branch-ensure",
         "local-head-ref-enforcement",
+        "exact-current-revision-resolution",
         "wrong-branch-rejection"
       ],
       "acceptedRanges": [
         "BranchEnsureResult with created true or false",
+        "non-empty current HEAD revision string",
         "structured BranchLifecycleError codes"
       ],
       "requiredReachableRanges": [
         "missing branch creation success",
         "idempotent existing branch success",
+        "exact current revision success",
         "whitespace-bearing canonical branch rejection",
         "same-named tag ignored for local branch existence",
         "wrong branch rejection",

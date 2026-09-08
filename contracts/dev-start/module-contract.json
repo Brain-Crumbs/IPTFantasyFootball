@@ -1,0 +1,128 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.dev-start",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "DeveloperStartWorkflow.start(request): DeveloperStartResult",
+      "DeveloperStartRequest { ownerId, runId, occurredAt }",
+      "DeveloperStartStateStore.get/save lifecycle persistence boundary",
+      "DeveloperStartContextSource.artifactsFor repository context boundary",
+      "DeveloperStartBranchAdapter canonical/ensure/assert/currentRevision boundary",
+      "createLocalDeveloperStartWorkflow(repositoryRoot) local composition root"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "deterministic-next-task-start",
+      "lock-before-assignment-transition",
+      "branch-before-development-transition",
+      "developer-context-before-development-transition",
+      "single-postcheck-lifecycle-commit",
+      "same-assignment-idempotent-resume",
+      "competing-assignment-rejection",
+      "explicit-start-recovery-diagnostics",
+      "exact-source-revision-binding",
+      "developer-task-bundle-output"
+    ],
+    "behavioralConstraints": [
+      "fresh start selects only work eligible under control-plane.next-task using the persisted lifecycle snapshot",
+      "assignment lock acquisition succeeds before lifecycle can reach ASSIGNED",
+      "canonical branch ensure and assertion succeed before lifecycle can reach IN_DEVELOPMENT",
+      "Developer role context compilation succeeds before lifecycle can reach IN_DEVELOPMENT",
+      "PLANNED READY ASSIGNED transitions are staged and the lifecycle record is persisted only after all start gates succeed",
+      "pre-commit failure from PLANNED or READY releases the acquired assignment lock and leaves the prior lifecycle state authoritative",
+      "branch creation is not rolled back after a later start failure and is reused idempotently on retry",
+      "same owner and run resume the existing active assignment without duplicating completed lifecycle transitions",
+      "different owner or run cannot adopt an existing active assignment",
+      "result identifies task canonical branch exact revision acceptance criteria assignment identity and inline Developer context"
+    ],
+    "invariants": [
+      "start does not invoke an AI provider",
+      "start does not run developer validation or independent reviews",
+      "start does not create or merge pull requests and does not transition to completion",
+      "source revision is explicit on both DeveloperStartResult and compiled Developer context",
+      "missing required context artifacts cause explicit failure rather than silently reduced context",
+      "stale assignments are never silently stolen and require the assignment-lock recovery path",
+      "manual-bootstrap GitHub authority remains in force until explicit repository-native cutover"
+    ],
+    "examples": [
+      "a READY task with satisfied dependencies acquires a lock ensures its canonical branch compiles Developer context and commits IN_DEVELOPMENT",
+      "a second owner attempting the same locked READY task receives a deterministic lock rejection",
+      "a branch or context failure before lifecycle commit releases the fresh lock and leaves READY unchanged",
+      "the same owner and run may rerun start for its IN_DEVELOPMENT task and receive a resumed result without duplicate lifecycle history"
+    ],
+    "edgeCases": [
+      "multiple active assignments for one owner and run are rejected as ambiguous",
+      "ASSIGNED without the requested matching active assignment requires explicit recovery",
+      "missing requirement or contract artifacts are surfaced through context compilation errors",
+      "failure to clean up a pre-commit lock returns RECOVERY_REQUIRED",
+      "invalid or empty current revision is rejected before context compilation"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.next-task",
+    "control-plane.lifecycle-state-machine",
+    "control-plane.assignment-lock",
+    "control-plane.git-branch-lifecycle",
+    "control-plane.context-compiler",
+    "control-plane.task-registry",
+    "node:fs",
+    "node:path"
+  ],
+  "forbiddenDependencies": [
+    "validation-executors/*",
+    "review-executors/*",
+    "agent-provider/*",
+    "pull-request-lifecycle/*",
+    "merge-controller/*",
+    "fantasy-product/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-developer-validation-flow",
+      "expectations": [
+        "active development has exact task branch assignment and source revision identity",
+        "start has already produced the bounded Developer context for the active assignment"
+      ],
+      "requiredCapabilities": [
+        "exact-source-revision-binding",
+        "developer-task-bundle-output",
+        "lock-before-assignment-transition",
+        "branch-before-development-transition"
+      ],
+      "acceptedRanges": [
+        "started or resumed DeveloperStartResult in IN_DEVELOPMENT"
+      ],
+      "requiredReachableRanges": [
+        "fresh eligible task start",
+        "same-assignment resume",
+        "structured start blocker"
+      ]
+    },
+    {
+      "consumerId": "future-sequential-orchestrator",
+      "expectations": [
+        "Developer start remains a start-only provider-neutral boundary",
+        "retries are safe for the same active assignment",
+        "workflow blockers are explicit rather than converted into successful starts"
+      ],
+      "requiredCapabilities": [
+        "deterministic-next-task-start",
+        "same-assignment-idempotent-resume",
+        "explicit-start-recovery-diagnostics"
+      ],
+      "acceptedRanges": [
+        "fresh start resume or structured failure"
+      ],
+      "requiredReachableRanges": [
+        "happy-path start",
+        "lock conflict",
+        "branch failure",
+        "context failure",
+        "same-assignment resume"
+      ]
+    }
+  ]
+}

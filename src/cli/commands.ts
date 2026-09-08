@@ -16,14 +16,14 @@ export const IMPLEMENTED_COMMANDS: readonly CommandDescriptor[] = [
     summary: "Resolve the next eligible task deterministically (BOOT-008).",
     status: "implemented",
   },
+  {
+    name: "start",
+    summary: "Begin or resume the developer task-start workflow (BOOT-013).",
+    status: "implemented",
+  },
 ] as const;
 
 export const RESERVED_COMMANDS: readonly CommandDescriptor[] = [
-  {
-    name: "start",
-    summary: "Begin the developer task-start workflow (owned by BOOT-013).",
-    status: "reserved",
-  },
   {
     name: "validate",
     summary: "Run deterministic validation gates (owned by BOOT-014/016).",

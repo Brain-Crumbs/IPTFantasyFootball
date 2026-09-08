@@ -11,3 +11,6 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Repository-native local bootstrap workflow state (BOOT-013)
+.agent/

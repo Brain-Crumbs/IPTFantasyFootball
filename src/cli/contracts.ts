@@ -5,6 +5,7 @@ export const EXIT_CODES = {
   SUCCESS: 0,
   USAGE_ERROR: 2,
   NOT_IMPLEMENTED: 3,
+  WORKFLOW_BLOCKED: 4,
   INTERNAL_ERROR: 70,
 } as const;
 
@@ -15,6 +16,7 @@ export type ErrorCode =
   | "USAGE_UNKNOWN_OPTION"
   | "USAGE_UNEXPECTED_ARGUMENT"
   | "COMMAND_NOT_IMPLEMENTED"
+  | "START_WORKFLOW_BLOCKED"
   | "INTERNAL_ERROR";
 
 export interface CliError {
