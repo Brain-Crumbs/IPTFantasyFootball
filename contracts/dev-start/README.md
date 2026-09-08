@@ -58,7 +58,7 @@ A different owner/run cannot adopt the active lock. Expired/stale assignments re
 
 ## Context behavior
 
-The local context source discovers requirement records and module contracts from repository JSON artifacts, then delegates all role-policy enforcement and required-artifact checks to `control-plane.context-compiler`.
+The local context source discovers requirement records and module contracts from repository JSON artifacts, then delegates all role-policy enforcement and required-artifact checks to `control-plane.context-compiler`. Artifact content is read from the exact resolved source revision (via Git), not the working tree, so a locally dirty requirement or contract file cannot be labeled with a `sourceRevision` it does not actually belong to.
 
 Missing required artifacts are not silently omitted. The start fails explicitly before lifecycle commit. The result carries the compiled Developer package inline and identifies `contextLocation: "inline"`; JSON CLI output is the complete machine-readable bundle.
 
@@ -79,6 +79,8 @@ Missing required artifacts are not silently omitted. The start fails explicitly 
 Expected workflow blockers are surfaced as structured `DeveloperStartError` codes. The CLI maps expected workflow blockers to `START_WORKFLOW_BLOCKED` / exit code `4`; usage errors remain exit code `2`, and unexpected internal failures remain exit code `70`.
 
 When cleanup of a pre-commit assignment itself fails, the workflow returns `RECOVERY_REQUIRED` rather than pretending rollback succeeded. The existing lock/audit state is then the recovery authority.
+
+A pre-commit lock is released on abort only when this invocation is the one that actually failed to commit. If the lifecycle save instead reports `STATE_CONFLICT` — meaning a concurrent invocation sharing the same deterministic lock identity (same task/owner/run) already committed `IN_DEVELOPMENT` first — the lock is left untouched so the winner's active assignment is not stripped by the loser's cleanup. Similarly, if lock acquisition itself throws after partially persisting a lock record (for example, an audit-history write failure), the workflow reconciles that partial lock before surfacing `RECOVERY_REQUIRED`, so a transient acquisition failure does not permanently block subsequent starts on the task.
 
 ## Known consumers
 

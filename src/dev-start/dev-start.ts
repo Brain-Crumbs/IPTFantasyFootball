@@ -1,9 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   FileAssignmentLockStore,
   type AssignmentLockRecord,
   type AssignmentLockStore,
+  type LockResult,
 } from "../assignment-lock/index.js";
 import {
   ContextCompilationError,
@@ -154,15 +156,7 @@ export class DeveloperStartWorkflow {
       lockId,
     });
 
-    const lockResult = this.dependencies.lockStore.acquire({
-      taskId: task.taskId,
-      canonicalBranch,
-      expectedCanonicalBranch: task.canonicalBranch,
-      ownerId: request.ownerId,
-      runId: request.runId,
-      lockId,
-      acquiredAt: request.occurredAt,
-    });
+    const lockResult = this.acquireLock(task, canonicalBranch, lockId, request);
     if (!lockResult.ok) {
       throw new DeveloperStartError(
         "LOCK_REJECTED",
@@ -259,7 +253,11 @@ export class DeveloperStartWorkflow {
       });
     } catch (error: unknown) {
       const normalized = normalizeStartError(task.taskId, error);
-      if (!committed && (initialState === "PLANNED" || initialState === "READY")) {
+      // A STATE_CONFLICT here means a concurrent invocation holding the same
+      // deterministic lock identity (same task/owner/run) already committed
+      // IN_DEVELOPMENT ahead of this one. That winner still owns the lock, so
+      // releasing it here would strip an active assignment out from under it.
+      if (!committed && normalized.code !== "STATE_CONFLICT" && (initialState === "PLANNED" || initialState === "READY")) {
         const release = this.dependencies.lockStore.release({
           taskId: task.taskId,
           lockId: lockResult.lock.lockId,
@@ -276,6 +274,57 @@ export class DeveloperStartWorkflow {
         }
       }
       throw normalized;
+    }
+  }
+
+  private acquireLock(
+    task: RegisteredTask,
+    canonicalBranch: string,
+    lockId: string,
+    request: DeveloperStartRequest,
+  ): LockResult {
+    try {
+      return this.dependencies.lockStore.acquire({
+        taskId: task.taskId,
+        canonicalBranch,
+        expectedCanonicalBranch: task.canonicalBranch,
+        ownerId: request.ownerId,
+        runId: request.runId,
+        lockId,
+        acquiredAt: request.occurredAt,
+      });
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const partial = this.dependencies.lockStore.get(task.taskId);
+      const ownsPartial = partial !== null
+        && partial.status === "ACTIVE"
+        && partial.lockId === lockId
+        && partial.ownerId === request.ownerId
+        && partial.runId === request.runId;
+      if (!ownsPartial) {
+        throw new DeveloperStartError(
+          "RECOVERY_REQUIRED",
+          `Task '${task.taskId}' lock acquisition failed unexpectedly: ${detail}`,
+        );
+      }
+      const release = this.dependencies.lockStore.release({
+        taskId: task.taskId,
+        lockId,
+        actorId: request.ownerId,
+        runId: request.runId,
+        occurredAt: request.occurredAt,
+        reason: `Developer start lock acquisition failed after partial persistence: ${detail}`,
+      });
+      if (!release.ok) {
+        throw new DeveloperStartError(
+          "RECOVERY_REQUIRED",
+          `Task '${task.taskId}' lock acquisition failed (${detail}) and left a partially persisted lock that could not be reconciled (${release.rejection.code}: ${release.rejection.reason}); retry with the same owner/run or recover the lock explicitly.`,
+        );
+      }
+      throw new DeveloperStartError(
+        "RECOVERY_REQUIRED",
+        `Task '${task.taskId}' lock acquisition failed unexpectedly: ${detail}. A partially persisted lock was reconciled; retry is safe.`,
+      );
     }
   }
 
@@ -429,14 +478,14 @@ export class RepositoryDeveloperContextSource implements DeveloperStartContextSo
     }
 
     const artifacts: ContextArtifact[] = [];
-    for (const path of this.jsonFiles(join(this.repositoryRoot, "requirements"))) {
-      const parsed = parseJsonObject(path);
+    for (const path of this.jsonFilesAtRevision(revision, "requirements")) {
+      const parsed = this.parseJsonObjectAtRevision(revision, path);
       const requirementId = parsed?.requirementId;
       if (typeof requirementId === "string" && requirementIds.has(requirementId)) {
         artifacts.push({
           artifactId: `requirement:${requirementId}`,
           kind: "requirement",
-          sourcePath: repositoryPath(this.repositoryRoot, path),
+          sourcePath: path,
           referenceId: requirementId,
           taskIds: [task.taskId],
           revision,
@@ -445,14 +494,14 @@ export class RepositoryDeveloperContextSource implements DeveloperStartContextSo
       }
     }
 
-    for (const path of this.jsonFiles(join(this.repositoryRoot, "contracts"))) {
-      const parsed = parseJsonObject(path);
+    for (const path of this.jsonFilesAtRevision(revision, "contracts")) {
+      const parsed = this.parseJsonObjectAtRevision(revision, path);
       const moduleId = parsed?.moduleId;
       if (typeof moduleId === "string" && contractIds.has(moduleId)) {
         artifacts.push({
           artifactId: `contract:${moduleId}`,
           kind: "contract",
-          sourcePath: repositoryPath(this.repositoryRoot, path),
+          sourcePath: path,
           referenceId: moduleId,
           revision,
           content: parsed,
@@ -463,16 +512,42 @@ export class RepositoryDeveloperContextSource implements DeveloperStartContextSo
     return Object.freeze(artifacts.sort((left, right) => compareText(left.artifactId, right.artifactId)));
   }
 
-  private jsonFiles(root: string): readonly string[] {
-    if (!existsSync(root)) return Object.freeze([]);
-    const files: string[] = [];
-    for (const name of [...readdirSync(root)].sort(compareText)) {
-      const path = join(root, name);
-      const stat = statSync(path);
-      if (stat.isDirectory()) files.push(...this.jsonFiles(path));
-      else if (stat.isFile() && name.endsWith(".json")) files.push(path);
+  // Reads context artifacts from the resolved Git revision (not the working
+  // tree) so exact-revision binding holds even when a relevant requirement or
+  // contract file has uncommitted local changes.
+  private jsonFilesAtRevision(revision: string, subdir: string): readonly string[] {
+    let listing: string;
+    try {
+      listing = execFileSync("git", ["ls-tree", "-r", "--name-only", "-z", revision, "--", subdir], {
+        cwd: this.repositoryRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new DeveloperStartError(
+        "CONTEXT_REJECTED",
+        `Cannot list '${subdir}' artifacts at revision '${revision}': ${detail}`,
+      );
     }
+    const files = listing.split("\0").filter((path) => path.endsWith(".json"));
     return Object.freeze(files.sort(compareText));
+  }
+
+  private parseJsonObjectAtRevision(revision: string, path: string): Record<string, unknown> | null {
+    try {
+      const content = execFileSync("git", ["show", `${revision}:${path}`], {
+        cwd: this.repositoryRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const parsed = JSON.parse(content) as unknown;
+      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -520,21 +595,6 @@ function lockIdFor(taskId: string, ownerId: string, runId: string): string {
 
 function isLifecycleState(value: unknown): value is TaskLifecycleState {
   return typeof value === "string" && (TASK_LIFECYCLE_STATES as readonly string[]).includes(value);
-}
-
-function parseJsonObject(path: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function repositoryPath(root: string, path: string): string {
-  return relative(root, path).split("\\").join("/");
 }
 
 function compareText(left: string, right: string): number {
