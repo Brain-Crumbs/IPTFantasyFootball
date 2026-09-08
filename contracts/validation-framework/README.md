@@ -43,7 +43,13 @@ Each `ValidatorResult.status` is one of:
 
 ## Timeout and exit-code capture
 
-Command validators use `child_process.spawnSync` with a `timeout` (default `DEFAULT_VALIDATOR_TIMEOUT_MS`, override per validator via `timeoutMs`). A normal exit is captured by exit code; a spawn failure or a timeout/signal kill is captured as `ERROR` with a diagnostic explaining which occurred. Function validators are measured the same way: if the returned duration exceeds the declared `timeoutMs`, the result is normalized to `ERROR` even though the function did eventually return, since the check did not honor its own deterministic time budget.
+Command validators use `child_process.spawnSync` with a `timeout` (default `DEFAULT_VALIDATOR_TIMEOUT_MS`, override per validator via `timeoutMs`) and a generous `maxBuffer` so verbose output (e.g. a full test/build log) does not itself trigger a false `ERROR`. A normal exit is captured by exit code — `diagnostics` always leads with the exact `exit code N`, followed by any stdout/stderr, so two different non-zero exit codes remain distinguishable even when both produce output; a spawn failure or a timeout/signal kill is captured as `ERROR` with a diagnostic explaining which occurred.
+
+Function validators are raced against a real timer set to their declared `timeoutMs`: if the timer fires first, the result is normalized to `ERROR` with a timeout diagnostic and `run()` proceeds to the next validator immediately, rather than waiting for `execute()` itself to settle. Since JavaScript cannot forcibly cancel an in-flight `execute()` call, a function validator with no internal cancellation keeps running in the background after the `ERROR` result is recorded; its eventual settlement is not observed by the framework.
+
+## Command output limits
+
+`spawnSync` is invoked with a 16 MiB `maxBuffer`, well above Node's much smaller default, so validators that legitimately produce large output (a verbose test run, a full lint report) are not misreported as `ERROR` due to buffer exhaustion. `diagnostics` itself is still truncated to a concise, bounded excerpt (`DIAGNOSTICS_MAX_LENGTH`) for readability.
 
 ## No network required
 

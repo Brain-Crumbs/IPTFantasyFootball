@@ -79,6 +79,7 @@ export class ValidationFrameworkError extends Error {
 }
 
 const DIAGNOSTICS_MAX_LENGTH = 4000;
+const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 /**
  * Deterministic, provider-neutral executor for repository and task-specific
@@ -153,6 +154,7 @@ function runCommandValidator(spec: CommandValidatorSpec): ValidatorResult {
     ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
     encoding: "utf8",
     timeout: timeoutMs,
+    maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
   });
 
   const finishedAt = new Date();
@@ -172,7 +174,7 @@ function runCommandValidator(spec: CommandValidatorSpec): ValidatorResult {
   }
 
   const output = [outcome.stdout, outcome.stderr].filter((chunk) => chunk && chunk.trim().length > 0).join("\n").trim();
-  const diagnostics = truncate(output.length > 0 ? output : `exit code ${outcome.status}`);
+  const diagnostics = truncate(`exit code ${outcome.status}${output.length > 0 ? `\n${output}` : ""}`);
   return build(spec, outcome.status === 0 ? "PASS" : "FAIL", executor, startedAt, finishedAt, durationMs, diagnostics);
 }
 
@@ -180,17 +182,22 @@ async function runFunctionValidator(spec: FunctionValidatorSpec): Promise<Valida
   const timeoutMs = spec.timeoutMs ?? DEFAULT_VALIDATOR_TIMEOUT_MS;
   const executor = "function";
   const startedAt = new Date();
+  let timer: IptTimeoutHandle | undefined;
 
   try {
-    const outcome = await spec.execute();
+    const outcome = await Promise.race([
+      Promise.resolve().then(() => spec.execute()),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`Validator '${spec.validatorId}' timed out after ${timeoutMs}ms.`));
+        }, timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
     const finishedAt = new Date();
     const durationMs = finishedAt.getTime() - startedAt.getTime();
     if (outcome.status !== "PASS" && outcome.status !== "FAIL" && outcome.status !== "ERROR") {
       throw new Error(`Validator '${spec.validatorId}' returned an invalid status.`);
-    }
-    if (durationMs > timeoutMs) {
-      const message = `Validator '${spec.validatorId}' exceeded its declared timeout of ${timeoutMs}ms (actual: ${durationMs}ms).`;
-      return build(spec, "ERROR", executor, startedAt, finishedAt, durationMs, message);
     }
     const diagnostics = truncate(outcome.details ?? outcome.status);
     return build(spec, outcome.status, executor, startedAt, finishedAt, durationMs, diagnostics);
@@ -199,6 +206,8 @@ async function runFunctionValidator(spec: FunctionValidatorSpec): Promise<Valida
     const durationMs = finishedAt.getTime() - startedAt.getTime();
     const detail = error instanceof Error ? error.message : String(error);
     return build(spec, "ERROR", executor, startedAt, finishedAt, durationMs, detail);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

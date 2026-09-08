@@ -157,6 +157,58 @@ test("a function validator that throws is reported as ERROR", async () => {
   assert.match(result.results[0].diagnostics, /boom/);
 });
 
+test("a function validator that runs past its declared timeout is preempted and does not block later validators", async () => {
+  const executor = new ValidationExecutor([
+    functionValidator({
+      validatorId: "slow-async",
+      timeoutMs: 150,
+      execute: () => new Promise((resolve) => setTimeout(() => resolve({ status: "PASS" }), 600)),
+    }),
+    commandValidator({ validatorId: "after", command: "node", args: ["-e", "process.exit(0)"] }),
+  ]);
+
+  const started = Date.now();
+  const result = await executor.run();
+  const elapsedMs = Date.now() - started;
+
+  assert.equal(result.outcome, "FAIL");
+  assert.equal(result.results.length, 2);
+  assert.equal(result.results[0].status, "ERROR");
+  assert.match(result.results[0].diagnostics, /timed out/i);
+  assert.equal(result.results[1].status, "PASS");
+  assert.ok(elapsedMs < 500, `expected run() to return well before the validator's own 600ms delay, took ${elapsedMs}ms`);
+});
+
+test("command diagnostics retain the numeric exit code even when output is present", async () => {
+  const executor = new ValidationExecutor([
+    commandValidator({
+      validatorId: "exit-2",
+      command: "node",
+      args: ["-e", "console.error('boom'); process.exit(2)"],
+    }),
+  ]);
+
+  const [result] = (await executor.run()).results;
+
+  assert.equal(result.status, "FAIL");
+  assert.match(result.diagnostics, /^exit code 2/);
+  assert.match(result.diagnostics, /boom/);
+});
+
+test("a command producing output larger than Node's default spawnSync buffer still completes", async () => {
+  const executor = new ValidationExecutor([
+    commandValidator({
+      validatorId: "verbose",
+      command: "node",
+      args: ["-e", "process.stdout.write('x'.repeat(3 * 1024 * 1024)); process.exit(0)"],
+    }),
+  ]);
+
+  const [result] = (await executor.run()).results;
+
+  assert.equal(result.status, "PASS");
+});
+
 test("a function validator can fail asynchronously", async () => {
   const executor = new ValidationExecutor([
     functionValidator({
