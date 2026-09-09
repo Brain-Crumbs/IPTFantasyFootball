@@ -1,6 +1,6 @@
 {
   "schemaId": "ipt.review-result",
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.1.0",
   "reviewId": "review-1",
   "taskId": "BOOT-003",
   "revisionIdentity": "abc123",
@@ -20,5 +20,7 @@
     ],
     "semanticCompatibilityAssessment": "Consumer-required output ranges remain representable.",
     "invariantDependencyRuleAssessment": "No forbidden dependency direction is introduced."
-  }
+  },
+  "reviewerId": "architect-session-1",
+  "contextPackageId": "ctx-hash-abc123"
 }

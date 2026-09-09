@@ -41,10 +41,10 @@ function validationEvidence(overrides = {}) {
   };
 }
 
-test("supported schema registry names validation-evidence and review-result at v1.0.0", () => {
+test("supported schema registry names validation-evidence at v1.0.0 and review-result at v1.1.0", () => {
   assert.deepEqual(EVIDENCE_STORE_SUPPORTED_SCHEMAS, {
     "ipt.validation-evidence": "1.0.0",
-    "ipt.review-result": "1.0.0",
+    "ipt.review-result": "1.1.0",
   });
 });
 
@@ -214,7 +214,7 @@ test("review-result and validation-evidence lineages for the same task never col
     store.record(validationEvidence({ taskId: "BOOT-020", validatorId: "npm-test" }));
     store.record({
       schemaId: "ipt.review-result",
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.1.0",
       reviewId: "review-npm-test",
       taskId: "BOOT-020",
       revisionIdentity: "sha-aaa111",

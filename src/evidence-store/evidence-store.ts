@@ -5,7 +5,7 @@ type JsonObject = Record<string, unknown>;
 
 const SUPPORTED_SCHEMAS = {
   "ipt.validation-evidence": "1.0.0",
-  "ipt.review-result": "1.0.0",
+  "ipt.review-result": "1.1.0",
 } as const;
 
 export type SupportedEvidenceSchemaId = keyof typeof SUPPORTED_SCHEMAS;

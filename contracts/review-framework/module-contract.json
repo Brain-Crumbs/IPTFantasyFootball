@@ -1,0 +1,118 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.review-framework",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "ReviewFramework.submit(request): ReviewSubmissionResult",
+      "ReviewSubmissionRequest { taskId, role, revisionIdentity, reviewerId, runId, contextPackage, outcome, details, findings, evidenceRefs, nonPass?, occurredAt }",
+      "ReviewFinding { findingId, severity, observed, expected, requirementRef?, contractRef?, evidenceRef?, remediation? }",
+      "ReviewSubmissionResult { reviewId, taskId, role, outcome, revisionIdentity, contextPackageId, blockingFindings, evidenceLineageId, evidenceSequence, recordedAt, evidenceLocation }",
+      "FINDING_SEVERITIES, BLOCKING_FINDING_SEVERITIES, isBlockingSeverity(severity), blockingFindings(findings)",
+      "computeContextPackageId(contextPackage): string",
+      "ReviewFrameworkError { code, recoverable }",
+      "createLocalReviewFramework(repositoryRoot?) local composition root"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "role-independent-review-invocation-envelope",
+      "pass-fail-blocked-decision-model",
+      "severity-based-blocking-finding-classification",
+      "context-package-content-identity-binding",
+      "revision-and-context-bound-review-persistence",
+      "developer-handoff-gated-independent-review",
+      "self-approval-rejection-across-roles",
+      "append-only-auditable-repeated-review-attempts"
+    ],
+    "behavioralConstraints": [
+      "submit() rejects a request missing a schema-valid taskId, recognized role, recognized outcome, non-empty trimmed revisionIdentity, reviewerId, or runId as INVALID_REQUEST before any evidence lookup or persistence occurs",
+      "submit() rejects a contextPackage whose taskId, role, or sourceRevision does not exactly match the request as CONTEXT_PACKAGE_MISMATCH",
+      "for any role other than Developer, submit() requires a CURRENT Developer review-result record for the same taskId; a missing record is DEVELOPER_HANDOFF_MISSING",
+      "for any role other than Developer, a Developer record bound to a different revisionIdentity than the current submission is DEVELOPER_HANDOFF_REVISION_MISMATCH",
+      "for any role other than Developer, a Developer record whose outcome is not PASS is DEVELOPER_HANDOFF_NOT_PASSED",
+      "for any role other than Developer, a Developer record whose reviewerId equals the current submission's reviewerId is SELF_APPROVAL_REJECTED regardless of role",
+      "a submission with outcome PASS and at least one finding at MEDIUM, HIGH, or CRITICAL severity is rejected as PASS_WITH_BLOCKING_FINDINGS",
+      "a submission with outcome FAIL or BLOCKED and no nonPass reason/remediation is rejected as NON_PASS_MISSING_DETAIL",
+      "every accepted submission is persisted as an ipt.review-result record (schemaVersion 1.1.0) through the unmodified BOOT-015 evidence store, keyed by reviewResultLineageId(taskId, role), carrying the submission's reviewerId and the computed contextPackageId",
+      "submit() reads the just-persisted record back through checkRevision and only returns success once it is confirmed CURRENT for the exact revisionIdentity submitted; any other status is EVIDENCE_REJECTED",
+      "repeated submissions for the same taskId/role each create a new sequence-numbered record; no prior record is ever overwritten, and getHistory exposes every earlier record as SUPERSEDED"
+    ],
+    "invariants": [
+      "the framework decides no role-specific QA/Architecture/UAT/Product judgment; it only binds, validates, and persists an already-decided outcome and findings",
+      "the framework invokes no agent provider and performs no network access",
+      "the framework computes no merge readiness and mutates no lifecycle state",
+      "MEDIUM/HIGH/CRITICAL blocking-severity policy is enforced once here, not redefined per role workflow",
+      "the already-versioned ipt.review-result 1.0.0 schema shape is only ever extended with new optional fields, never narrowed or redefined"
+    ],
+    "examples": [
+      "a Developer submits role=Developer outcome=PASS with an implementation handoff; a different reviewerId then submits role=QA outcome=PASS referencing the same revision and contextPackage bound to role=QA, and both are persisted as separate CURRENT records under their own role lineage",
+      "a QA submission with outcome=FAIL and one HIGH-severity finding plus a nonPass reason/remediation is accepted and recorded with that finding reported in blockingFindings",
+      "a second QA submission for the same task after rework creates evidence sequence 2 under the same lineage; sequence 1 becomes SUPERSEDED but remains readable through getHistory"
+    ],
+    "edgeCases": [
+      "an Architect submission before any Developer handoff exists is rejected as DEVELOPER_HANDOFF_MISSING",
+      "a QA submission whose contextPackage was compiled for a since-superseded revision is rejected as CONTEXT_PACKAGE_MISMATCH even though the taskId and role match",
+      "the same reviewerId used for both the Developer handoff and a later QA submission for that same revision is rejected as SELF_APPROVAL_REJECTED even though the two submissions occur far apart in time",
+      "a PASS submission whose only findings are INFO/LOW severity is accepted; PASS_WITH_BLOCKING_FINDINGS only triggers at MEDIUM severity and above",
+      "an evidence-store schema rejection (a malformed details shape for the declared role) surfaces as EVIDENCE_REJECTED rather than being silently accepted"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.context-compiler",
+    "control-plane.evidence-store",
+    "control-plane.dev-start",
+    "control-plane.lifecycle-state-machine",
+    "node:crypto",
+    "node:path"
+  ],
+  "forbiddenDependencies": [
+    "agent-provider/*",
+    "pull-request-lifecycle/*",
+    "merge-controller/*",
+    "fantasy-product/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-qa-architecture-uat-review-workflows",
+      "expectations": [
+        "role-specific review workflows (BOOT-018 QA, BOOT-019 Architect, BOOT-020 UAT/Product) compute their own outcome/findings/details and call submit() rather than re-implementing revision binding, blocking-finding classification, or self-approval prevention",
+        "a role workflow can trust that a PASS result returned by submit() never carries an unresolved blocking finding"
+      ],
+      "requiredCapabilities": [
+        "role-independent-review-invocation-envelope",
+        "severity-based-blocking-finding-classification",
+        "developer-handoff-gated-independent-review",
+        "self-approval-rejection-across-roles"
+      ],
+      "acceptedRanges": [
+        "a ReviewSubmissionResult with outcome PASS, FAIL, or BLOCKED",
+        "a structured ReviewFrameworkError with a stable code for any rejected submission"
+      ],
+      "requiredReachableRanges": [
+        "a successful PASS submission with no blocking findings",
+        "a successful FAIL/BLOCKED submission with a blocking finding and nonPass detail",
+        "rejection before a Developer handoff exists or passes",
+        "rejection of a same-actor self-approval attempt"
+      ]
+    },
+    {
+      "consumerId": "future-review-rework-invalidation-loop",
+      "expectations": [
+        "BOOT-021 can read every prior review-result attempt for a task/role lineage, not only the current one, to decide which approvals remain valid after a revision changes"
+      ],
+      "requiredCapabilities": [
+        "append-only-auditable-repeated-review-attempts",
+        "context-package-content-identity-binding"
+      ],
+      "acceptedRanges": [
+        "an ordered getHistory() sequence of ipt.review-result records for one task/role lineage"
+      ],
+      "requiredReachableRanges": [
+        "a lineage with a single CURRENT record",
+        "a lineage with one or more SUPERSEDED records preceding the CURRENT one"
+      ]
+    }
+  ]
+}

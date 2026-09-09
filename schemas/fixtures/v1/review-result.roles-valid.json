@@ -1,7 +1,7 @@
 [
   {
     "schemaId": "ipt.review-result",
-    "schemaVersion": "1.0.0",
+    "schemaVersion": "1.1.0",
     "reviewId": "dev-1",
     "taskId": "BOOT-003",
     "revisionIdentity": "abc123",
@@ -24,11 +24,13 @@
       "knownLimitationsAssumptionsRisks": [
         "Runtime loading deferred."
       ]
-    }
+    },
+    "reviewerId": "developer-session-1",
+    "contextPackageId": "ctx-hash-dev-1"
   },
   {
     "schemaId": "ipt.review-result",
-    "schemaVersion": "1.0.0",
+    "schemaVersion": "1.1.0",
     "reviewId": "qa-1",
     "taskId": "BOOT-003",
     "revisionIdentity": "abc123",
@@ -44,11 +46,13 @@
       "regressionNegativeCaseCoverage": [
         "Invalid fixtures rejected."
       ]
-    }
+    },
+    "reviewerId": "qa-session-1",
+    "contextPackageId": "ctx-hash-qa-1"
   },
   {
     "schemaId": "ipt.review-result",
-    "schemaVersion": "1.0.0",
+    "schemaVersion": "1.1.0",
     "reviewId": "review-1",
     "taskId": "BOOT-003",
     "revisionIdentity": "abc123",
@@ -72,7 +76,7 @@
   },
   {
     "schemaId": "ipt.review-result",
-    "schemaVersion": "1.0.0",
+    "schemaVersion": "1.1.0",
     "reviewId": "uat-1",
     "taskId": "BOOT-003",
     "revisionIdentity": "abc123",
@@ -92,7 +96,7 @@
   },
   {
     "schemaId": "ipt.review-result",
-    "schemaVersion": "1.0.0",
+    "schemaVersion": "1.1.0",
     "reviewId": "merge-1",
     "taskId": "BOOT-003",
     "revisionIdentity": "abc123",
