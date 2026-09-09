@@ -260,9 +260,17 @@
       "const": "ipt.review-result"
     },
     "schemaVersion": {
-      "const": "1.0.0"
+      "const": "1.1.0"
     },
     "reviewId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reviewerId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "contextPackageId": {
       "type": "string",
       "minLength": 1
     },

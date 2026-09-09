@@ -21,7 +21,7 @@ Primary API:
 - `EvidenceStore.checkRevision(lineageId: string, expectedRevisionIdentity: string): RevisionCheckResult`
 - `StoredEvidenceRecord { lineageId, sequence, status, storedAt, payload }`
 - `validationEvidenceLineageId(taskId, validatorId)`, `reviewResultLineageId(taskId, role)`
-- `EVIDENCE_STORE_SUPPORTED_SCHEMAS` — `{ "ipt.validation-evidence": "1.0.0", "ipt.review-result": "1.0.0" }`
+- `EVIDENCE_STORE_SUPPORTED_SCHEMAS` — `{ "ipt.validation-evidence": "1.0.0", "ipt.review-result": "1.1.0" }` (BOOT-017 added the optional `reviewerId`/`contextPackageId` fields as a backward-compatible minor bump)
 
 `record()` accepts a raw JSON payload, not a pre-typed record: the store determines which of the two supported schemas applies from `payload.schemaId`, so callers do not need a separate "kind" argument.
 

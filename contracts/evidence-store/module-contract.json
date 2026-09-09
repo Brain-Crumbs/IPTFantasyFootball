@@ -17,7 +17,7 @@
       "validationEvidenceLineageId(taskId, validatorId): string",
       "reviewResultLineageId(taskId, role): string",
       "EVIDENCE_STORE_SUPPORTED_SCHEMAS",
-      "durable records: schemas/v1/validation-evidence.schema.json v1.0.0, schemas/v1/review-result.schema.json v1.0.0"
+      "durable records: schemas/v1/validation-evidence.schema.json v1.0.0, schemas/v1/review-result.schema.json v1.1.0"
     ]
   },
   "semanticContract": {
