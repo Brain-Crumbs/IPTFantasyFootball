@@ -1,0 +1,114 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.evidence-store",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "FileEvidenceStore(root, options?: { repositoryRoot?: string })",
+      "EvidenceStore.record(payload: unknown): RecordResult",
+      "EvidenceStore.getCurrent(lineageId: string): StoredEvidenceRecord | null",
+      "EvidenceStore.getHistory(lineageId: string): readonly StoredEvidenceRecord[]",
+      "EvidenceStore.checkRevision(lineageId: string, expectedRevisionIdentity: string): RevisionCheckResult",
+      "StoredEvidenceRecord { lineageId, sequence, status, storedAt, payload }",
+      "RecordResult = { ok: true, record: StoredEvidenceRecord } | { ok: false, rejection: EvidenceRejection }",
+      "EvidenceRejection { code, reasons }",
+      "RevisionCheckResult = { status: 'CURRENT', record } | { status: 'REVISION_MISMATCH', record, expectedRevisionIdentity } | { status: 'NOT_FOUND' }",
+      "validationEvidenceLineageId(taskId, validatorId): string",
+      "reviewResultLineageId(taskId, role): string",
+      "EVIDENCE_STORE_SUPPORTED_SCHEMAS",
+      "durable records: schemas/v1/validation-evidence.schema.json v1.0.0, schemas/v1/review-result.schema.json v1.0.0"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "revision-bound-evidence-persistence",
+      "schema-validated-acceptance",
+      "append-only-auditable-history",
+      "current-vs-superseded-distinction",
+      "explicit-revision-mismatch-detection",
+      "deterministic-local-persistence",
+      "multi-schema-record-support"
+    ],
+    "behavioralConstraints": [
+      "record() accepts only payloads whose schemaId is a supported evidence schema and whose schemaVersion matches the reader's exact supported version",
+      "record() validates the full payload against the corresponding schemas/v1/*.schema.json document, including $ref-resolved nested shapes and role/outcome-conditioned allOf/if/then requirements, before acceptance",
+      "a lineage is derived deterministically from taskId plus validatorId for validation-evidence records, or taskId plus role for review-result records, so the two record kinds never collide even for the same taskId",
+      "every accepted record is written to a new, never-reused sequence file within its lineage; no existing record file is ever overwritten or deleted",
+      "getCurrent returns the highest-sequence record for a lineage; getHistory returns every record for a lineage in sequence order with status CURRENT on the last entry and SUPERSEDED on all earlier entries",
+      "checkRevision distinguishes CURRENT (matches expectedRevisionIdentity), REVISION_MISMATCH (a current record exists but for a different revision), and NOT_FOUND (no record exists for the lineage) so a caller can never mistake evidence as applying to a revision it was not recorded against"
+    ],
+    "invariants": [
+      "the store performs no lifecycle state transition",
+      "the store performs no review execution and no merge-readiness computation",
+      "the store requires no network access to persist or query records",
+      "persistence is local-filesystem based and fully deterministic given the same sequence of record() calls",
+      "a record rejected by schema validation is never persisted"
+    ],
+    "examples": [
+      "recording BOOT-014's ValidationRunResult-derived ipt.validation-evidence for a task/validator pair and reading it back via getCurrent",
+      "recording a second ipt.validation-evidence for the same task/validator at a newer revisionIdentity leaves the first record queryable via getHistory as SUPERSEDED",
+      "recording ipt.review-result documents for Developer, QA, Architect, UAT/Product, and MergeController roles on the same task keeps five independent current lineages",
+      "checkRevision against a stale expectedRevisionIdentity returns REVISION_MISMATCH carrying both the current record and the mismatched expectation"
+    ],
+    "edgeCases": [
+      "a non-object payload is rejected as INVALID_PAYLOAD",
+      "an unrecognized schemaId is rejected as UNSUPPORTED_SCHEMA_ID",
+      "a recognized schemaId with an unsupported schemaVersion is rejected as UNSUPPORTED_SCHEMA_VERSION",
+      "a review-result with outcome FAIL or BLOCKED but no nonPass detail is rejected by the schema's allOf/if/then requirement",
+      "querying a lineage that has never received a record returns null from getCurrent, an empty array from getHistory, and NOT_FOUND from checkRevision"
+    ]
+  },
+  "allowedDependencies": [
+    "node:fs",
+    "node:path",
+    "schemas/v1/validation-evidence.schema.json",
+    "schemas/v1/review-result.schema.json"
+  ],
+  "forbiddenDependencies": [
+    "lifecycle-state-machine/*",
+    "review-executors/*",
+    "agent-provider/*",
+    "pull-request-lifecycle/*",
+    "merge-controller/*",
+    "fantasy-product/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-developer-validation-gate",
+      "expectations": [
+        "BOOT-014 ValidationRunResult/ValidatorResult data can be persisted as revision-bound ipt.validation-evidence and read back to gate lifecycle advancement"
+      ],
+      "requiredCapabilities": [
+        "revision-bound-evidence-persistence",
+        "schema-validated-acceptance",
+        "current-vs-superseded-distinction"
+      ],
+      "acceptedRanges": [
+        "a RecordResult with ok:true and a CURRENT StoredEvidenceRecord",
+        "a RecordResult with ok:false and a structured EvidenceRejection"
+      ],
+      "requiredReachableRanges": [
+        "successful record and read-back for a task/validator lineage",
+        "REVISION_MISMATCH when the gate's expected revision differs from the recorded one"
+      ]
+    },
+    {
+      "consumerId": "future-review-framework",
+      "expectations": [
+        "QA/Architecture/UAT/product/MergeController ipt.review-result records can be persisted per task/role lineage without colliding with validation-evidence lineages for the same task"
+      ],
+      "requiredCapabilities": [
+        "multi-schema-record-support",
+        "append-only-auditable-history"
+      ],
+      "acceptedRanges": [
+        "a RecordResult with ok:true and a CURRENT StoredEvidenceRecord for a role lineage"
+      ],
+      "requiredReachableRanges": [
+        "one current review-result per role per task",
+        "prior review-result revisions for the same role remain queryable as SUPERSEDED history"
+      ]
+    }
+  ]
+}
