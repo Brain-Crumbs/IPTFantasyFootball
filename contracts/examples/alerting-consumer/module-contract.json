@@ -1,0 +1,33 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "consumer.alerting",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "onScore(score: number): void"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "high-severity-alerting"
+    ],
+    "behavioralConstraints": [
+      "onScore enters the high-severity path for every score in [90, 100]"
+    ],
+    "invariants": [
+      "Every score in [90, 100] that example.range-provider can produce must reach the high-severity path"
+    ],
+    "examples": [
+      "onScore(95) enters the high-severity path"
+    ],
+    "edgeCases": [
+      "onScore(90) and onScore(100) both enter the high-severity path"
+    ]
+  },
+  "allowedDependencies": [
+    "example.range-provider"
+  ],
+  "forbiddenDependencies": [],
+  "knownConsumers": []
+}

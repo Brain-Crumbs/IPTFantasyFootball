@@ -20,8 +20,9 @@ Implemented foundation through the task-start boundary:
 - BOOT-015 — Evidence and review artifact store
 - BOOT-016 — Developer validation gate
 - BOOT-017 — Generic review framework and structured findings
-- **Current implementation task: BOOT-018 — QA review workflow / issue #20**
-- Canonical BOOT-018 branch: `bootstrap/boot-018-qa-review`
+- BOOT-018 — QA review workflow
+- **Current implementation task: BOOT-019 — Architecture / semantic dependency review / issue #21**
+- Canonical BOOT-019 branch: `bootstrap/boot-019-architecture-review`
 - Bootstrap marker: see [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION)
 
 The repository-native control plane can now load and order tasks, evaluate next-task eligibility, enforce lifecycle transition prerequisites, acquire assignment locks, ensure canonical local branches, resolve exact source revision, compile bounded Developer context, and compose those capabilities through `agent start <owner-id> <run-id>`. It can also deterministically gate `IN_DEVELOPMENT -> DEV_VALIDATED`/`DEV_VALIDATION_FAILED` through `agent validate <task-id> <actor-id> <run-id>`, bind/persist an already-decided role judgment through the generic review framework, and drive the first independent review stage: `QaReviewGate.review()` requires current developer-validation evidence, compiles the QA-role context package, and advances `DEV_VALIDATED -> QA_REVIEW -> {ARCHITECTURE_REVIEW | UAT_REVIEW | MERGE_READY}` on QA `PASS` or `-> QA_FAILED` otherwise.
@@ -37,6 +38,8 @@ BOOT-016 wires BOOT-014 and BOOT-015 into the lifecycle engine as `control-plane
 BOOT-017 adds a standalone role-independent review substrate (`control-plane.review-framework`). `ReviewFramework.submit()` binds an already-decided PASS/FAIL/BLOCKED judgment and its structured findings to the exact task/role/revision/context-package under review, rejects a PASS submission that still carries an unresolved MEDIUM+ finding, requires a current PASS Developer handoff (and rejects a same-actor self-approval attempt) before any non-Developer role may submit, and persists every attempt through the unmodified BOOT-015 evidence store so repeated attempts remain separately auditable. It decides no role-specific judgment itself and mutates no lifecycle state.
 
 BOOT-018 wires BOOT-012 (context compiler) and BOOT-017 (review framework) into the lifecycle engine as `control-plane.qa-review`. `QaReviewGate.review()` requires a task to be `DEV_VALIDATED` with a lifecycle-recorded developer-validation transition bound to the exact current branch revision, compiles the QA-role (and, when needed, Developer-role) context package, bridges a Developer handoff review-result from the recorded `DEV_VALIDATED` evidence when none yet exists (BOOT-017 otherwise has no caller that records one), submits the caller-supplied QA judgment through the unmodified BOOT-017 review framework, and advances `DEV_VALIDATED -> QA_REVIEW -> {ARCHITECTURE_REVIEW | UAT_REVIEW | MERGE_READY}` on `PASS` (skipping stages the task's `requiredReviewRoles` does not require) or `-> QA_FAILED` on `FAIL`/`BLOCKED`, through the unmodified BOOT-009 state machine. It decides no QA judgment itself, performs no Architecture/UAT review, and creates no pull request; those remain owned by BOOT-019 onward. No CLI command is added; `agent review` remains reserved.
+
+BOOT-019 wires the same BOOT-012 context compiler and BOOT-017 review framework into the lifecycle engine as `control-plane.architecture-review`. `ArchitectureReviewGate.review()` requires a task to already be `ARCHITECTURE_REVIEW` (reached directly from `DEV_VALIDATED` when QA is not required, or from `QA_REVIEW` after a QA `PASS`) with a lifecycle-recorded Architecture-review-entry transition and a current developer-validation transition both bound to the exact current branch revision, and — whenever the task's `requiredReviewRoles` includes QA — a current `PASS` QA review-result independently re-read from the evidence store rather than trusted from lifecycle state alone. It compiles the Architect-role context package (which the unmodified BOOT-012 compiler already leaves un-redacted and enriches with dependency contracts and derived `consumer-requirement` artifacts for the Architect role only), rejects a caller-supplied context that does not match a freshly recompiled package for the same task/role/revision artifact catalog, bridges a Developer handoff review-result when none yet exists, submits the caller-supplied Architecture judgment through the unmodified BOOT-017 review framework, and advances `ARCHITECTURE_REVIEW -> {UAT_REVIEW | MERGE_READY}` on `PASS` or `-> ARCHITECTURE_FAILED` on `FAIL`/`BLOCKED`, through the unmodified BOOT-009 state machine. A QA `PASS` is surfaced to the Architect as evidence only and never forces an Architecture `PASS`: an Architecture `FAIL`/`BLOCKED` can be recorded for a revision whose QA review-result and developer-validation evidence are both `PASS` (see `contracts/examples/range-provider` and `contracts/examples/alerting-consumer` for the issue #1 producer/consumer range-narrowing scenario used to exercise this). It decides no Architecture judgment itself, performs no QA/UAT review, and creates no pull request; those remain owned by BOOT-020 onward. No CLI command is added; `agent review` remains reserved.
 
 ## Temporary source-of-truth rule
 
@@ -87,7 +90,7 @@ A branch, resolution, or evidence-persistence failure leaves the task's lifecycl
 
 The repository still contains no fantasy-football product implementation. The bootstrap has progressed beyond documentation-only scaffolding, but these downstream capabilities remain outside the current boundary:
 
-- Architecture and UAT/Product review execution (QA review is implemented by BOOT-018; deciding the QA judgment itself remains the reviewer's, not this repository's);
+- UAT/Product review execution (QA and Architecture review are implemented by BOOT-018 and BOOT-019 respectively; deciding those judgments themselves remains the reviewer's, not this repository's);
 - review retry/rework orchestration;
 - PR creation/update and revision-bound review invalidation;
 - merge policy/controller and controlled completion;
@@ -95,7 +98,7 @@ The repository still contains no fantasy-football product implementation. The bo
 - sequential orchestration/cutover tooling;
 - fantasy-football product behavior.
 
-Later BOOT issues own those capabilities and must not be pulled into BOOT-013, BOOT-016, or BOOT-018.
+Later BOOT issues own those capabilities and must not be pulled into BOOT-013, BOOT-016, BOOT-018, or BOOT-019.
 
 ## Bootstrap validation principle
 

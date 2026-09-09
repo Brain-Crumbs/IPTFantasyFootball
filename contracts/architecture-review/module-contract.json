@@ -1,0 +1,163 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.architecture-review",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "ArchitectureReviewGate.prepareContext(request): ArchitectureReviewContextResult",
+      "ArchitectureReviewContextRequest { taskId }",
+      "ArchitectureReviewContextResult { taskId, revision, context }",
+      "ArchitectureReviewGate.review(request): ArchitectureReviewResult",
+      "ArchitectureReviewRequest { taskId, reviewerId, runId, occurredAt, context, outcome, findings, details, evidenceRefs?, nonPass? }",
+      "ArchitectureReviewStateStore.get/save lifecycle persistence boundary",
+      "ArchitectureReviewTaskLock.withLock(taskId, fn) mutual-exclusion boundary",
+      "ArchitectureReviewBranchAdapter.assertCurrentTaskBranch/currentRevision boundary",
+      "ArchitectureReviewContextSource.artifactsFor(task, registry, revision) boundary",
+      "ArchitectureReviewFrameworkPort.submit(request) boundary onto control-plane.review-framework",
+      "ArchitectureReviewEvidencePort.getCurrent(lineageId) boundary onto control-plane.evidence-store",
+      "ArchitectureReviewResult { taskId, outcome, lifecycleState, revision, reviewId, blockingFindings, context, evidenceLocation, evidenceLineageId, evidenceSequence }",
+      "ArchitectureReviewError { code, recoverable }",
+      "FileArchitectureReviewStateStore(root)",
+      "FileArchitectureReviewTaskLock(root)",
+      "RepositoryArchitectureContextSource(repositoryRoot, baseRef?)",
+      "createLocalArchitectureReviewGate(repositoryRoot) local composition root"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "read-only-context-preparation-before-judgment",
+      "architecture-review-review-only-after-review-sequence-position",
+      "qa-passed-evidence-gated-entry-when-qa-required",
+      "referenced-validation-evidence-read-back-verification",
+      "exact-revision-architect-context-compilation-with-un-redacted-contracts",
+      "derived-downstream-consumer-requirement-context",
+      "bridged-developer-handoff-for-independent-review",
+      "non-pass-developer-handoff-preservation",
+      "qa-outcome-surfaced-as-evidence-not-authority",
+      "review-framework-bound-architecture-judgment-persistence",
+      "requiredReviewRoles-aware-lifecycle-advancement",
+      "architecture-failure-routing-without-skipping-stages",
+      "stale-revision-reentry-rejection",
+      "whole-transaction-lock-based-mutual-exclusion",
+      "ownership-safe-abandoned-lock-reclaim",
+      "lock-io-failure-distinguished-from-contention",
+      "supplied-context-identity-verification",
+      "declared-consumer-contract-inclusion"
+    ],
+    "behavioralConstraints": [
+      "prepareContext() only accepts a task whose current lifecycle state is exactly ARCHITECTURE_REVIEW; every other state is rejected as TASK_STATE_NOT_REVIEWABLE before branch identity is checked",
+      "canonical branch identity is asserted before context compilation, developer-handoff bridging, or review submission, so a wrong-branch invocation touches none of them",
+      "the task's lifecycle history must record an ARCHITECTURE_REVIEW transition bound to the exact current revision, or prepareContext()/review() is rejected as TASK_STATE_NOT_REVIEWABLE before context is compiled",
+      "the task's lifecycle history must also record a DEV_VALIDATED transition bound to the exact current revision, and every lineageId@sequence entry that event's evidenceRef names is resolved through the evidence store and confirmed CURRENT at that exact sequence and revision-matched before it is trusted as context or as the basis for a bridged Developer handoff",
+      "when the task's requiredReviewRoles includes QA, a current QA review-result record with outcome PASS bound to the exact revision must exist in the evidence store or the gate rejects as TASK_STATE_NOT_REVIEWABLE; this is verified by reading the QA evidence record itself, never inferred from lifecycle state alone; when QA is not required, no QA record is required",
+      "Architect and Developer context packages are compiled through the unmodified control-plane.context-compiler from the same artifact catalog, including a derived Developer evidence artifact and, when QA was required, a derived QA evidence artifact -- the QA outcome is included as context, never as an implicit Architecture PASS",
+      "the control-plane.context-compiler's own Architect-role behavior (unmodified by this module) leaves contract artifact content un-redacted for the Architect role only and derives one consumer-requirement artifact per knownConsumers entry declared on each of the task's own affectedContracts",
+      "review() recompiles the Architect-role context package from the current artifact catalog and rejects, as CONTEXT_REJECTED, a caller-supplied context whose content identity (computeContextPackageId) does not match it exactly; only once verified is that exact caller-supplied ContextPackage object bound to the submission, so the persisted contextPackageId is proof both that the reviewer's package matches the current catalog and of what the reviewer actually saw before deciding",
+      "review() holds an exclusive per-task lock (ArchitectureReviewTaskLock) across its entire re-verification, developer-handoff-bridge, Architecture-evidence-submission, and lifecycle-transition sequence; a concurrent review() for the same task is rejected as STATE_CONFLICT rather than interleaving reads and writes with the lock holder",
+      "a Developer role review-result record is bridged from the DEV_VALIDATED evidence when no current record exists for the exact revision, or the current exact-revision record is already PASS (no-op); a current exact-revision record that is FAIL or BLOCKED is never overwritten and is rejected as DEVELOPER_HANDOFF_REJECTED instead",
+      "the caller-supplied Architecture outcome/findings/details are submitted unmodified through the unmodified control-plane.review-framework, which enforces blocking-finding/PASS contradiction, non-PASS detail, self-approval, and context-package-identity rules",
+      "a QA PASS never forces or implies an Architecture PASS: the gate performs no automated architectural judgment of its own and only binds the caller-supplied outcome",
+      "on outcome PASS, the lifecycle advances ARCHITECTURE_REVIEW -> the next stage required by the task's requiredReviewRoles (UAT_REVIEW or MERGE_READY), skipping UAT_REVIEW when the task does not require it",
+      "on outcome FAIL or BLOCKED, the lifecycle advances ARCHITECTURE_REVIEW -> ARCHITECTURE_FAILED",
+      "every lifecycle transition carries the exact reviewed revision as revisionIdentity",
+      "a task that already advanced past ARCHITECTURE_REVIEW rejects a further review() call as TASK_STATE_NOT_REVIEWABLE rather than silently reusing a stale revision",
+      "a task-lock file older than five minutes is treated as abandoned and reclaimed via an atomic rename-based compare-and-take, so at most one of several callers that concurrently observe the same stale lock ever wins the reclaim; release only removes the lock file when it still holds this holder's own per-acquisition token, so a holder that merely ran past the staleness threshold (without crashing) can never delete a different holder's freshly reclaimed lock",
+      "a lock-file-creation failure other than ordinary contention (EEXIST) -- a permission error, a read-only state directory, exhausted disk -- is surfaced as STATE_IO_FAILED rather than misreported as a concurrent reviewer holding the task",
+      "RepositoryArchitectureContextSource unions each registered dependency task's own affectedContracts into the fetched contract set, and supplies full contract JSON content (allowedDependencies, forbiddenDependencies, and knownConsumers included) so dependency-direction and cross-layer-leakage assessment does not require a separate lookup",
+      "RepositoryArchitectureContextSource additionally cross-references each of the task's own affectedContracts' declared knownConsumers against the repository's other contracts, and includes a declared consumer's own module-contract.json when one exists, so the Architect can compare both sides' declared contracts directly rather than relying solely on the producer's summary of the consumer",
+      "RepositoryArchitectureContextSource git invocations set an explicit large (16 MiB) maxBuffer, comfortably covering realistic bootstrap-phase revisions without claiming to be unbounded; a revision whose diff or file listing exceeds it still fails deterministically as CONTEXT_REJECTED"
+    ],
+    "invariants": [
+      "the gate decides no Architecture judgment itself; outcome/findings/details are the reviewer's, not derived here",
+      "the gate performs no QA or UAT/Product review",
+      "the gate creates no pull request and performs no merge-readiness computation",
+      "the gate invokes no agent provider",
+      "prepareContext() takes no lock and mutates no state; only review() writes, and only inside its task lock",
+      "a branch, evidence-verification, context, developer-handoff, or review-submission failure leaves the task's lifecycle state unchanged",
+      "an Architecture FAIL is representable and persisted even when the task's own QA review-result and developer-validation evidence are both PASS, per docs/ROLE_MODEL.md section 5 and the issue #1 semantic-break scenario"
+    ],
+    "examples": [
+      "a task in ARCHITECTURE_REVIEW with QA required and a current QA PASS advances to UAT_REVIEW on an Architecture PASS",
+      "a task with UAT/Product not required advances directly to MERGE_READY on an Architecture PASS",
+      "a task that reached ARCHITECTURE_REVIEW directly from DEV_VALIDATED (QA not required) still receives a bridged Developer handoff before Architecture review can submit",
+      "an Architecture FAIL with a blocking finding referencing a producer/consumer range-containment break (see contracts/examples/range-provider) and a nonPass reason/remediation advances the task to ARCHITECTURE_FAILED even though the same revision's QA review-result and developer-validation evidence are PASS",
+      "a reviewer who finds no consumer-requirement artifact for a contract that declares no knownConsumers, or otherwise judges the supplied context insufficient to assess semantic compatibility, submits outcome BLOCKED with a nonPass reason/remediation rather than guessing an approval; BLOCKED is bound, persisted, and routed to ARCHITECTURE_FAILED exactly like FAIL",
+      "an Architecture reviewerId equal to the bridged Developer handoff's actor ID is rejected as a self-approval attempt",
+      "a reviewer calls prepareContext(), decides PASS from the returned package, and review() persists a review-result whose contextPackageId matches that exact package"
+    ],
+    "edgeCases": [
+      "a task not currently ARCHITECTURE_REVIEW is rejected as TASK_STATE_NOT_REVIEWABLE before branch identity is even checked",
+      "an unregistered task ID is rejected as TASK_NOT_FOUND",
+      "a wrong current branch is rejected as BRANCH_REJECTED before context is compiled",
+      "a task whose ARCHITECTURE_REVIEW or DEV_VALIDATED history event does not match the current branch revision is rejected as TASK_STATE_NOT_REVIEWABLE",
+      "a task whose requiredReviewRoles includes QA but has no current QA PASS evidence for the exact revision is rejected as TASK_STATE_NOT_REVIEWABLE before context is compiled",
+      "an evidence-store read failure while resolving the required QA review-result (malformed record, unreadable storage) is converted to TASK_STATE_NOT_REVIEWABLE rather than propagating a raw exception, mirroring the same normalization already applied to developer-validation evidence reads",
+      "a caller-supplied context whose content identity does not match a freshly recompiled Architect package for the exact task/role/revision artifact catalog is rejected as CONTEXT_REJECTED and persists no Architecture evidence",
+      "a DEV_VALIDATED history event referencing validation evidence that was deleted, never persisted, or since superseded by a later run is rejected as TASK_STATE_NOT_REVIEWABLE",
+      "a missing exact-revision diff artifact surfaces the context compiler's DIFF_ARTIFACT_MISSING as CONTEXT_REJECTED",
+      "a missing required contract artifact (the task's own or a dependency's affectedContracts entry) surfaces the context compiler's CONTRACT_ARTIFACT_MISSING as CONTEXT_REJECTED rather than allowing prepareContext()/review() to proceed with an incomplete producer/consumer picture",
+      "two concurrent review() calls for the same task never both proceed past the task lock; the loser is rejected as STATE_CONFLICT without touching evidence or lifecycle state",
+      "a lock file left behind by a crashed review() call is reclaimed once it is older than the abandonment threshold"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.lifecycle-state-machine",
+    "control-plane.context-compiler",
+    "control-plane.review-framework",
+    "control-plane.evidence-store",
+    "control-plane.git-branch-lifecycle",
+    "control-plane.task-registry",
+    "control-plane.dev-start",
+    "node:child_process",
+    "node:fs",
+    "node:path"
+  ],
+  "forbiddenDependencies": [
+    "agent-provider/*",
+    "pull-request-lifecycle/*",
+    "merge-controller/*",
+    "fantasy-product/*",
+    "control-plane.qa-review",
+    "control-plane.uat-review"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-uat-review-workflow",
+      "expectations": [
+        "BOOT-020 (UAT/Product) can follow the same role-specific-context-then-submit-then-advance shape this gate establishes for Architecture",
+        "a task only enters UAT/Product review after this gate has recorded an Architecture PASS bound to the exact revision under review, whenever the task's requiredReviewRoles includes Architect"
+      ],
+      "requiredCapabilities": [
+        "architecture-review-review-only-after-review-sequence-position",
+        "requiredReviewRoles-aware-lifecycle-advancement"
+      ],
+      "acceptedRanges": [
+        "an ArchitectureReviewResult with outcome PASS and lifecycleState UAT_REVIEW or MERGE_READY",
+        "an ArchitectureReviewResult with outcome FAIL or BLOCKED and lifecycleState ARCHITECTURE_FAILED"
+      ],
+      "requiredReachableRanges": [
+        "successful Architecture PASS advancing to each possible next stage",
+        "an Architecture failure that blocks further review advancement even when QA already passed",
+        "explicit branch/task/revision-identity rejection before evidence is trusted"
+      ]
+    },
+    {
+      "consumerId": "future-review-rework-invalidation-loop",
+      "expectations": [
+        "BOOT-021 can read the Architecture review-result lineage this gate writes (through the unmodified evidence store) to decide which Architecture approvals remain valid after a revision changes"
+      ],
+      "requiredCapabilities": [
+        "review-framework-bound-architecture-judgment-persistence",
+        "stale-revision-reentry-rejection"
+      ],
+      "acceptedRanges": [
+        "a CURRENT ipt.review-result record for the Architect role lineage bound to the exact revision it was submitted for"
+      ],
+      "requiredReachableRanges": [
+        "a lineage with a single CURRENT Architecture record",
+        "a lineage whose CURRENT record no longer matches a since-changed revision (REVISION_MISMATCH)"
+      ]
+    }
+  ]
+}
