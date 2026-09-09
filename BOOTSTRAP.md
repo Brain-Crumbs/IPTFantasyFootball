@@ -16,8 +16,9 @@ Implemented foundation through the task-start boundary:
 - BOOT-011 — Git task-branch lifecycle adapter
 - BOOT-012 — role-aware context compiler
 - BOOT-013 — Developer task-start workflow
-- **Current implementation task: BOOT-014 — Validation executor framework / issue #16**
-- Canonical BOOT-014 branch: `bootstrap/boot-014-validation-framework`
+- BOOT-014 — Validation executor framework
+- **Current implementation task: BOOT-015 — Evidence and review artifact store / issue #17**
+- Canonical BOOT-015 branch: `bootstrap/boot-015-evidence-store`
 - Bootstrap marker: see [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION)
 
 The repository-native control plane can now load and order tasks, evaluate next-task eligibility, enforce lifecycle transition prerequisites, acquire assignment locks, ensure canonical local branches, resolve exact source revision, compile bounded Developer context, and compose those capabilities through `agent start <owner-id> <run-id>`.
@@ -25,6 +26,8 @@ The repository-native control plane can now load and order tasks, evaluate next-
 BOOT-013 is a start-only workflow. It does not run deterministic developer validation, invoke an AI provider, execute independent reviews, create/manage pull requests, merge, or establish completion. Those remain later BOOT responsibilities.
 
 BOOT-014 adds a standalone deterministic validation executor framework (`control-plane.validation-framework`). It runs a caller-registered set of command or in-process function validators, in declared order, and normalizes each result to PASS/FAIL/ERROR plus a deterministic required-validator aggregate outcome. It performs no evidence persistence, no lifecycle transition, no AI semantic review, and is not yet invoked by `agent start`, any CLI command, or the (still unimplemented) developer validation gate.
+
+BOOT-015 adds a standalone deterministic evidence and review artifact store (`control-plane.evidence-store`). `FileEvidenceStore.record()` validates an `ipt.validation-evidence` or `ipt.review-result` payload against its exact schema, binds it to a task/validator-or-role lineage and its exact `revisionIdentity`, and appends it without ever overwriting a prior record; `getCurrent`/`getHistory`/`checkRevision` distinguish current from superseded evidence and make a wrong-revision mismatch explicit. It performs no validator or review execution, no merge-readiness decision, and is not yet invoked by `agent start`, any CLI command, or the (still unimplemented) developer validation gate.
 
 ## Temporary source-of-truth rule
 
@@ -60,8 +63,7 @@ Local runtime state created by the BOOT-013 composition lives under ignored `.ag
 
 The repository still contains no fantasy-football product implementation. The bootstrap has progressed beyond documentation-only scaffolding, but these downstream capabilities remain outside the current start boundary:
 
-- wiring the BOOT-014 validation executor framework into the developer validation gate or lifecycle transitions;
-- validation evidence persistence/correlation;
+- wiring the BOOT-014 validation executor framework or the BOOT-015 evidence store into the developer validation gate or lifecycle transitions;
 - QA/Architecture/UAT execution and verdict normalization;
 - review retry/rework orchestration;
 - PR creation/update and revision-bound review invalidation;
