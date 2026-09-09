@@ -22,46 +22,55 @@
   "semanticContract": {
     "capabilities": [
       "developer-validation-evidence-gated-qa-entry",
+      "referenced-validation-evidence-read-back-verification",
       "exact-revision-qa-context-compilation",
       "bridged-developer-handoff-for-independent-review",
+      "non-pass-developer-handoff-preservation",
       "review-framework-bound-qa-judgment-persistence",
       "requiredReviewRoles-aware-lifecycle-advancement",
       "qa-failure-routing-without-skipping-stages",
-      "stale-revision-reentry-rejection"
+      "stale-revision-reentry-rejection",
+      "concurrent-lifecycle-commit-mutual-exclusion"
     ],
     "behavioralConstraints": [
       "review() only accepts a task whose current lifecycle state is exactly DEV_VALIDATED; every other state is rejected as TASK_STATE_NOT_REVIEWABLE before branch identity is checked",
       "canonical branch identity is asserted before context compilation, developer-handoff bridging, or review submission, so a wrong-branch invocation touches none of them",
       "the task's lifecycle history must record a DEV_VALIDATED transition bound to the exact current revision, or review() is rejected as TASK_STATE_NOT_REVIEWABLE before context is compiled",
+      "every lineageId@sequence entry the DEV_VALIDATED event's evidenceRef names is resolved through the evidence store and confirmed CURRENT at that exact sequence, revision-matched, and PASS; a missing, superseded, revision-mismatched, or non-PASS referenced record is rejected as TASK_STATE_NOT_REVIEWABLE before context is compiled -- the lifecycle history event alone is never trusted as proof",
       "QA and Developer context packages are compiled through the unmodified control-plane.context-compiler from the same artifact catalog, including a derived evidence artifact summarizing the DEV_VALIDATED transition",
-      "a Developer role review-result record is bridged from the DEV_VALIDATED evidence when no current PASS record exists for the exact revision, and is a no-op otherwise",
+      "a Developer role review-result record is bridged from the DEV_VALIDATED evidence when no current record exists for the exact revision, or the current exact-revision record is already PASS (no-op); a current exact-revision record that is FAIL or BLOCKED is never overwritten and is rejected as DEVELOPER_HANDOFF_REJECTED instead",
       "the caller-supplied QA outcome/findings/details are submitted unmodified through the unmodified control-plane.review-framework, which enforces blocking-finding/PASS contradiction, non-PASS detail, and self-approval rules",
       "on outcome PASS, the lifecycle advances DEV_VALIDATED -> QA_REVIEW -> the next stage required by the task's requiredReviewRoles (ARCHITECTURE_REVIEW, UAT_REVIEW, or MERGE_READY), skipping stages the task does not require",
       "on outcome FAIL or BLOCKED, the lifecycle advances DEV_VALIDATED -> QA_REVIEW -> QA_FAILED",
-      "every lifecycle transition carries the exact reviewed revision as revisionIdentity, and the lifecycle commit is persisted only after the QA review evidence is confirmed recorded",
-      "a task that already advanced past DEV_VALIDATED (including past a prior QA PASS) rejects a further review() call as TASK_STATE_NOT_REVIEWABLE rather than silently reusing a stale revision"
+      "every lifecycle transition carries the exact reviewed revision as revisionIdentity, and the lifecycle commit is persisted only after the QA review evidence is confirmed recorded, under an exclusive per-task lock so two concurrent commits for the same task cannot interleave their read-check-write",
+      "a task that already advanced past DEV_VALIDATED (including past a prior QA PASS) rejects a further review() call as TASK_STATE_NOT_REVIEWABLE rather than silently reusing a stale revision",
+      "RepositoryQaContextSource unions each registered dependency task's own affectedContracts into the fetched contract set, so a Developer-role context compiled from the same catalog does not fail with CONTRACT_ARTIFACT_MISSING",
+      "RepositoryQaContextSource git invocations set an explicit large maxBuffer so a large diff or file listing is never rejected with ENOBUFS despite Git producing valid output"
     ],
     "invariants": [
       "the gate decides no QA judgment itself; outcome/findings/details are the reviewer's, not derived here",
       "the gate performs no Architecture or UAT/Product review",
       "the gate creates no pull request and performs no merge-readiness computation",
       "the gate invokes no agent provider",
-      "a branch, context, developer-handoff, or review-submission failure leaves the task's lifecycle state unchanged"
+      "a branch, evidence-verification, context, developer-handoff, or review-submission failure leaves the task's lifecycle state unchanged"
     ],
     "examples": [
       "a DEV_VALIDATED task requiring QA, Architecture, and UAT/Product review advances to ARCHITECTURE_REVIEW on a QA PASS",
       "the same task with Architecture not required advances directly to UAT_REVIEW on a QA PASS",
       "a task requiring only QA and MergeController review advances directly to MERGE_READY on a QA PASS",
       "a QA FAIL with a blocking finding and a nonPass reason/remediation advances the task to QA_FAILED",
-      "a QA reviewerId equal to the bridged Developer handoff's actor ID is rejected as a self-approval attempt"
+      "a QA reviewerId equal to the bridged Developer handoff's actor ID is rejected as a self-approval attempt",
+      "a current Developer FAIL handoff for the exact revision is left untouched and review() is rejected rather than silently superseded by a synthetic PASS"
     ],
     "edgeCases": [
       "a task not currently DEV_VALIDATED is rejected as TASK_STATE_NOT_REVIEWABLE before branch identity is even checked",
       "an unregistered task ID is rejected as TASK_NOT_FOUND",
       "a wrong current branch is rejected as BRANCH_REJECTED before context is compiled",
       "a task whose DEV_VALIDATED history event does not match the current branch revision is rejected as TASK_STATE_NOT_REVIEWABLE",
+      "a DEV_VALIDATED history event referencing validation-evidence that was deleted, never persisted, or since superseded by a later run is rejected as TASK_STATE_NOT_REVIEWABLE",
       "a missing exact-revision diff artifact surfaces the context compiler's DIFF_ARTIFACT_MISSING as CONTEXT_REJECTED",
-      "a stale expected lifecycle state at commit time is rejected as STATE_CONFLICT rather than overwriting a concurrent transition"
+      "a stale expected lifecycle state at commit time is rejected as STATE_CONFLICT rather than overwriting a concurrent transition",
+      "two concurrent review() commits for the same task never both succeed against the same expected prior state; the loser is rejected as STATE_CONFLICT"
     ]
   },
   "allowedDependencies": [

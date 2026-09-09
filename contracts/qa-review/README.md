@@ -19,7 +19,7 @@ Primary API:
 - `QaReviewRequest { taskId, reviewerId, runId, occurredAt, outcome, findings, details, evidenceRefs?, nonPass? }`
 - `QaReviewResult { taskId, outcome, lifecycleState, revision, reviewId, blockingFindings, context, evidenceLocation, evidenceLineageId, evidenceSequence }`
 - `new FileQaReviewStateStore(root)` — local lifecycle persistence adapter, interoperable with the same `.agent/state/lifecycle/<taskId>.lifecycle.json` file BOOT-013/BOOT-016 read and write
-- `new RepositoryQaContextSource(repositoryRoot, baseRef?)` — resolves requirement/contract artifacts at the exact revision plus the exact-revision diff against `baseRef` (default `main`)
+- `new RepositoryQaContextSource(repositoryRoot, baseRef?)` — resolves requirement/contract artifacts at the exact revision (unioning in each registered dependency task's own `affectedContracts`, matching BOOT-013's `RepositoryDeveloperContextSource`) plus the exact-revision diff against `baseRef` (default `main`)
 - `createLocalQaReviewGate(repositoryRoot)` — local composition root, mirroring BOOT-016's `createLocalDeveloperValidationGate`
 
 No CLI command is added by BOOT-018; `agent review` remains reserved for a later BOOT task to expose the role-specific review workflows uniformly.
@@ -28,19 +28,19 @@ No CLI command is added by BOOT-018; `agent review` remains reserved for a later
 
 1. look up the task and confirm its current lifecycle state is exactly `DEV_VALIDATED`;
 2. assert the current Git branch matches the task's canonical branch and resolve the exact `HEAD` revision (`control-plane.git-branch-lifecycle`, unmodified);
-3. confirm the task's lifecycle history records a `DEV_VALIDATED` transition bound to this exact revision — a task cannot enter QA review without current developer-validation evidence for the revision under review;
+3. confirm the task's lifecycle history records a `DEV_VALIDATED` transition bound to this exact revision, then resolve every `lineageId@sequence` entry that transition's `evidenceRef` names through the unmodified BOOT-015 evidence store and confirm each one is still `CURRENT` at that exact sequence, revision-matched, and `PASS` — the lifecycle history event alone is only a claim, never trusted without reading the referenced evidence back;
 4. resolve requirement/contract/diff artifacts for the task at the exact revision (`QaReviewContextSource`) and add a derived `evidence` artifact summarizing the `DEV_VALIDATED` transition;
 5. compile the QA-role and Developer-role `control-plane.context-compiler` packages from that artifact catalog (unmodified);
 6. ensure a current, `PASS`, exact-revision Developer handoff review-result record exists so BOOT-017's independent-review gate is satisfied, bridging one from the `DEV_VALIDATED` evidence when none exists yet (see below);
 7. submit the caller-supplied QA judgment through the unmodified BOOT-017 `ReviewFramework.submit()`, bound to the QA context package and the exact revision;
 8. transition `DEV_VALIDATED -> QA_REVIEW -> {ARCHITECTURE_REVIEW | UAT_REVIEW | MERGE_READY}` on `PASS` (skipping stages the task's `requiredReviewRoles` does not require) or `DEV_VALIDATED -> QA_REVIEW -> QA_FAILED` on `FAIL`/`BLOCKED`, through the unmodified BOOT-009 `transitionLifecycle`;
-9. persist the lifecycle transition only after the QA review evidence is confirmed recorded.
+9. persist the lifecycle transition only after the QA review evidence is confirmed recorded, under an exclusive per-task lock so two concurrent QA review commits for the same task can never interleave their read-check-write and silently overwrite one another.
 
-A branch, context-compilation, developer-handoff, or review-submission failure is raised as a structured `QaReviewError` and leaves the task's lifecycle state unchanged.
+A branch, evidence-verification, context-compilation, developer-handoff, or review-submission failure is raised as a structured `QaReviewError` and leaves the task's lifecycle state unchanged.
 
 ## Bridging the Developer handoff
 
-BOOT-017 rejects any non-Developer review submission (`DEVELOPER_HANDOFF_MISSING`) until a `PASS`, exact-revision Developer role review-result record exists. No BOOT task before BOOT-018 composes a caller that records that handoff from BOOT-016's dev-validation evidence, so QA review cannot begin without bridging it: `QaReviewGate` derives a Developer `PASS` handoff (using the actor ID and evidence reference already recorded on the task's `DEV_VALIDATED` lifecycle event, and the Developer-role context package compiled from the same artifact catalog) and submits it through the same unmodified `ReviewFramework.submit()`. The bridge is a no-op whenever a current, `PASS`, exact-revision Developer handoff already exists — it derives evidence already recorded by BOOT-016, and decides nothing new. Because the bridge's `reviewerId` is the developer's own actor ID, a QA `reviewerId` equal to that actor ID is correctly rejected as `SELF_APPROVAL_REJECTED` (surfaced here as `DEVELOPER_HANDOFF_REJECTED`/`REVIEW_REJECTED`), preserving BOOT-017's no-self-approval invariant.
+BOOT-017 rejects any non-Developer review submission (`DEVELOPER_HANDOFF_MISSING`) until a `PASS`, exact-revision Developer role review-result record exists. No BOOT task before BOOT-018 composes a caller that records that handoff from BOOT-016's dev-validation evidence, so QA review cannot begin without bridging it: `QaReviewGate` derives a Developer `PASS` handoff (using the actor ID and evidence reference already recorded on the task's `DEV_VALIDATED` lifecycle event, and the Developer-role context package compiled from the same artifact catalog) and submits it through the same unmodified `ReviewFramework.submit()`. The bridge is a no-op whenever a current, `PASS`, exact-revision Developer handoff already exists — it derives evidence already recorded by BOOT-016, and decides nothing new. A current, exact-revision Developer handoff that is instead `FAIL` or `BLOCKED` is never overwritten by a synthetic bridge: that would silently reintroduce independent review over a revision the Developer role itself already declared not ready, so `ensureDeveloperHandoff` rejects with `DEVELOPER_HANDOFF_REJECTED` instead of bridging. Because the bridge's `reviewerId` is the developer's own actor ID, a QA `reviewerId` equal to that actor ID is correctly rejected as `SELF_APPROVAL_REJECTED` (surfaced here as `DEVELOPER_HANDOFF_REJECTED`/`REVIEW_REJECTED`), preserving BOOT-017's no-self-approval invariant.
 
 ## Revision binding and staleness
 

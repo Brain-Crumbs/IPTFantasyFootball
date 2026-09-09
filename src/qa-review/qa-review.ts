@@ -48,6 +48,12 @@ import {
 
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
 
+// Node's execFileSync defaults to a ~1 MiB stdout buffer; a real revision's
+// diff (or even a large requirement/contract JSON listing) can exceed that
+// and throw ENOBUFS despite Git having produced valid output. Matches the
+// BOOT-014 validation framework's own MAX_COMMAND_OUTPUT_BYTES.
+const MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024;
+
 // After QA_REVIEW passes, the next required stage follows the same
 // QA -> Architect -> UAT/Product ordering the BOOT-009 lifecycle engine
 // already enforces via its own (unexported) review-sequence check. This is
@@ -175,6 +181,39 @@ function latestDevValidatedEvent(record: LifecycleRecord, revision: string): Lif
   return null;
 }
 
+interface EvidenceRefEntry {
+  readonly lineageId: string;
+  readonly sequence: number;
+}
+
+// The DEV_VALIDATED history event's evidenceRef is only a *claim* about which
+// validation-evidence lineages/sequences backed it (see BOOT-016's
+// `checks.map(check => \`${lineageId}@${sequence}\`).join(",")`). A lifecycle
+// history event alone is not proof: the referenced evidence could have been
+// deleted, never persisted, or since superseded. This parses that claim so
+// every referenced record can be read back and confirmed CURRENT, revision-
+// matched, and PASS before QA review trusts it.
+function parseEvidenceRefEntries(taskId: string, evidenceRef: string): readonly EvidenceRefEntry[] {
+  const trimmed = evidenceRef.trim();
+  if (trimmed.length === 0) {
+    throw new QaReviewError(
+      "TASK_STATE_NOT_REVIEWABLE",
+      `Task '${taskId}' DEV_VALIDATED event carries no validation-evidence references.`,
+    );
+  }
+  return trimmed.split(",").map((entry) => {
+    const at = entry.lastIndexOf("@");
+    const sequence = at >= 0 ? Number(entry.slice(at + 1)) : Number.NaN;
+    if (at <= 0 || !Number.isInteger(sequence) || sequence <= 0) {
+      throw new QaReviewError(
+        "TASK_STATE_NOT_REVIEWABLE",
+        `Task '${taskId}' DEV_VALIDATED evidenceRef entry '${entry}' is malformed.`,
+      );
+    }
+    return { lineageId: entry.slice(0, at), sequence };
+  });
+}
+
 /**
  * BOOT-018 QA review workflow. Composes the BOOT-012 context compiler, the
  * BOOT-017 review framework, and the BOOT-009 lifecycle engine: it requires a
@@ -227,6 +266,7 @@ export class QaReviewGate {
         `Task '${task.taskId}' has no current successful developer-validation evidence for revision '${revision}'.`,
       );
     }
+    this.verifyDeveloperValidationEvidence(task, revision, devValidatedEvent);
 
     let repositoryArtifacts: readonly ContextArtifact[];
     try {
@@ -339,6 +379,37 @@ export class QaReviewGate {
   }
 
   /**
+   * A lifecycle history event recording a `DEV_VALIDATED` transition is only
+   * a claim about which BOOT-016 validation-evidence records backed it. This
+   * resolves every `lineageId@sequence` entry the event's `evidenceRef`
+   * names through the evidence store and confirms each one is still the
+   * `CURRENT`, revision-matched, `PASS` record at that exact sequence —
+   * never trusting the lifecycle history event alone — before treating the
+   * task as reviewable.
+   */
+  private verifyDeveloperValidationEvidence(
+    task: RegisteredTask,
+    revision: string,
+    devValidatedEvent: LifecycleHistoryEvent,
+  ): void {
+    const entries = parseEvidenceRefEntries(task.taskId, devValidatedEvent.evidenceRef);
+    for (const entry of entries) {
+      const current = this.dependencies.evidenceStore.getCurrent(entry.lineageId);
+      if (
+        current === null ||
+        current.sequence !== entry.sequence ||
+        current.payload.revisionIdentity !== revision ||
+        current.payload.outcome !== "PASS"
+      ) {
+        throw new QaReviewError(
+          "TASK_STATE_NOT_REVIEWABLE",
+          `Task '${task.taskId}' developer-validation evidence '${entry.lineageId}@${entry.sequence}' is missing, superseded, revision-mismatched, or not PASS; QA review cannot begin.`,
+        );
+      }
+    }
+  }
+
+  /**
    * BOOT-017's review framework rejects any non-Developer submission
    * (`DEVELOPER_HANDOFF_MISSING`) until a Developer role review-result
    * record exists for the exact revision. No BOOT task has yet composed a
@@ -347,7 +418,11 @@ export class QaReviewGate {
    * derives a Developer PASS handoff from the already-recorded,
    * revision-bound DEV_VALIDATED lifecycle evidence rather than deciding
    * anything new, and is a no-op once a current PASS handoff already
-   * exists for this exact revision.
+   * exists for this exact revision. A current, exact-revision handoff that
+   * is not PASS (an explicit Developer FAIL/BLOCKED) is never overwritten:
+   * that would silently reintroduce independent review over a revision the
+   * Developer role itself already declared not ready, bypassing BOOT-017's
+   * own `DEVELOPER_HANDOFF_NOT_PASSED` gate.
    */
   private ensureDeveloperHandoff(
     task: RegisteredTask,
@@ -357,8 +432,15 @@ export class QaReviewGate {
   ): void {
     const lineageId = reviewResultLineageId(task.taskId, "Developer");
     const current = this.dependencies.evidenceStore.getCurrent(lineageId);
-    if (current !== null && current.payload.revisionIdentity === revision && current.payload.outcome === "PASS") {
-      return;
+    if (current !== null && current.payload.revisionIdentity === revision) {
+      if (current.payload.outcome === "PASS") {
+        return;
+      }
+      throw new QaReviewError(
+        "DEVELOPER_HANDOFF_REJECTED",
+        `Task '${task.taskId}' has a current Developer '${String(current.payload.outcome)}' handoff for revision '${revision}'; QA review cannot bridge a synthetic PASS over it.`,
+        false,
+      );
     }
 
     const developerActorId = devValidatedEvent.actorId;
@@ -452,29 +534,53 @@ export class FileQaReviewStateStore implements QaReviewStateStore {
   }
 
   save(record: LifecycleRecord, expectedCurrentState: TaskLifecycleState): void {
-    const current = this.get(record.taskId);
-    const actualState = current?.currentState ?? "PLANNED";
-    if (actualState !== expectedCurrentState) {
+    // The compare-then-write below is only safe against a concurrent writer
+    // for the same task if no other process can interleave between the read
+    // and the write. An exclusive-create lock file provides that mutual
+    // exclusion across OS processes (each CLI invocation is its own
+    // process): a loser fails fast as STATE_CONFLICT rather than silently
+    // racing the winner's read-check-rename with its own.
+    const lockPath = this.lockPathFor(record.taskId);
+    try {
+      writeFileSync(lockPath, "", { encoding: "utf8", flag: "wx" });
+    } catch {
       throw new QaReviewError(
         "STATE_CONFLICT",
-        `Lifecycle state for '${record.taskId}' changed from expected '${expectedCurrentState}' to '${actualState}' before QA review commit.`,
+        `Lifecycle state for '${record.taskId}' is being committed by a concurrent QA review commit; retry once it finishes.`,
       );
     }
 
-    const path = this.pathFor(record.taskId);
-    const temporary = `${path}.tmp`;
     try {
-      writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8" });
-      renameSync(temporary, path);
-    } catch (error: unknown) {
-      if (existsSync(temporary)) unlinkSync(temporary);
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new QaReviewError("STATE_IO_FAILED", `Cannot persist lifecycle state for '${record.taskId}': ${detail}`);
+      const current = this.get(record.taskId);
+      const actualState = current?.currentState ?? "PLANNED";
+      if (actualState !== expectedCurrentState) {
+        throw new QaReviewError(
+          "STATE_CONFLICT",
+          `Lifecycle state for '${record.taskId}' changed from expected '${expectedCurrentState}' to '${actualState}' before QA review commit.`,
+        );
+      }
+
+      const path = this.pathFor(record.taskId);
+      const temporary = `${path}.tmp`;
+      try {
+        writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8" });
+        renameSync(temporary, path);
+      } catch (error: unknown) {
+        if (existsSync(temporary)) unlinkSync(temporary);
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new QaReviewError("STATE_IO_FAILED", `Cannot persist lifecycle state for '${record.taskId}': ${detail}`);
+      }
+    } finally {
+      unlinkSync(lockPath);
     }
   }
 
   private pathFor(taskId: string): string {
     return join(this.root, `${taskId}.lifecycle.json`);
+  }
+
+  private lockPathFor(taskId: string): string {
+    return join(this.root, `${taskId}.lifecycle.lock`);
   }
 }
 
@@ -489,9 +595,20 @@ export class RepositoryQaContextSource implements QaReviewContextSource {
     if (repositoryRoot.trim().length === 0) throw new RangeError("Repository root must be non-empty.");
   }
 
-  artifactsFor(task: RegisteredTask, _registry: TaskRegistry, revision: string): readonly ContextArtifact[] {
+  artifactsFor(task: RegisteredTask, registry: TaskRegistry, revision: string): readonly ContextArtifact[] {
     const requirementIds = new Set(task.requirements);
+    // The Developer-role context this gate also compiles (for the BOOT-017
+    // handoff bridge) requires every dependency's affected contract, not
+    // only this task's own — matching BOOT-013's
+    // RepositoryDeveloperContextSource. Fetching the union up front keeps
+    // one artifact catalog usable for both the QA and Developer packages.
     const contractIds = new Set(task.affectedContracts);
+    for (const dependencyId of task.dependencies) {
+      const dependency = registry.get(dependencyId);
+      if (dependency !== undefined) {
+        for (const contractId of dependency.affectedContracts) contractIds.add(contractId);
+      }
+    }
 
     const artifacts: ContextArtifact[] = [];
     for (const path of this.jsonFilesAtRevision(revision, "requirements")) {
@@ -564,6 +681,7 @@ export class RepositoryQaContextSource implements QaReviewContextSource {
         cwd: this.repositoryRoot,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: MAX_GIT_OUTPUT_BYTES,
       });
     } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -579,6 +697,7 @@ export class RepositoryQaContextSource implements QaReviewContextSource {
         cwd: this.repositoryRoot,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: MAX_GIT_OUTPUT_BYTES,
       });
       const parsed = JSON.parse(content) as unknown;
       return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
@@ -595,6 +714,7 @@ export class RepositoryQaContextSource implements QaReviewContextSource {
         cwd: this.repositoryRoot,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: MAX_GIT_OUTPUT_BYTES,
       });
     } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : String(error);

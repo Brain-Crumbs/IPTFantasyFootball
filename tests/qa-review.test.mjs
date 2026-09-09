@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { BranchLifecycleError } from "../dist/git-branch-lifecycle/index.js";
-import { FileEvidenceStore, reviewResultLineageId } from "../dist/evidence-store/index.js";
+import { FileEvidenceStore, reviewResultLineageId, validationEvidenceLineageId } from "../dist/evidence-store/index.js";
 import { ReviewFramework } from "../dist/review-framework/index.js";
 import {
   FileQaReviewStateStore,
   QaReviewError,
   QaReviewGate,
+  RepositoryQaContextSource,
 } from "../dist/qa-review/index.js";
 
 const occurredAt = "2026-09-09T12:00:00Z";
@@ -134,6 +135,20 @@ function fixture(options = {}) {
     artifacts: options.artifacts ?? [diffArtifact(activeTask.taskId, options.revision ?? revision)],
   });
   const evidenceStore = new FileEvidenceStore(join(root, "evidence"), { repositoryRoot });
+  if (options.recordDevValidationEvidence !== false) {
+    const evidenceRevision = options.validationEvidenceRevision ?? options.revision ?? revision;
+    evidenceStore.record({
+      schemaId: "ipt.validation-evidence",
+      schemaVersion: "1.0.0",
+      evidenceId: `${activeTask.taskId}:repository:test:${evidenceRevision}:${devOccurredAt}`,
+      taskId: activeTask.taskId,
+      revisionIdentity: evidenceRevision,
+      validatorId: "repository:test",
+      outcome: options.validationEvidenceOutcome ?? "PASS",
+      recordedAt: devOccurredAt,
+      checks: [{ checkId: "repository:test", outcome: options.validationEvidenceOutcome ?? "PASS" }],
+    });
+  }
   const reviewFramework = new ReviewFramework({ evidenceStore, evidenceLocation: root });
   const gate = new QaReviewGate({
     registry,
@@ -390,4 +405,111 @@ test("FileQaReviewStateStore rejects a save whose expected state is stale", () =
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("QA cannot run when the DEV_VALIDATED history event's referenced validation evidence was never persisted", () => {
+  const value = fixture({ recordDevValidationEvidence: false });
+  try {
+    assert.throws(
+      () => value.gate.review(passRequest()),
+      (error) => error instanceof QaReviewError && error.code === "TASK_STATE_NOT_REVIEWABLE",
+    );
+    assert.equal(value.contextSource.calls, 0, "context must not be compiled before validation evidence is confirmed");
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("QA cannot run when the referenced validation evidence has since been superseded by a later run", () => {
+  const value = fixture();
+  try {
+    // A second validator run for the same lineage advances it to sequence 2,
+    // so the DEV_VALIDATED event's recorded '@1' reference is no longer CURRENT.
+    value.evidenceStore.record({
+      schemaId: "ipt.validation-evidence",
+      schemaVersion: "1.0.0",
+      evidenceId: `${value.task.taskId}:repository:test:${revision}:${occurredAt}`,
+      taskId: value.task.taskId,
+      revisionIdentity: revision,
+      validatorId: "repository:test",
+      outcome: "PASS",
+      recordedAt: occurredAt,
+      checks: [{ checkId: "repository:test", outcome: "PASS" }],
+    });
+
+    assert.throws(
+      () => value.gate.review(passRequest()),
+      (error) => error instanceof QaReviewError && error.code === "TASK_STATE_NOT_REVIEWABLE",
+    );
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("a current non-PASS Developer handoff for the exact revision is never overwritten by a synthetic bridge", () => {
+  const value = fixture();
+  try {
+    const developerContextPackage = {
+      schemaVersion: "1.0.0",
+      role: "Developer",
+      taskId: value.task.taskId,
+      sourceRevision: revision,
+      task: { taskId: value.task.taskId },
+      artifacts: [],
+      manifest: { included: [], excluded: [] },
+    };
+    value.reviewFramework.submit({
+      taskId: value.task.taskId,
+      role: "Developer",
+      revisionIdentity: revision,
+      reviewerId: "dev-agent-1",
+      runId: "run-0",
+      contextPackage: developerContextPackage,
+      outcome: "FAIL",
+      details: {
+        implementationSummary: "Known regression, not ready for review.",
+        changedSurfaces: [],
+        acceptanceCriteriaEvidence: [],
+        validationChecks: [],
+        knownLimitationsAssumptionsRisks: [],
+      },
+      findings: [],
+      evidenceRefs: [],
+      nonPass: { reason: "Developer flagged a regression.", remediation: "Fix before QA." },
+      occurredAt: devOccurredAt,
+    });
+
+    assert.throws(
+      () => value.gate.review(passRequest()),
+      (error) => error instanceof QaReviewError && error.code === "DEVELOPER_HANDOFF_REJECTED",
+    );
+
+    const stillFail = value.evidenceStore.getCurrent(reviewResultLineageId(value.task.taskId, "Developer"));
+    assert.equal(stillFail.payload.outcome, "FAIL");
+    assert.equal(stillFail.payload.reviewerId, "dev-agent-1");
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("RepositoryQaContextSource includes a dependency task's affected contract and an exact-revision diff", () => {
+  const dependency = task({ taskId: "BOOT-017", dependencies: [], affectedContracts: ["control-plane.review-framework"] });
+  const primary = task({ taskId: "BOOT-018", dependencies: ["BOOT-017"], affectedContracts: [] });
+  const registry = new Map([
+    [dependency.taskId, dependency],
+    [primary.taskId, primary],
+  ]);
+  const source = new RepositoryQaContextSource(repositoryRoot);
+
+  const artifacts = source.artifactsFor(primary, registry, "HEAD");
+
+  const contract = artifacts.find(
+    (artifact) => artifact.kind === "contract" && artifact.referenceId === "control-plane.review-framework",
+  );
+  assert.ok(contract, "expected the dependency task's affected contract to be included");
+
+  const diff = artifacts.find((artifact) => artifact.kind === "diff");
+  assert.ok(diff, "expected an exact-revision diff artifact");
+  assert.equal(diff.revision, "HEAD");
+  assert.equal(typeof diff.content, "string");
 });

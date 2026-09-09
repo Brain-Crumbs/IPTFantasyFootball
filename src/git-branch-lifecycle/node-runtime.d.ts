@@ -3,5 +3,6 @@ declare module "node:child_process" {
     cwd?: string;
     encoding?: string;
     stdio?: "pipe" | "ignore" | readonly ("pipe" | "ignore" | "inherit")[];
+    maxBuffer?: number;
   }): string;
 }
