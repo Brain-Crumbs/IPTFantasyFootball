@@ -32,7 +32,8 @@ The control-plane foundation currently includes:
 - BOOT-010 — assignment locks and explicit stale recovery;
 - BOOT-011 — canonical task-branch lifecycle adapter;
 - BOOT-012 — role-aware context compiler;
-- BOOT-013 — start-only Developer workflow / `agent start <owner-id> <run-id>`.
+- BOOT-013 — start-only Developer workflow / `agent start <owner-id> <run-id>`;
+- BOOT-014 — deterministic validation executor framework (`control-plane.validation-framework`, not yet wired into the CLI or a lifecycle gate).
 
 `agent start` composes next-task resolution, assignment locking, lifecycle pre-development gates, canonical branch ensure/assertion, exact revision lookup, and Developer context compilation. It is idempotent/resumable for the same active assignment and fails explicitly on lock, branch, context, lifecycle, or persistence blockers.
 

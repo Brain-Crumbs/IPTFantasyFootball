@@ -1,0 +1,110 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.validation-framework",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "ValidationExecutor(validators: readonly ValidatorSpec[])",
+      "ValidationExecutor.run(): Promise<ValidationRunResult>",
+      "CommandValidatorSpec { kind: 'command', validatorId, category, required, command, args?, cwd?, timeoutMs?, description? }",
+      "FunctionValidatorSpec { kind: 'function', validatorId, category, required, execute, timeoutMs?, description? }",
+      "ValidatorResult { validatorId, category, required, executor, status, startedAt, finishedAt, durationMs, diagnostics }",
+      "ValidationRunResult { outcome, startedAt, finishedAt, durationMs, results }",
+      "ValidationFrameworkError { code, message }",
+      "DEFAULT_VALIDATOR_TIMEOUT_MS",
+      "VALIDATOR_CATEGORIES"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "pluggable-validator-registration",
+      "command-and-function-validator-execution",
+      "timeout-and-exit-code-capture",
+      "normalized-pass-fail-error-result-model",
+      "deterministic-declared-order-execution",
+      "required-validator-aggregation",
+      "no-network-required-execution"
+    ],
+    "behavioralConstraints": [
+      "the core executor never hard-codes a concrete validator command; every check is supplied by the caller as a ValidatorSpec",
+      "validators execute in exactly the order supplied to the constructor and are never reordered, parallelized, or deduplicated beyond rejecting duplicate validatorId values",
+      "every validator in a registered set runs even after an earlier validator fails, so one run captures full evidence for the whole set",
+      "a command validator's exit code 0 is PASS, a non-zero exit code is FAIL, and a spawn failure or timeout/signal termination is ERROR",
+      "a function validator's returned status is used directly; a thrown error, an invalid returned status, or exceeding its declared timeoutMs is ERROR",
+      "the aggregate outcome is FAIL only when at least one required validator's status is not PASS; optional (required: false) validators never affect the aggregate outcome",
+      "a validator result always includes identity (validatorId, category, required), the concrete executor description, status, ISO start/finish timestamps, duration, and concise diagnostics"
+    ],
+    "invariants": [
+      "the framework performs no persistence of evidence beyond the returned in-memory ValidationRunResult",
+      "the framework does not advance task lifecycle state",
+      "the framework performs no AI semantic review",
+      "the framework requires no network access to execute or to be tested",
+      "ERROR (infrastructure/execution failure) is always distinguishable from FAIL (an assertion the validator itself reported) via the status field"
+    ],
+    "examples": [
+      "a set of command validators (lint, type-check, tests) all exiting 0 aggregates to PASS",
+      "a required command validator exiting non-zero aggregates the run to FAIL while unrelated validators later in the array still execute and report their own status",
+      "a command validator that runs longer than its timeoutMs is killed and reported as ERROR with a timeout diagnostic",
+      "an optional validator that fails or errors is visible in results but does not flip the aggregate outcome to FAIL",
+      "running the same validator array twice produces results in the same validatorId order both times"
+    ],
+    "edgeCases": [
+      "constructing an executor with zero validators is rejected",
+      "registering two validators with the same validatorId is rejected",
+      "a command that cannot be spawned (e.g. missing binary) is reported as ERROR rather than throwing out of run()",
+      "a function validator returning a status outside PASS/FAIL/ERROR is normalized to ERROR"
+    ]
+  },
+  "allowedDependencies": [
+    "node:child_process"
+  ],
+  "forbiddenDependencies": [
+    "evidence-store/*",
+    "lifecycle-state-machine/*",
+    "review-executors/*",
+    "agent-provider/*",
+    "pull-request-lifecycle/*",
+    "merge-controller/*",
+    "fantasy-product/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-evidence-store",
+      "expectations": [
+        "each ValidatorResult carries enough identity, outcome, and diagnostic detail to be persisted as validation evidence bound to a task/revision"
+      ],
+      "requiredCapabilities": [
+        "normalized-pass-fail-error-result-model",
+        "deterministic-declared-order-execution"
+      ],
+      "acceptedRanges": [
+        "a completed ValidationRunResult with one or more ValidatorResult entries"
+      ],
+      "requiredReachableRanges": [
+        "all-required-pass run",
+        "at-least-one-required-fail run",
+        "a run containing an ERROR result"
+      ]
+    },
+    {
+      "consumerId": "future-developer-validation-gate",
+      "expectations": [
+        "the aggregate outcome is authoritative for whether required checks passed",
+        "the gate can register task-specific validators without modifying this module's core"
+      ],
+      "requiredCapabilities": [
+        "pluggable-validator-registration",
+        "required-validator-aggregation"
+      ],
+      "acceptedRanges": [
+        "PASS aggregate outcome",
+        "FAIL aggregate outcome"
+      ],
+      "requiredReachableRanges": [
+        "all-pass run",
+        "required-validator-fail run"
+      ]
+    }
+  ]
+}

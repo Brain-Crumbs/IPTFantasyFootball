@@ -15,13 +15,16 @@ Implemented foundation through the task-start boundary:
 - BOOT-010 — task assignment locks
 - BOOT-011 — Git task-branch lifecycle adapter
 - BOOT-012 — role-aware context compiler
-- **Current implementation task: BOOT-013 — Developer task-start workflow / issue #15**
-- Canonical BOOT-013 branch: `bootstrap/boot-013-dev-start`
+- BOOT-013 — Developer task-start workflow
+- **Current implementation task: BOOT-014 — Validation executor framework / issue #16**
+- Canonical BOOT-014 branch: `bootstrap/boot-014-validation-framework`
 - Bootstrap marker: see [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION)
 
 The repository-native control plane can now load and order tasks, evaluate next-task eligibility, enforce lifecycle transition prerequisites, acquire assignment locks, ensure canonical local branches, resolve exact source revision, compile bounded Developer context, and compose those capabilities through `agent start <owner-id> <run-id>`.
 
 BOOT-013 is a start-only workflow. It does not run deterministic developer validation, invoke an AI provider, execute independent reviews, create/manage pull requests, merge, or establish completion. Those remain later BOOT responsibilities.
+
+BOOT-014 adds a standalone deterministic validation executor framework (`control-plane.validation-framework`). It runs a caller-registered set of command or in-process function validators, in declared order, and normalizes each result to PASS/FAIL/ERROR plus a deterministic required-validator aggregate outcome. It performs no evidence persistence, no lifecycle transition, no AI semantic review, and is not yet invoked by `agent start`, any CLI command, or the (still unimplemented) developer validation gate.
 
 ## Temporary source-of-truth rule
 
@@ -57,7 +60,7 @@ Local runtime state created by the BOOT-013 composition lives under ignored `.ag
 
 The repository still contains no fantasy-football product implementation. The bootstrap has progressed beyond documentation-only scaffolding, but these downstream capabilities remain outside the current start boundary:
 
-- deterministic developer validation/evidence capture;
+- wiring the BOOT-014 validation executor framework into the developer validation gate or lifecycle transitions;
 - validation evidence persistence/correlation;
 - QA/Architecture/UAT execution and verdict normalization;
 - review retry/rework orchestration;
