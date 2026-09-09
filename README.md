@@ -2,13 +2,13 @@
 
 IPTFantasyFootball is currently in **agentic-development bootstrap**, not fantasy-football product implementation.
 
-The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with BOOT-000 / issue #2. The repository has since added the CLI shell (BOOT-005), task registry (BOOT-006), dependency DAG (BOOT-007), next-task selector (BOOT-008), lifecycle transition engine (BOOT-009), assignment locks (BOOT-010), Git branch lifecycle adapter (BOOT-011), role-aware context compiler (BOOT-012), the Developer task-start workflow (BOOT-013 / issue #15), the validation executor framework (BOOT-014 / issue #16), and the evidence and review artifact store (BOOT-015 / issue #17).
+The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with BOOT-000 / issue #2. The repository has since added the CLI shell (BOOT-005), task registry (BOOT-006), dependency DAG (BOOT-007), next-task selector (BOOT-008), lifecycle transition engine (BOOT-009), assignment locks (BOOT-010), Git branch lifecycle adapter (BOOT-011), role-aware context compiler (BOOT-012), the Developer task-start workflow (BOOT-013 / issue #15), the validation executor framework (BOOT-014 / issue #16), the evidence and review artifact store (BOOT-015 / issue #17), and the developer validation gate (BOOT-016 / issue #18).
 
 ## Bootstrap purpose
 
 Before product features are built, this repository is establishing a deterministic, auditable development control plane. Durable project rules and state belong in the repository/GitHub rather than in an AI agent's conversation memory or self-report.
 
-The control plane now has a start-only Developer workflow that composes deterministic next-task selection, assignment locking, lifecycle gates, canonical branch handling, exact revision binding, and Developer context compilation; a standalone deterministic validation executor framework that runs registered command/function checks to a normalized PASS/FAIL/ERROR result; and a deterministic evidence store that persists schema-validated, revision-bound validation/review records and distinguishes current from superseded evidence. Wiring validation into the lifecycle gate, independent review execution, agent-provider invocation, PR/merge orchestration, controlled completion, and fantasy-football product systems remain owned by later BOOT tasks.
+The control plane now has a start-only Developer workflow that composes deterministic next-task selection, assignment locking, lifecycle gates, canonical branch handling, exact revision binding, and Developer context compilation; a standalone deterministic validation executor framework that runs registered command/function checks to a normalized PASS/FAIL/ERROR result; a deterministic evidence store that persists schema-validated, revision-bound validation/review records and distinguishes current from superseded evidence; and a developer validation gate that wires the two together — resolving and running the required checks, persisting and reading back revision-bound evidence, and advancing the lifecycle to `DEV_VALIDATED`/`DEV_VALIDATION_FAILED` only from that recorded evidence. Independent QA/Architecture/UAT review execution, agent-provider invocation, PR/merge orchestration, controlled completion, and fantasy-football product systems remain owned by later BOOT tasks.
 
 ## Governing documents
 
@@ -28,7 +28,7 @@ The control plane now has a start-only Developer workflow that composes determin
 | `contracts/` | Module semantic-contract definitions. |
 | `reviews/` | Structured review definitions/artifacts owned by later review tasks. |
 | `evidence/` | Documentation for `control-plane.evidence-store` (BOOT-015); runtime records persist locally under ignored `.agent/state/`. |
-| `.agent/` | Ignored local runtime state for repository-native workflows such as BOOT-013. |
+| `.agent/` | Ignored local runtime state for repository-native workflows such as BOOT-013/BOOT-016. |
 
 Placeholder documentation must not be interpreted as implemented behavior.
 
@@ -52,9 +52,10 @@ npm test
 npm run agent -- help
 npm run agent -- next
 npm run agent -- start <owner-id> <run-id>
+npm run agent -- validate <task-id> <actor-id> <run-id>
 ```
 
-Implemented commands are `help`, `version`, `next`, and `start`. `validate`, `review`, and `status` remain reserved until their owning BOOT tasks land.
+Implemented commands are `help`, `version`, `next`, `start`, and `validate`. `review` and `status` remain reserved until their owning BOOT tasks land.
 
 ### `next`
 
@@ -86,8 +87,14 @@ BOOT-013 does **not** run developer validation, invoke an AI agent, perform QA/A
 
 ### Validation executor framework
 
-BOOT-014 adds `control-plane.validation-framework`, documented in [contracts/validation-framework/README.md](contracts/validation-framework/README.md). `ValidationExecutor` runs a caller-registered array of `ValidatorSpec` entries — a shell command or an in-process function, each declared `required` or optional — in exactly the declared order, capturing exit code/timeout and normalizing every result to `PASS`, `FAIL`, or `ERROR`. The aggregate `ValidationRunResult.outcome` is `FAIL` only when a required validator's status is not `PASS`; optional validators never affect it. The core never hard-codes a concrete command, requires no network access, and does not persist evidence, advance lifecycle state, or perform AI semantic review — those remain owned by BOOT-015/016 and the later review tasks. It is not yet wired into the CLI or the developer validation gate.
+BOOT-014 adds `control-plane.validation-framework`, documented in [contracts/validation-framework/README.md](contracts/validation-framework/README.md). `ValidationExecutor` runs a caller-registered array of `ValidatorSpec` entries — a shell command or an in-process function, each declared `required` or optional — in exactly the declared order, capturing exit code/timeout and normalizing every result to `PASS`, `FAIL`, or `ERROR`. The aggregate `ValidationRunResult.outcome` is `FAIL` only when a required validator's status is not `PASS`; optional validators never affect it. The core never hard-codes a concrete command, requires no network access, and does not persist evidence, advance lifecycle state, or perform AI semantic review — those remain owned by BOOT-016 and the later review tasks.
 
 ### Evidence and review artifact store
 
-BOOT-015 adds `control-plane.evidence-store`, documented in [contracts/evidence-store/README.md](contracts/evidence-store/README.md). `FileEvidenceStore.record()` accepts a raw `ipt.validation-evidence` or `ipt.review-result` payload, validates it against the exact corresponding `schemas/v1/*.schema.json` document (including `$ref`-resolved nested shapes and role/outcome-conditioned `allOf`/`if`/`then` requirements) before accepting it, and persists it under a lineage derived from `taskId` plus `validatorId` (validation evidence) or `taskId` plus `role` (review results). Records are append-only — no existing record is ever overwritten — and `getHistory()`/`getCurrent()` distinguish `CURRENT` from `SUPERSEDED` evidence, while `checkRevision()` makes a wrong-revision mismatch explicit rather than allowing evidence to be mistaken as applying to a different commit. The store executes no validators and no reviews, decides no merge readiness, requires no network access, and is not yet invoked by `agent start`, any CLI command, or the (still unimplemented) developer validation gate.
+BOOT-015 adds `control-plane.evidence-store`, documented in [contracts/evidence-store/README.md](contracts/evidence-store/README.md). `FileEvidenceStore.record()` accepts a raw `ipt.validation-evidence` or `ipt.review-result` payload, validates it against the exact corresponding `schemas/v1/*.schema.json` document (including `$ref`-resolved nested shapes and role/outcome-conditioned `allOf`/`if`/`then` requirements) before accepting it, and persists it under a lineage derived from `taskId` plus `validatorId` (validation evidence) or `taskId` plus `role` (review results). Records are append-only — no existing record is ever overwritten — and `getHistory()`/`getCurrent()` distinguish `CURRENT` from `SUPERSEDED` evidence, while `checkRevision()` makes a wrong-revision mismatch explicit rather than allowing evidence to be mistaken as applying to a different commit. The store executes no validators and no reviews, decides no merge readiness, and requires no network access.
+
+### `validate`
+
+BOOT-016 adds `control-plane.dev-validation`, documented in [contracts/dev-validation/README.md](contracts/dev-validation/README.md). It wires BOOT-014 and BOOT-015 into the BOOT-009 lifecycle engine: a task must be `IN_DEVELOPMENT` on its canonical branch; the gate resolves the validators required for the task/repository (a pluggable `DeveloperValidatorResolver`; the local default runs the repository's own `npm run build`/`npm test`), runs them through the unmodified `ValidationExecutor`, persists every result as revision-bound `ipt.validation-evidence`, and reads each record back through `checkRevision` — never trusting the bare in-memory run result — before transitioning `IN_DEVELOPMENT -> DEV_VALIDATED` (all required checks `PASS`) or `IN_DEVELOPMENT -> DEV_VALIDATION_FAILED` (any required check not `PASS`).
+
+The result reports every check's status, mapped evidence outcome, and evidence location, plus which required checks failed. A wrong branch, an unregistered task, or a task not `IN_DEVELOPMENT` fails explicitly (`WORKFLOW_BLOCKED`, exit code `4`) before any validator runs or evidence is written. BOOT-016 performs no QA/Architecture/UAT review and creates no pull request; those remain owned by BOOT-017 onward.

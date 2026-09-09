@@ -5,6 +5,12 @@ import {
   type DeveloperStartWorkflow,
 } from "../dev-start/index.js";
 import {
+  DeveloperValidationError,
+  createLocalDeveloperValidationGate,
+  type DeveloperValidationGate,
+  type DeveloperValidationResult,
+} from "../dev-validation/index.js";
+import {
   loadTaskRegistry,
   selectNextEligibleTask,
   type NextTaskResult,
@@ -32,6 +38,7 @@ export interface CliRunContext {
   taskRegistry?: TaskRegistry;
   taskStates?: ReadonlyMap<string, TaskLifecycleState>;
   developerStartWorkflow?: Pick<DeveloperStartWorkflow, "start">;
+  developerValidationGate?: Pick<DeveloperValidationGate, "validate">;
   now?: () => string;
 }
 
@@ -106,11 +113,12 @@ function helpText(): string {
     "IPT Agent Control Plane CLI",
     "",
     "Deterministic, provider-neutral command surface for the repository development control plane.",
-    "BOOT-008 implements next-task selection and BOOT-013 implements developer task start; later validation/review commands remain reserved until their owning BOOT task lands.",
+    "BOOT-008 implements next-task selection, BOOT-013 implements developer task start, and BOOT-016 implements the developer validation gate; later review/PR commands remain reserved until their owning BOOT task lands.",
     "",
     "Usage:",
     "  agent [--json] <command>",
     "  agent [--json] start <owner-id> <run-id>",
+    "  agent [--json] validate <task-id> <actor-id> <run-id>",
     "",
     "Commands:",
   ];
@@ -168,6 +176,23 @@ function startHuman(result: DeveloperStartResult): string {
     "Next instructions:",
     ...result.nextInstructions.map((instruction) => `- ${instruction}`),
   ].join("\n");
+}
+
+function validateHuman(result: DeveloperValidationResult): string {
+  const lines = [
+    `Validation ${result.outcome === "PASS" ? "passed" : "failed"}: ${result.taskId}`,
+    `Revision: ${result.revision}`,
+    `State: ${result.lifecycleState}`,
+    "Checks:",
+    ...result.checks.map(
+      (check) => `- ${check.validatorId} [${check.category}${check.required ? "" : ", optional"}]: ${check.status}`,
+    ),
+  ];
+  if (result.failedCheckIds.length > 0) {
+    lines.push(`Failed required checks: ${result.failedCheckIds.join(", ")}`);
+  }
+  lines.push(`Evidence: ${result.evidenceLocation}`);
+  return lines.join("\n");
 }
 
 async function registryFor(context: CliRunContext): Promise<TaskRegistry> {
@@ -286,6 +311,51 @@ export async function runCli(
       }
       const message = error instanceof Error ? error.message : "Unknown developer-start failure.";
       return fail("start", parsed.json, EXIT_CODES.INTERNAL_ERROR, {
+        code: "INTERNAL_ERROR",
+        message,
+      });
+    }
+  }
+
+  if (parsed.command === "validate") {
+    if (parsed.rest.length !== 3) {
+      return fail("validate", parsed.json, EXIT_CODES.USAGE_ERROR, {
+        code: "USAGE_UNEXPECTED_ARGUMENT",
+        message: "Command 'validate' requires exactly <task-id> <actor-id> <run-id>.",
+      });
+    }
+    const taskId = parsed.rest[0];
+    const actorId = parsed.rest[1];
+    const runId = parsed.rest[2];
+    if (taskId === undefined || actorId === undefined || runId === undefined) {
+      throw new Error("validate argument length was validated but identity arguments are missing");
+    }
+
+    try {
+      const gate = context.developerValidationGate
+        ?? await createLocalDeveloperValidationGate(context.repositoryRoot ?? ".");
+      const result = await gate.validate({
+        taskId,
+        actorId,
+        runId,
+        occurredAt: (context.now ?? (() => new Date().toISOString()))(),
+      });
+      return succeed("validate", parsed.json, result, validateHuman(result));
+    } catch (error: unknown) {
+      if (error instanceof DeveloperValidationError) {
+        if (error.code === "INVALID_REQUEST") {
+          return fail("validate", parsed.json, EXIT_CODES.USAGE_ERROR, {
+            code: "USAGE_UNEXPECTED_ARGUMENT",
+            message: error.message,
+          });
+        }
+        return fail("validate", parsed.json, EXIT_CODES.WORKFLOW_BLOCKED, {
+          code: "VALIDATE_WORKFLOW_BLOCKED",
+          message: `${error.code}: ${error.message}`,
+        });
+      }
+      const message = error instanceof Error ? error.message : "Unknown developer-validation failure.";
+      return fail("validate", parsed.json, EXIT_CODES.INTERNAL_ERROR, {
         code: "INTERNAL_ERROR",
         message,
       });

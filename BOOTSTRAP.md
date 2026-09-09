@@ -17,17 +17,20 @@ Implemented foundation through the task-start boundary:
 - BOOT-012 — role-aware context compiler
 - BOOT-013 — Developer task-start workflow
 - BOOT-014 — Validation executor framework
-- **Current implementation task: BOOT-015 — Evidence and review artifact store / issue #17**
-- Canonical BOOT-015 branch: `bootstrap/boot-015-evidence-store`
+- BOOT-015 — Evidence and review artifact store
+- **Current implementation task: BOOT-016 — Developer validation gate / issue #18**
+- Canonical BOOT-016 branch: `bootstrap/boot-016-dev-validation`
 - Bootstrap marker: see [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION)
 
-The repository-native control plane can now load and order tasks, evaluate next-task eligibility, enforce lifecycle transition prerequisites, acquire assignment locks, ensure canonical local branches, resolve exact source revision, compile bounded Developer context, and compose those capabilities through `agent start <owner-id> <run-id>`.
+The repository-native control plane can now load and order tasks, evaluate next-task eligibility, enforce lifecycle transition prerequisites, acquire assignment locks, ensure canonical local branches, resolve exact source revision, compile bounded Developer context, and compose those capabilities through `agent start <owner-id> <run-id>`. It can also deterministically gate `IN_DEVELOPMENT -> DEV_VALIDATED`/`DEV_VALIDATION_FAILED` through `agent validate <task-id> <actor-id> <run-id>`.
 
 BOOT-013 is a start-only workflow. It does not run deterministic developer validation, invoke an AI provider, execute independent reviews, create/manage pull requests, merge, or establish completion. Those remain later BOOT responsibilities.
 
-BOOT-014 adds a standalone deterministic validation executor framework (`control-plane.validation-framework`). It runs a caller-registered set of command or in-process function validators, in declared order, and normalizes each result to PASS/FAIL/ERROR plus a deterministic required-validator aggregate outcome. It performs no evidence persistence, no lifecycle transition, no AI semantic review, and is not yet invoked by `agent start`, any CLI command, or the (still unimplemented) developer validation gate.
+BOOT-014 adds a standalone deterministic validation executor framework (`control-plane.validation-framework`). It runs a caller-registered set of command or in-process function validators, in declared order, and normalizes each result to PASS/FAIL/ERROR plus a deterministic required-validator aggregate outcome. It performs no evidence persistence, no lifecycle transition, and no AI semantic review.
 
-BOOT-015 adds a standalone deterministic evidence and review artifact store (`control-plane.evidence-store`). `FileEvidenceStore.record()` validates an `ipt.validation-evidence` or `ipt.review-result` payload against its exact schema, binds it to a task/validator-or-role lineage and its exact `revisionIdentity`, and appends it without ever overwriting a prior record; `getCurrent`/`getHistory`/`checkRevision` distinguish current from superseded evidence and make a wrong-revision mismatch explicit. It performs no validator or review execution, no merge-readiness decision, and is not yet invoked by `agent start`, any CLI command, or the (still unimplemented) developer validation gate.
+BOOT-015 adds a standalone deterministic evidence and review artifact store (`control-plane.evidence-store`). `FileEvidenceStore.record()` validates an `ipt.validation-evidence` or `ipt.review-result` payload against its exact schema, binds it to a task/validator-or-role lineage and its exact `revisionIdentity`, and appends it without ever overwriting a prior record; `getCurrent`/`getHistory`/`checkRevision` distinguish current from superseded evidence and make a wrong-revision mismatch explicit. It performs no validator or review execution and no merge-readiness decision.
+
+BOOT-016 wires BOOT-014 and BOOT-015 into the lifecycle engine as `control-plane.dev-validation`, exposed through `agent validate <task-id> <actor-id> <run-id>`. It requires the task to be `IN_DEVELOPMENT` on its canonical branch, resolves the validators required for the task/repository (a pluggable `DeveloperValidatorResolver`; the local default runs the repository's own `npm run build`/`npm test`), runs them, persists every result as revision-bound `ipt.validation-evidence`, and reads that evidence back through `checkRevision` — never trusting the bare in-memory run result — before transitioning `IN_DEVELOPMENT -> DEV_VALIDATED` (all required checks `PASS`) or `IN_DEVELOPMENT -> DEV_VALIDATION_FAILED` (any required check not `PASS`) through the unmodified BOOT-009 state machine. It performs no QA/Architecture/UAT review and creates no pull request; those remain owned by BOOT-017 onward.
 
 ## Temporary source-of-truth rule
 
@@ -40,7 +43,7 @@ Until Bootstrap v1 cutover is **explicitly declared** in issue #1:
 5. Agent memory, conversation history, or self-reported status are never authoritative.
 6. Deterministic facts—files, refs, commits, lifecycle/lock records, validation output, exact revision identity, and recorded review evidence—take precedence over narrative claims.
 
-`agent next` is an operational read-only selector. `agent start` is an operational start-only orchestration command. During the manual bootstrap regime neither command grants an agent permission to ignore an explicitly assigned BOOT issue or self-select unrelated work.
+`agent next` is an operational read-only selector. `agent start` is an operational start-only orchestration command. `agent validate` is an operational developer-validation-gate command that transitions a task between `IN_DEVELOPMENT`, `DEV_VALIDATED`, and `DEV_VALIDATION_FAILED` only. During the manual bootstrap regime none of these commands grant an agent permission to ignore an explicitly assigned BOOT issue or self-select unrelated work.
 
 ## BOOT-013 start boundary
 
@@ -59,11 +62,25 @@ This ordering preserves the master-plan recoverability invariant. A fresh failur
 
 Local runtime state created by the BOOT-013 composition lives under ignored `.agent/state/` paths. This state is repository-local operational state, not a substitute for GitHub's temporary bootstrap task authorization before cutover.
 
+## BOOT-016 developer validation gate boundary
+
+A `agent validate <task-id> <actor-id> <run-id>` run composes existing modules without weakening their contracts:
+
+1. confirm the task's current lifecycle state is exactly `IN_DEVELOPMENT` (read from the same `.agent/state/lifecycle/<taskId>.lifecycle.json` file `agent start` writes);
+2. assert the current Git branch matches the task's canonical branch and resolve the exact `HEAD` revision;
+3. resolve the validators required for the task/repository through the pluggable `DeveloperValidatorResolver` boundary (the local default: the repository's own `npm run build` and `npm test`);
+4. run them, in resolved order, through the unmodified BOOT-014 `ValidationExecutor`;
+5. persist every result as a `taskId`/`validatorId`-scoped `ipt.validation-evidence` record bound to the exact resolved revision;
+6. read each record back through the BOOT-015 store's `checkRevision` — a bare in-memory run result is never trusted on its own;
+7. transition `IN_DEVELOPMENT -> DEV_VALIDATED` (all required checks `PASS`) or `IN_DEVELOPMENT -> DEV_VALIDATION_FAILED` (any required check not `PASS`) through the unmodified BOOT-009 state machine, with the exact revision as `revisionIdentity`;
+8. persist the lifecycle transition only after every required evidence record is confirmed `CURRENT`.
+
+A branch, resolution, or evidence-persistence failure leaves the task's lifecycle state unchanged; no partial evidence is treated as authoritative and no transition is attempted. Local runtime state created by this composition lives under the same ignored `.agent/state/` paths as `agent start`.
+
 ## Bootstrap phase boundary
 
-The repository still contains no fantasy-football product implementation. The bootstrap has progressed beyond documentation-only scaffolding, but these downstream capabilities remain outside the current start boundary:
+The repository still contains no fantasy-football product implementation. The bootstrap has progressed beyond documentation-only scaffolding, but these downstream capabilities remain outside the current boundary:
 
-- wiring the BOOT-014 validation executor framework or the BOOT-015 evidence store into the developer validation gate or lifecycle transitions;
 - QA/Architecture/UAT execution and verdict normalization;
 - review retry/rework orchestration;
 - PR creation/update and revision-bound review invalidation;
@@ -72,7 +89,7 @@ The repository still contains no fantasy-football product implementation. The bo
 - sequential orchestration/cutover tooling;
 - fantasy-football product behavior.
 
-Later BOOT issues own those capabilities and must not be pulled into BOOT-013.
+Later BOOT issues own those capabilities and must not be pulled into BOOT-013 or BOOT-016.
 
 ## Bootstrap validation principle
 
@@ -83,6 +100,7 @@ A clean checkout should remain understandable without hidden conversation contex
 - module contracts state both structural and semantic expectations;
 - assignment, lifecycle, branch, and context facts are explicit rather than prompt convention;
 - `agent start` identifies its task, branch, revision, assignment identity, acceptance criteria/context, and next instructions;
-- expected start conflicts fail explicitly;
+- `agent validate` identifies its task, revision, resulting lifecycle state, every check's status/evidence location, and which required checks failed;
+- expected start/validate conflicts fail explicitly;
 - same-assignment reruns have documented resume behavior;
-- no downstream validation/review/merge behavior is falsely described as implemented.
+- no downstream review/PR/merge behavior is falsely described as implemented.

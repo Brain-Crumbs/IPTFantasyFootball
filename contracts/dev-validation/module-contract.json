@@ -1,0 +1,123 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.dev-validation",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "DeveloperValidationGate.validate(request): Promise<DeveloperValidationResult>",
+      "DeveloperValidationRequest { taskId, actorId, runId, occurredAt }",
+      "DeveloperValidationStateStore.get/save lifecycle persistence boundary",
+      "DeveloperValidationBranchAdapter.assertCurrentTaskBranch/currentRevision boundary",
+      "DeveloperValidationEvidenceStore.record/checkRevision boundary",
+      "DeveloperValidatorResolver.resolve(task, revision): readonly ValidatorSpec[]",
+      "DeveloperValidationCheckResult { validatorId, category, required, status, evidenceOutcome, diagnostics, evidenceLineageId, evidenceSequence }",
+      "DeveloperValidationResult { taskId, outcome, lifecycleState, revision, startedAt, finishedAt, checks, failedCheckIds, evidenceLocation }",
+      "FileDeveloperValidationStateStore(root)",
+      "RepositoryValidatorResolver(repositoryRoot)",
+      "createLocalDeveloperValidationGate(repositoryRoot, options?) local composition root"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "deterministic-required-validator-gating",
+      "revision-bound-evidence-before-transition",
+      "branch-identity-verified-before-execution",
+      "evidence-read-back-before-lifecycle-commit",
+      "structured-failure-remediation-detail",
+      "pluggable-task-and-repository-validator-resolution"
+    ],
+    "behavioralConstraints": [
+      "validate() only accepts a task whose current lifecycle state is IN_DEVELOPMENT; every other state is rejected as TASK_STATE_NOT_VALIDATABLE before any validator runs",
+      "canonical branch identity is asserted before validator resolution or evidence persistence, so a wrong-branch invocation never executes checks or writes evidence",
+      "validators are resolved through the pluggable DeveloperValidatorResolver boundary and executed through the unmodified BOOT-014 ValidationExecutor in the exact order resolved",
+      "every validator result is persisted as an ipt.validation-evidence record bound to the exact current branch head revision before the gate trusts it",
+      "the gate reads persisted evidence back through checkRevision (not only the in-memory ValidationExecutor result) to confirm each record is CURRENT for the exact revision before deciding the lifecycle transition",
+      "a validator ERROR status is recorded as evidence outcome BLOCKED, distinct from FAIL, but is treated the same as FAIL for the required-check aggregate",
+      "the lifecycle transitions to DEV_VALIDATED only when every required validator's persisted, revision-checked evidence is PASS; any other required outcome transitions to DEV_VALIDATION_FAILED instead",
+      "an optional (non-required) validator's FAIL or ERROR status is recorded as evidence but never blocks DEV_VALIDATED",
+      "the lifecycle transition is committed through the unmodified BOOT-009 state machine with FAILURE_EVIDENCE_RECORDED or DEV_VALIDATION_PASSED as the satisfied prerequisite, and is persisted only after every required evidence record is confirmed CURRENT",
+      "the result identifies every check's validator ID, category, required flag, status, evidence outcome, diagnostics, and the exact evidence lineage/sequence it was recorded at, plus a failedCheckIds list of required checks that did not pass"
+    ],
+    "invariants": [
+      "the gate performs no QA, Architecture, or UAT review",
+      "the gate creates no pull request and performs no merge-readiness computation",
+      "the gate does not invoke an AI provider",
+      "the gate never advances lifecycle state from evidence it has not itself just recorded and revision-checked as CURRENT",
+      "a branch, resolution, or evidence-persistence failure leaves the task's lifecycle state unchanged"
+    ],
+    "examples": [
+      "an IN_DEVELOPMENT task on its canonical branch with all required validators passing advances to DEV_VALIDATED with one CURRENT evidence record per validator",
+      "the same task with one required validator failing advances to DEV_VALIDATION_FAILED instead, with the failing validator's ID in failedCheckIds",
+      "a validator that errors (crashes or times out) is recorded as evidence outcome BLOCKED and is treated as a failing required check",
+      "after a successful validation, checking the recorded evidence against a different revision identity returns REVISION_MISMATCH rather than being mistaken for evidence of the new revision"
+    ],
+    "edgeCases": [
+      "a task not currently IN_DEVELOPMENT is rejected as TASK_STATE_NOT_VALIDATABLE before branch identity is even checked",
+      "an unregistered task ID is rejected as TASK_NOT_FOUND",
+      "a wrong current branch is rejected as BRANCH_REJECTED before any validator is resolved or executed",
+      "an empty resolved validator set is rejected as VALIDATOR_RESOLUTION_FAILED",
+      "an evidence record rejected by the BOOT-015 store's schema validation surfaces as EVIDENCE_REJECTED rather than silently proceeding",
+      "a stale expected lifecycle state at commit time is rejected as STATE_CONFLICT rather than overwriting a concurrent transition"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.lifecycle-state-machine",
+    "control-plane.validation-framework",
+    "control-plane.evidence-store",
+    "control-plane.git-branch-lifecycle",
+    "control-plane.task-registry",
+    "control-plane.dev-start",
+    "node:fs",
+    "node:path"
+  ],
+  "forbiddenDependencies": [
+    "review-executors/*",
+    "agent-provider/*",
+    "pull-request-lifecycle/*",
+    "merge-controller/*",
+    "fantasy-product/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-review-framework",
+      "expectations": [
+        "a task only enters QA/Architecture/UAT review after this gate has recorded a DEV_VALIDATED transition backed by revision-bound, schema-validated evidence",
+        "the exact revision the review pipeline evaluates matches the revisionIdentity recorded on the gate's evidence"
+      ],
+      "requiredCapabilities": [
+        "deterministic-required-validator-gating",
+        "revision-bound-evidence-before-transition"
+      ],
+      "acceptedRanges": [
+        "a DeveloperValidationResult with outcome PASS and lifecycleState DEV_VALIDATED",
+        "a DeveloperValidationResult with outcome FAIL and lifecycleState DEV_VALIDATION_FAILED"
+      ],
+      "requiredReachableRanges": [
+        "successful all-required-pass validation",
+        "a required-check failure that blocks DEV_VALIDATED",
+        "explicit branch/task/revision-identity rejection before evidence is trusted"
+      ]
+    },
+    {
+      "consumerId": "future-sequential-orchestrator",
+      "expectations": [
+        "the developer validation gate remains a deterministic, provider-neutral boundary between IN_DEVELOPMENT and independent review",
+        "a validation run's structured failure detail is sufficient to route a task back to development without additional narrative interpretation"
+      ],
+      "requiredCapabilities": [
+        "structured-failure-remediation-detail",
+        "branch-identity-verified-before-execution"
+      ],
+      "acceptedRanges": [
+        "PASS or FAIL DeveloperValidationResult, or a structured DeveloperValidationError"
+      ],
+      "requiredReachableRanges": [
+        "happy-path validation",
+        "required-check failure",
+        "wrong-branch rejection",
+        "not-IN_DEVELOPMENT rejection"
+      ]
+    }
+  ]
+}

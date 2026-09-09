@@ -33,10 +33,13 @@ The control-plane foundation currently includes:
 - BOOT-011 — canonical task-branch lifecycle adapter;
 - BOOT-012 — role-aware context compiler;
 - BOOT-013 — start-only Developer workflow / `agent start <owner-id> <run-id>`;
-- BOOT-014 — deterministic validation executor framework (`control-plane.validation-framework`, not yet wired into the CLI or a lifecycle gate);
-- BOOT-015 — deterministic evidence and review artifact store (`control-plane.evidence-store`, schema-validated, revision-bound, append-only; not yet wired into the CLI or a lifecycle gate).
+- BOOT-014 — deterministic validation executor framework (`control-plane.validation-framework`);
+- BOOT-015 — deterministic evidence and review artifact store (`control-plane.evidence-store`, schema-validated, revision-bound, append-only);
+- BOOT-016 — deterministic developer validation gate / `agent validate <task-id> <actor-id> <run-id>` (`control-plane.dev-validation`, wires BOOT-014/015 into the BOOT-009 lifecycle engine).
 
 `agent start` composes next-task resolution, assignment locking, lifecycle pre-development gates, canonical branch ensure/assertion, exact revision lookup, and Developer context compilation. It is idempotent/resumable for the same active assignment and fails explicitly on lock, branch, context, lifecycle, or persistence blockers.
+
+`agent validate` requires the task to be `IN_DEVELOPMENT` on its canonical branch, resolves and runs the validators required for the task/repository, persists every result as revision-bound `ipt.validation-evidence`, reads that evidence back before trusting it, and transitions to `DEV_VALIDATED` only when every required check's persisted evidence is `PASS` — otherwise `DEV_VALIDATION_FAILED`.
 
 However, the project has **not** thereby declared Bootstrap v1 cutover. Until issue #1 explicitly does so:
 
@@ -44,9 +47,9 @@ However, the project has **not** thereby declared Bootstrap v1 cutover. Until is
 - The assigned BOOT child issue is authoritative for task-specific scope and authorization.
 - GitHub branch and PR state provide the integration boundary.
 - `agent next` remains a read-only query and does not authorize self-selection.
-- `agent start` is an operational workflow primitive, not permission to replace an explicit assignment with unrelated automatically selected work during the manual regime.
-- `validate`, `review`, and `status` remain unavailable until their owning BOOT tasks land.
-- Do not invent, simulate, or claim future validation, review, PR/merge, completion, or agent-provider behavior.
+- `agent start` and `agent validate` are operational workflow primitives, not permission to replace an explicit assignment with unrelated automatically selected work during the manual regime.
+- `review` and `status` remain unavailable until their owning BOOT tasks land.
+- Do not invent, simulate, or claim future review, PR/merge, completion, or agent-provider behavior.
 
 When repository-native workflow control is explicitly declared authoritative, follow the documented command contract then in force instead of preserving the manual exception by habit.
 
@@ -142,9 +145,11 @@ For every acceptance criterion in the assigned issue:
 
 A test command passing is not sufficient when the acceptance criterion is semantic or documentation-oriented; validate the actual promised behavior.
 
-### Bootstrap exception: validation evidence is still partly manual until its owning tasks land
+### Bootstrap exception: independent review evidence is still manual until its owning tasks land
 
-Until BOOT-014/015/016 make deterministic validation/evidence capture operational end-to-end, use the strongest reproducible checks currently available. This can include build/test execution, exact file inspection, repository/path verification, diff inspection, and explicit acceptance-criteria mapping.
+BOOT-014/015/016 make deterministic developer validation/evidence capture operational end-to-end: `agent validate <task-id> <actor-id> <run-id>` runs the required checks, persists revision-bound `ipt.validation-evidence`, and gates `IN_DEVELOPMENT -> DEV_VALIDATED`/`DEV_VALIDATION_FAILED` on it. Use it (or the strongest reproducible equivalent checks when it cannot run in the current tool environment) rather than narrative self-report of "tests passed."
+
+Independent QA/Architecture/UAT review is still manual until BOOT-017 onward lands. For that, continue to use the strongest reproducible checks currently available — exact file inspection, repository/path verification, diff inspection, and explicit acceptance-criteria mapping.
 
 Do not label manual inspection as a future automated validation gate. State exactly what was checked and what evidence exists.
 
