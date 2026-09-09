@@ -17,6 +17,7 @@ export type ErrorCode =
   | "USAGE_UNEXPECTED_ARGUMENT"
   | "COMMAND_NOT_IMPLEMENTED"
   | "START_WORKFLOW_BLOCKED"
+  | "VALIDATE_WORKFLOW_BLOCKED"
   | "INTERNAL_ERROR";
 
 export interface CliError {

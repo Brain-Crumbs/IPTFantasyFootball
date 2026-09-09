@@ -47,13 +47,41 @@ function fakeStartResult(request) {
   });
 }
 
+function fakeValidationResult(outcome = "PASS") {
+  const status = outcome === "PASS" ? "PASS" : "FAIL";
+  return Object.freeze({
+    taskId: "BOOT-016",
+    outcome,
+    lifecycleState: outcome === "PASS" ? "DEV_VALIDATED" : "DEV_VALIDATION_FAILED",
+    revision: "abc123",
+    startedAt: "2026-09-09T12:00:00.000Z",
+    finishedAt: "2026-09-09T12:00:01.000Z",
+    checks: Object.freeze([
+      Object.freeze({
+        validatorId: "repository:build",
+        category: "type-check",
+        required: true,
+        status,
+        evidenceOutcome: status,
+        diagnostics: "exit code 0",
+        evidenceLineageId: "BOOT-016::validator::repository:build",
+        evidenceSequence: 1,
+      }),
+    ]),
+    failedCheckIds: Object.freeze(outcome === "PASS" ? [] : ["repository:build"]),
+    evidenceLocation: ".agent/state/evidence (lineage <taskId>::validator::<validatorId>)",
+  });
+}
+
 test("help describes the control-plane purpose and bootstrap command surface", async () => {
   const result = await runCli(["help"]);
   assert.equal(result.exitCode, EXIT_CODES.SUCCESS);
   assert.match(result.stdout, /Deterministic, provider-neutral/);
   assert.match(result.stdout, /next/);
   assert.match(result.stdout, /start/);
+  assert.match(result.stdout, /validate/);
   assert.match(result.stdout, /BOOT-013/);
+  assert.match(result.stdout, /BOOT-016/);
   assert.match(result.stdout, /implemented/);
 });
 
@@ -85,11 +113,87 @@ test("trailing --json controls error rendering regardless of argument order", as
   assert.equal(payload.error.code, "USAGE_UNKNOWN_OPTION");
 });
 
-test("still-reserved validation command fails clearly instead of silently succeeding", async () => {
-  const result = await runCli(["validate"]);
+test("still-reserved review command fails clearly instead of silently succeeding", async () => {
+  const result = await runCli(["review"]);
   assert.equal(result.exitCode, EXIT_CODES.NOT_IMPLEMENTED);
   assert.match(result.stderr, /^COMMAND_NOT_IMPLEMENTED:/);
-  assert.match(result.stderr, /BOOT-014\/016/);
+  assert.match(result.stderr, /BOOT-017/);
+});
+
+test("validate requires exactly task, actor, and run identity", async () => {
+  const missing = await runCli(["validate"]);
+  const partial = await runCli(["validate", "BOOT-016"]);
+  const extra = await runCli(["validate", "BOOT-016", "agent-a", "run-1", "extra"]);
+  assert.equal(missing.exitCode, EXIT_CODES.USAGE_ERROR);
+  assert.equal(partial.exitCode, EXIT_CODES.USAGE_ERROR);
+  assert.equal(extra.exitCode, EXIT_CODES.USAGE_ERROR);
+  assert.match(missing.stderr, /requires exactly <task-id> <actor-id> <run-id>/);
+});
+
+test("validate emits outcome, lifecycle state, checks, and evidence location on success", async () => {
+  let seenRequest = null;
+  const result = await runCli(
+    ["--json", "validate", "BOOT-016", "agent-a", "run-1"],
+    {
+      developerValidationGate: {
+        async validate(request) {
+          seenRequest = request;
+          return fakeValidationResult("PASS");
+        },
+      },
+      now: () => "2026-09-09T12:00:00.000Z",
+    },
+  );
+
+  assert.equal(result.exitCode, EXIT_CODES.SUCCESS);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(seenRequest, {
+    taskId: "BOOT-016",
+    actorId: "agent-a",
+    runId: "run-1",
+    occurredAt: "2026-09-09T12:00:00.000Z",
+  });
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.command, "validate");
+  assert.equal(payload.data.outcome, "PASS");
+  assert.equal(payload.data.lifecycleState, "DEV_VALIDATED");
+  assert.equal(payload.data.checks.length, 1);
+  assert.deepEqual(payload.data.failedCheckIds, []);
+});
+
+test("validate reports a FAIL outcome as a successful command result, not a workflow error", async () => {
+  const result = await runCli(
+    ["--json", "validate", "BOOT-016", "agent-a", "run-1"],
+    { developerValidationGate: { async validate() { return fakeValidationResult("FAIL"); } } },
+  );
+
+  assert.equal(result.exitCode, EXIT_CODES.SUCCESS);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.data.outcome, "FAIL");
+  assert.equal(payload.data.lifecycleState, "DEV_VALIDATION_FAILED");
+  assert.deepEqual(payload.data.failedCheckIds, ["repository:build"]);
+});
+
+test("validate surfaces a deterministic workflow blocker as WORKFLOW_BLOCKED", async () => {
+  const result = await runCli(
+    ["--json", "validate", "BOOT-016", "agent-a", "run-1"],
+    {
+      developerValidationGate: {
+        async validate() {
+          const { DeveloperValidationError } = await import("../dist/dev-validation/index.js");
+          throw new DeveloperValidationError("BRANCH_REJECTED", "wrong branch");
+        },
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, EXIT_CODES.WORKFLOW_BLOCKED);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error.code, "VALIDATE_WORKFLOW_BLOCKED");
+  assert.match(payload.error.message, /BRANCH_REJECTED/);
 });
 
 test("start requires explicit owner and run identity", async () => {
@@ -176,8 +280,9 @@ test("process-level help/version/invalid/reserved/start-usage/next exit behavior
   assert.equal(spawnCli(["help"]).status, EXIT_CODES.SUCCESS);
   assert.equal(spawnCli(["version"]).status, EXIT_CODES.SUCCESS);
   assert.equal(spawnCli(["not-a-command"]).status, EXIT_CODES.USAGE_ERROR);
-  assert.equal(spawnCli(["validate"]).status, EXIT_CODES.NOT_IMPLEMENTED);
+  assert.equal(spawnCli(["review"]).status, EXIT_CODES.NOT_IMPLEMENTED);
   assert.equal(spawnCli(["start"]).status, EXIT_CODES.USAGE_ERROR);
+  assert.equal(spawnCli(["validate"]).status, EXIT_CODES.USAGE_ERROR);
   assert.equal(spawnCli(["next"]).status, EXIT_CODES.SUCCESS);
 });
 
