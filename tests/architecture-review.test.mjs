@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -595,6 +595,38 @@ test("an Architecture reviewerId matching the bridged Developer actor is rejecte
   }
 });
 
+test("review() rejects a supplied context that does not match a freshly recompiled Architect package for the exact catalog", () => {
+  const activeTask = task({ affectedContracts: ["example.range-provider"] });
+  const value = fixture({
+    task: activeTask,
+    artifacts: [diffArtifact(activeTask.taskId), rangeProviderContractArtifact()],
+  });
+  try {
+    const prepared = value.gate.prepareContext({ taskId: value.task.taskId });
+    // Simulate a hand-built/mutated context that still identifies the
+    // correct task/role/revision but drops the derived consumer-requirement
+    // artifact a caller could otherwise omit to hide relevant information
+    // from the persisted contextPackageId.
+    const forgedContext = {
+      ...prepared.context,
+      artifacts: prepared.context.artifacts.filter((artifact) => artifact.kind !== "consumer-requirement"),
+    };
+
+    assert.throws(
+      () => value.gate.review(reviewRequest(value, { context: forgedContext })),
+      (error) => error instanceof ArchitectureReviewError && error.code === "CONTEXT_REJECTED",
+    );
+
+    assert.equal(
+      value.evidenceStore.getCurrent(reviewResultLineageId(activeTask.taskId, "Architect")),
+      null,
+      "no Architecture evidence should be persisted for a rejected forged context",
+    );
+  } finally {
+    cleanup(value);
+  }
+});
+
 test("a revision change after Architecture PASS leaves the prior Architecture evidence stale for the new revision", () => {
   const value = fixture();
   try {
@@ -810,6 +842,30 @@ test("FileArchitectureReviewTaskLock reclaims a lock file abandoned by a crashed
   }
 });
 
+test("FileArchitectureReviewTaskLock's release never deletes a different holder's replacement lock", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-architecture-review-lock-ownership-"));
+  try {
+    const lock = new FileArchitectureReviewTaskLock(root);
+    const lockPath = join(root, "BOOT-019.lifecycle.lock");
+
+    lock.withLock("BOOT-019", () => {
+      // Simulate a concurrent reclaim-and-recreate that replaced this
+      // holder's own lock file with a different holder's token while this
+      // holder was still inside its critical section (e.g. this holder ran
+      // past STALE_LOCK_MS but had not actually crashed).
+      writeFileSync(lockPath, "different-holder-token", { encoding: "utf8" });
+    });
+
+    assert.equal(
+      readFileSync(lockPath, "utf8"),
+      "different-holder-token",
+      "release() must not delete a lock file it no longer owns",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("RepositoryArchitectureContextSource includes a dependency task's affected contract, un-redacted, and an exact-revision diff", () => {
   const dependency = task({ taskId: "BOOT-017", dependencies: [], affectedContracts: ["control-plane.review-framework"] });
   const primary = task({ taskId: "BOOT-019", dependencies: ["BOOT-017"], affectedContracts: [] });
@@ -831,4 +887,28 @@ test("RepositoryArchitectureContextSource includes a dependency task's affected 
   assert.ok(diff, "expected an exact-revision diff artifact");
   assert.equal(diff.revision, "HEAD");
   assert.equal(typeof diff.content, "string");
+});
+
+test("RepositoryArchitectureContextSource also includes a declared consumer's own repository contract, not only the producer's summary", () => {
+  const primary = task({ taskId: "BOOT-019", dependencies: [], affectedContracts: ["example.range-provider"] });
+  const registry = new Map([[primary.taskId, primary]]);
+  const source = new RepositoryArchitectureContextSource(repositoryRoot);
+
+  const artifacts = source.artifactsFor(primary, registry, "HEAD");
+
+  const producer = artifacts.find(
+    (artifact) => artifact.kind === "contract" && artifact.referenceId === "example.range-provider",
+  );
+  assert.ok(producer, "expected the task's own affected contract to be included");
+
+  const consumer = artifacts.find(
+    (artifact) => artifact.kind === "contract" && artifact.referenceId === "consumer.alerting",
+  );
+  assert.ok(
+    consumer,
+    "expected consumer.alerting's own repository contract to be included because example.range-provider declares it as a known consumer",
+  );
+  assert.deepEqual(consumer.content.semanticContract.invariants, [
+    "Every score in [90, 100] that example.range-provider can produce must reach the high-severity path",
+  ]);
 });

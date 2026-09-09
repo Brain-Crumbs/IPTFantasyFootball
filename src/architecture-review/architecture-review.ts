@@ -31,6 +31,7 @@ import {
   type TransitionPrerequisiteKey,
 } from "../lifecycle/index.js";
 import {
+  computeContextPackageId,
   createLocalReviewFramework,
   ReviewFrameworkError,
   REVIEW_OUTCOMES,
@@ -307,6 +308,15 @@ export class ArchitectureReviewGate {
     const devValidatedEvent = this.assertDevValidationEvidence(task, record, revision);
     const records = this.verifyDeveloperValidationEvidence(task, revision, devValidatedEvent);
     const qaRecord = this.assertQaPassedIfRequired(task, revision);
+    const architectContext = this.compileContextPackage(
+      "Architect",
+      task,
+      revision,
+      devValidatedEvent,
+      records,
+      qaRecord,
+    );
+    this.assertSuppliedContextMatches(task, architectContext, request.context);
     const developerContext = this.compileContextPackage(
       "Developer",
       task,
@@ -489,7 +499,16 @@ export class ArchitectureReviewGate {
       return null;
     }
     const lineageId = reviewResultLineageId(task.taskId, "QA");
-    const current = this.dependencies.evidenceStore.getCurrent(lineageId);
+    let current: StoredEvidenceRecord | null;
+    try {
+      current = this.dependencies.evidenceStore.getCurrent(lineageId);
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new ArchitectureReviewError(
+        "TASK_STATE_NOT_REVIEWABLE",
+        `Task '${task.taskId}' QA review-result evidence '${lineageId}' could not be read: ${detail}`,
+      );
+    }
     if (current === null || current.payload.outcome !== "PASS" || current.payload.revisionIdentity !== revision) {
       throw new ArchitectureReviewError(
         "TASK_STATE_NOT_REVIEWABLE",
@@ -497,6 +516,34 @@ export class ArchitectureReviewGate {
       );
     }
     return current;
+  }
+
+  /**
+   * `ReviewFramework.submit()` only validates that the supplied
+   * `contextPackage`'s `taskId`/`role`/`sourceRevision` match the
+   * submission — it never recomputes or compares the package's artifact
+   * catalog. Without this check, a caller could submit a hand-built or
+   * mutated context (for example, one that omits the derived
+   * consumer-requirement artifacts) that still identifies the correct
+   * task/role/revision, and `review()` would persist a `contextPackageId`
+   * that misleadingly appears to prove the reviewer saw the full,
+   * un-redacted producer/consumer picture. This recompiles the same
+   * Architect-role package `prepareContext()` would have produced from the
+   * current artifact catalog and rejects a caller-supplied `context` whose
+   * content identity (`computeContextPackageId`) does not match it exactly.
+   */
+  private assertSuppliedContextMatches(
+    task: RegisteredTask,
+    expected: ContextPackage,
+    supplied: ContextPackage,
+  ): void {
+    if (computeContextPackageId(expected) !== computeContextPackageId(supplied)) {
+      throw new ArchitectureReviewError(
+        "CONTEXT_REJECTED",
+        `Task '${task.taskId}' supplied Architect review context does not match a freshly recompiled context package for the exact task/role/revision artifact catalog; call prepareContext() again and submit exactly the package it returns.`,
+        false,
+      );
+    }
   }
 
   private compileContextPackage(
@@ -737,56 +784,125 @@ export class FileArchitectureReviewTaskLock implements ArchitectureReviewTaskLoc
 
   withLock<T>(taskId: string, fn: () => T): T {
     const lockPath = this.lockPathFor(taskId);
-    this.acquire(lockPath, taskId);
+    const token = this.acquire(lockPath, taskId);
     try {
       return fn();
     } finally {
-      try {
-        unlinkSync(lockPath);
-      } catch {
-        // Already gone, or reclaimed by another process as stale; either
-        // way there is nothing left for this holder to clean up.
-      }
+      this.release(lockPath, token);
     }
   }
 
-  private acquire(lockPath: string, taskId: string): void {
-    if (this.tryCreate(lockPath)) return;
-    if (this.reclaimIfStale(lockPath) && this.tryCreate(lockPath)) return;
+  private acquire(lockPath: string, taskId: string): string {
+    const created = this.tryCreate(lockPath);
+    if (created !== null) return created;
+    if (this.reclaimIfStale(lockPath)) {
+      const retried = this.tryCreate(lockPath);
+      if (retried !== null) return retried;
+    }
     throw new ArchitectureReviewError(
       "STATE_CONFLICT",
       `Task '${taskId}' Architecture review commit is already in progress by a concurrent caller; retry once it finishes.`,
     );
   }
 
-  private tryCreate(lockPath: string): boolean {
+  /**
+   * Only removes the lock file when it still holds exactly the token this
+   * holder created. A `reclaimIfStale` by another caller may have already
+   * replaced this holder's own lock file with a different holder's token
+   * (see `reclaimIfStale`'s doc comment); unconditionally unlinking here
+   * would delete that other caller's active lock out from under it.
+   */
+  private release(lockPath: string, token: string): void {
+    let current: string | null;
     try {
-      writeFileSync(lockPath, String(Date.now()), { encoding: "utf8", flag: "wx" });
-      return true;
+      current = readFileSync(lockPath, "utf8");
     } catch {
-      return false;
+      current = null;
+    }
+    if (current !== token) return;
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      // Already gone, or reclaimed by another process as stale; either
+      // way there is nothing left for this holder to clean up.
     }
   }
 
+  /**
+   * Creates the lock file exclusively and returns the unique token this
+   * holder wrote, or `null` when the file already exists (ordinary
+   * contention). Any other failure (permission error, read-only state
+   * directory, exhausted disk, ...) is a real storage problem, not
+   * contention, and is surfaced as `STATE_IO_FAILED` rather than being
+   * misreported as another reviewer holding the task.
+   */
+  private tryCreate(lockPath: string): string | null {
+    const token = `${Date.now()}:${randomLockToken()}`;
+    try {
+      writeFileSync(lockPath, token, { encoding: "utf8", flag: "wx" });
+      return token;
+    } catch (error: unknown) {
+      if (errorCode(error) === "EEXIST") return null;
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new ArchitectureReviewError(
+        "STATE_IO_FAILED",
+        `Cannot create Architecture review task lock at '${lockPath}': ${detail}`,
+      );
+    }
+  }
+
+  /**
+   * Reclaims a lock file whose recorded age exceeds `STALE_LOCK_MS`, using
+   * `renameSync` as an atomic compare-and-take primitive: at most one
+   * concurrent caller can successfully rename a given path away (a second
+   * caller's rename of an already-moved path fails with `ENOENT`), so at
+   * most one caller ever "wins" reclaiming any single stale lock instance
+   * — two callers that both observe the same stale lock can no longer both
+   * proceed. This also protects a still-legitimate holder that merely ran
+   * past `STALE_LOCK_MS`: because `release()` only unlinks the lock file
+   * when it still holds its own token, a reclaim that replaces the file
+   * with a new token leaves that original holder's eventual `release()` a
+   * harmless no-op instead of deleting the reclaiming holder's lock.
+   */
   private reclaimIfStale(lockPath: string): boolean {
-    let heldSince = Number.NaN;
+    let content: string;
     try {
-      heldSince = Number(readFileSync(lockPath, "utf8"));
+      content = readFileSync(lockPath, "utf8");
     } catch {
       return false;
     }
+    const heldSince = Number(content.split(":")[0]);
     if (!Number.isFinite(heldSince) || Date.now() - heldSince <= STALE_LOCK_MS) return false;
+
+    const claimPath = `${lockPath}.reclaim-${randomLockToken()}`;
     try {
-      unlinkSync(lockPath);
-      return true;
+      renameSync(lockPath, claimPath);
     } catch {
+      // Another caller already reclaimed this lock, or its holder already
+      // released it; either way this caller did not win the reclaim.
       return false;
     }
+    try {
+      unlinkSync(claimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    return true;
   }
 
   private lockPathFor(taskId: string): string {
     return join(this.root, `${taskId}.lifecycle.lock`);
   }
+}
+
+function randomLockToken(): string {
+  return Math.random().toString(36).slice(2);
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
 }
 
 /**
@@ -839,19 +955,46 @@ export class RepositoryArchitectureContextSource implements ArchitectureReviewCo
       }
     }
 
+    // Parse every repository contract once, keyed by its own moduleId, so
+    // the task's own affected contracts' declared knownConsumers can be
+    // cross-referenced against the repository's other contracts below
+    // without re-scanning the tree.
+    const parsedContractsByModuleId = new Map<string, { path: string; content: Record<string, unknown> }>();
     for (const path of this.jsonFilesAtRevision(revision, "contracts")) {
       const parsed = this.parseJsonObjectAtRevision(revision, path);
-      const moduleId = parsed?.moduleId;
-      if (typeof moduleId === "string" && contractIds.has(moduleId)) {
-        artifacts.push({
-          artifactId: `contract:${moduleId}`,
-          kind: "contract",
-          sourcePath: path,
-          referenceId: moduleId,
-          revision,
-          content: parsed,
-        });
+      if (parsed === null) continue;
+      const moduleId = parsed.moduleId;
+      if (typeof moduleId === "string" && moduleId.length > 0) {
+        parsedContractsByModuleId.set(moduleId, { path, content: parsed });
       }
+    }
+
+    // A contract's own knownConsumers entries only carry the producer's
+    // summary of what each consumer expects. When a declared consumer also
+    // has its own repository contract, include that contract too, so the
+    // Architect can compare the producer's and consumer's own declared
+    // capabilities/invariants/assumptions directly rather than relying
+    // solely on one side's account of the relationship.
+    for (const contractId of task.affectedContracts) {
+      const producer = parsedContractsByModuleId.get(contractId);
+      for (const consumerId of declaredConsumerIds(producer?.content)) {
+        if (parsedContractsByModuleId.has(consumerId)) {
+          contractIds.add(consumerId);
+        }
+      }
+    }
+
+    for (const contractId of [...contractIds].sort(compareText)) {
+      const entry = parsedContractsByModuleId.get(contractId);
+      if (entry === undefined) continue;
+      artifacts.push({
+        artifactId: `contract:${contractId}`,
+        kind: "contract",
+        sourcePath: entry.path,
+        referenceId: contractId,
+        revision,
+        content: entry.content,
+      });
     }
 
     artifacts.push(this.diffArtifact(task, revision));
@@ -1024,6 +1167,18 @@ function isLifecycleState(value: unknown): value is TaskLifecycleState {
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function declaredConsumerIds(content: Record<string, unknown> | undefined): readonly string[] {
+  const knownConsumers = content?.knownConsumers;
+  if (!Array.isArray(knownConsumers)) return [];
+  const ids: string[] = [];
+  for (const consumer of knownConsumers) {
+    if (typeof consumer !== "object" || consumer === null) continue;
+    const consumerId = (consumer as Record<string, unknown>).consumerId;
+    if (typeof consumerId === "string" && consumerId.length > 0) ids.push(consumerId);
+  }
+  return ids;
 }
 
 function validateRequest(request: ArchitectureReviewRequest): void {
