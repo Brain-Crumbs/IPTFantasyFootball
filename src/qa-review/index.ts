@@ -1,6 +1,7 @@
 export {
   EVIDENCE_STORE_SUPPORTED_SCHEMAS,
   FileQaReviewStateStore,
+  FileQaReviewTaskLock,
   QaReviewError,
   QaReviewGate,
   RepositoryQaContextSource,
@@ -9,6 +10,8 @@ export {
 
 export type {
   QaReviewBranchAdapter,
+  QaReviewContextRequest,
+  QaReviewContextResult,
   QaReviewContextSource,
   QaReviewDependencies,
   QaReviewErrorCode,
@@ -17,4 +20,5 @@ export type {
   QaReviewRequest,
   QaReviewResult,
   QaReviewStateStore,
+  QaReviewTaskLock,
 } from "./qa-review.js";
