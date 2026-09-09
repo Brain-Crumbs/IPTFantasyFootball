@@ -19,7 +19,9 @@ const DEFAULT_SCHEMA_RELATIVE_PATHS: Readonly<Record<SupportedEvidenceSchemaId, 
 });
 
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
-const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const RFC3339_DATE_TIME_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i;
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const SEQUENCE_WIDTH = 7;
 
 export interface StoredEvidenceRecord {
@@ -137,17 +139,15 @@ export class FileEvidenceStore implements EvidenceStore {
 
     const storedAt = new Date().toISOString();
     const frozenPayload = deepFreeze(clone(payload));
-    const { sequence, path } = this.#reserveNextSlot(lineageId);
+    const sequence = this.#writeNextSlot(lineageId, (attempt) =>
+      `${JSON.stringify({ lineageId, sequence: attempt, storedAt, payload: frozenPayload }, null, 2)}\n`,
+    );
     const record: StoredEvidenceRecord = Object.freeze({
       lineageId,
       sequence,
       status: "CURRENT",
       storedAt,
       payload: frozenPayload,
-    });
-    writeFileSync(path, `${JSON.stringify({ lineageId, sequence, storedAt, payload: frozenPayload }, null, 2)}\n`, {
-      encoding: "utf8",
-      flag: "wx",
     });
 
     return Object.freeze({ ok: true, record });
@@ -203,15 +203,27 @@ export class FileEvidenceStore implements EvidenceStore {
     return join(this.#root, safePart(lineageId));
   }
 
-  #reserveNextSlot(lineageId: string): { sequence: number; path: string } {
+  // Writes are retried on the exclusive-create itself (not just a prior
+  // existsSync check) so a concurrent writer that wins the same next
+  // sequence number causes this call to advance to the next slot instead
+  // of losing the record to an uncaught EEXIST.
+  #writeNextSlot(lineageId: string, content: (sequence: number) => string): number {
     const dir = this.#lineageDir(lineageId);
     mkdirSync(dir, { recursive: true });
     const existing = readdirSync(dir).filter((name) => /^\d+\.json$/.test(name));
     let sequence = existing.length + 1;
     for (;;) {
       const path = join(dir, `${String(sequence).padStart(SEQUENCE_WIDTH, "0")}.json`);
-      if (!existsSync(path)) return { sequence, path };
-      sequence += 1;
+      try {
+        writeFileSync(path, content(sequence), { encoding: "utf8", flag: "wx" });
+        return sequence;
+      } catch (error: unknown) {
+        if (existsSync(path)) {
+          sequence += 1;
+          continue;
+        }
+        throw error;
+      }
     }
   }
 }
@@ -361,7 +373,7 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
     if (typeof schema.pattern === "string" && !new RegExp(schema.pattern).test(value)) {
       reasons.push(`${instancePath}: string does not match pattern ${schema.pattern}`);
     }
-    if (schema.format === "date-time" && (!RFC3339_PATTERN.test(value) || Number.isNaN(Date.parse(value)))) {
+    if (schema.format === "date-time" && !isValidRfc3339DateTime(value)) {
       reasons.push(`${instancePath}: string is not a valid RFC 3339 date-time`);
     }
   }
@@ -431,6 +443,33 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
   return reasons;
 }
 
+// The regex alone (and Date.parse, which silently rolls an invalid calendar
+// date like Feb 30 forward into March) is not enough to reject an
+// out-of-range date-time: component ranges are checked explicitly so a
+// schema-invalid recordedAt is never accepted as a valid audit timestamp.
+function isValidRfc3339DateTime(value: string): boolean {
+  const match = RFC3339_DATE_TIME_PATTERN.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+
+  if (month < 1 || month > 12) return false;
+  const maxDay = month === 2 && isLeapYear(year) ? 29 : (DAYS_IN_MONTH[month - 1] as number);
+  if (day < 1 || day > maxDay) return false;
+  if (hour > 23) return false;
+  if (minute > 59) return false;
+  if (second > 59) return false;
+  return true;
+}
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -447,6 +486,21 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
+// Injective filesystem-safe encoding: every character outside [A-Za-z0-9-]
+// (including a literal "_") is escaped as "_" plus its 4-digit hex UTF-16
+// code unit, so no unescaped "_" ever appears in the output. That keeps the
+// encoding unambiguous left-to-right, which guarantees distinct inputs
+// (e.g. a validatorId containing "/" vs. one that is literally the escaped
+// form of that character) never collide on the same lineage directory.
 function safePart(value: string): string {
-  return encodeURIComponent(value).replace(/%/g, "_");
+  let out = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const ch = value[index] as string;
+    if (/[A-Za-z0-9-]/.test(ch)) {
+      out += ch;
+    } else {
+      out += `_${value.charCodeAt(index).toString(16).padStart(4, "0")}`;
+    }
+  }
+  return out;
 }

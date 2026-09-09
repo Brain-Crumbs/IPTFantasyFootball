@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -236,14 +236,85 @@ test("review-result and validation-evidence lineages for the same task never col
   });
 });
 
+// Mirrors the store's internal injective directory-name encoding: every
+// character outside [A-Za-z0-9-] becomes "_" plus its 4-digit hex UTF-16
+// code unit, so no unescaped "_" ever appears in the output.
+function safePart(value) {
+  let out = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const ch = value[index];
+    if (/[A-Za-z0-9-]/.test(ch)) {
+      out += ch;
+    } else {
+      out += `_${value.charCodeAt(index).toString(16).padStart(4, "0")}`;
+    }
+  }
+  return out;
+}
+
 test("persistence is append-only on disk: each write creates a new numbered file", () => {
   withStore((store, root) => {
     const lineageId = validationEvidenceLineageId("BOOT-015", "npm-test");
     store.record(validationEvidence({ revisionIdentity: "sha-aaa111" }));
     store.record(validationEvidence({ revisionIdentity: "sha-bbb222" }));
-    const dir = join(root, encodeURIComponent(lineageId).replace(/%/g, "_"));
+    const dir = join(root, safePart(lineageId));
     assert.ok(existsSync(join(dir, "0000001.json")));
     assert.ok(existsSync(join(dir, "0000002.json")));
+  });
+});
+
+test("lineage directory encoding never collides for different validator ids", () => {
+  withStore((store) => {
+    // Before the fix, encodeURIComponent("/").replace(/%/g, "_") produced
+    // "_2f", the same string a literal validatorId of "_2f" already maps to
+    // unescaped. The injective encoding must keep these two lineages apart.
+    const slashResult = store.record(validationEvidence({ taskId: "BOOT-020", validatorId: "a/b" }));
+    const literalResult = store.record(validationEvidence({ taskId: "BOOT-020", validatorId: "a_002fb" }));
+    assert.equal(slashResult.ok, true);
+    assert.equal(literalResult.ok, true);
+    assert.notEqual(slashResult.record.lineageId, literalResult.record.lineageId);
+
+    const slashCurrent = store.getCurrent(validationEvidenceLineageId("BOOT-020", "a/b"));
+    const literalCurrent = store.getCurrent(validationEvidenceLineageId("BOOT-020", "a_002fb"));
+    assert.equal(slashCurrent.payload.validatorId, "a/b");
+    assert.equal(literalCurrent.payload.validatorId, "a_002fb");
+  });
+});
+
+test("a write that loses an exclusive-create race retries at the next sequence instead of failing", () => {
+  withStore((store, root) => {
+    const lineageId = validationEvidenceLineageId("BOOT-015", "npm-test");
+    const dir = join(root, safePart(lineageId));
+    mkdirSync(dir, { recursive: true });
+    // Only 0000002.json exists, so the count-based initial guess
+    // (existing.length + 1 === 2) collides with it on the exclusive
+    // create — the same failure shape a genuine concurrent writer that
+    // claimed sequence 2 between the directory listing and this call's
+    // own write would produce. The store must retry rather than throw.
+    writeFileSync(join(dir, "0000002.json"), "{}\n", "utf8");
+
+    const result = store.record(validationEvidence());
+    assert.equal(result.ok, true);
+    assert.equal(result.record.sequence, 3);
+    assert.ok(existsSync(join(dir, "0000003.json")));
+  });
+});
+
+test("rejects a recordedAt with an out-of-range calendar date instead of accepting Date.parse's normalization", () => {
+  withStore((store) => {
+    // Date.parse("2026-02-30T00:00:00Z") silently rolls forward to March 2;
+    // the schema's format: date-time must reject it outright.
+    const result = store.record(validationEvidence({ recordedAt: "2026-02-30T00:00:00Z" }));
+    assert.equal(result.ok, false);
+    assert.equal(result.rejection.code, "SCHEMA_VALIDATION_FAILED");
+    assert.ok(result.rejection.reasons.some((reason) => reason.includes("recordedAt")));
+  });
+});
+
+test("rejects an out-of-range hour/month in recordedAt", () => {
+  withStore((store) => {
+    assert.equal(store.record(validationEvidence({ recordedAt: "2026-09-09T24:00:00Z" })).ok, false);
+    assert.equal(store.record(validationEvidence({ recordedAt: "2026-13-01T00:00:00Z" })).ok, false);
   });
 });
 
