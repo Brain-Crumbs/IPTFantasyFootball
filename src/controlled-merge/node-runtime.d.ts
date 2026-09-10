@@ -11,3 +11,10 @@ interface IptFetchInit {
 }
 
 declare function fetch(url: string, init?: IptFetchInit): Promise<IptFetchResponse>;
+
+interface IptIntervalHandle {
+  unref?(): void;
+}
+
+declare function setInterval(callback: () => void, ms: number): IptIntervalHandle;
+declare function clearInterval(handle: IptIntervalHandle | undefined): void;

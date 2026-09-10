@@ -182,12 +182,15 @@ function prRecord(overrides = {}) {
 }
 
 class FakePullRequestPort {
-  constructor({ existing = [], mergeResult = null, mergeError = null, findError = null } = {}) {
+  constructor({ existing = [], byNumber = [], mergeResult = null, mergeError = null, findError = null, getError = null } = {}) {
     this.existing = Array.isArray(existing) ? existing : [existing];
+    this.byNumber = Array.isArray(byNumber) ? byNumber : [byNumber];
     this.mergeResult = mergeResult;
     this.mergeError = mergeError;
     this.findError = findError;
+    this.getError = getError;
     this.findCalls = 0;
+    this.getCalls = 0;
     this.mergeCalls = 0;
   }
 
@@ -196,6 +199,20 @@ class FakePullRequestPort {
     if (this.findError) throw this.findError;
     const index = Math.min(this.findCalls - 1, this.existing.length - 1);
     return this.existing[index] ?? null;
+  }
+
+  // Defaults to the last configured `existing` entry (unchanged since the
+  // existing-check) when no explicit `byNumber` sequence is given, matching
+  // the common case where nothing changed between readiness and the
+  // pre-merge recheck.
+  async getPullRequest() {
+    this.getCalls += 1;
+    if (this.getError) throw this.getError;
+    if (this.byNumber.length > 0) {
+      const index = Math.min(this.getCalls - 1, this.byNumber.length - 1);
+      return this.byNumber[index] ?? null;
+    }
+    return this.existing[this.existing.length - 1] ?? null;
   }
 
   async mergePullRequest() {
@@ -256,7 +273,8 @@ test("successful controlled merge transitions MERGE_READY to DONE and records ev
   assert.equal(state.get(task.taskId).currentState, "DONE");
   assert.equal(readiness.calls, 1);
   assert.equal(pullRequests.mergeCalls, 1);
-  assert.equal(pullRequests.findCalls, 2); // pre-existing check + immediate pre-merge recheck
+  assert.equal(pullRequests.findCalls, 1); // pre-existing check
+  assert.equal(pullRequests.getCalls, 1); // immediate pre-merge recheck, by exact PR number
   assert.equal(lock.releaseCalls.length, 1);
   assert.equal(lock.lock.status, "RELEASED");
 
@@ -285,7 +303,8 @@ test("readiness=false blocks the merge call entirely", async () => {
 
 test("a head change between readiness evaluation and merge is rejected", async () => {
   const pullRequests = new FakePullRequestPort({
-    existing: [prRecord(), prRecord({ headSha: "0000000000000000000000000000000000000000" })],
+    existing: [prRecord()],
+    byNumber: [prRecord({ headSha: "0000000000000000000000000000000000000000" })],
     mergeResult: { merged: true, sha: "should-not-be-used", message: "merged" },
   });
   const { controller, state } = makeController({ pullRequests });
@@ -660,4 +679,154 @@ test("FileControlledMergeTaskLock reclaims a stale lock file rather than wedging
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("FileControlledMergeTaskLock's heartbeat keeps a long-running holder from being reclaimed as stale", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-heartbeat-"));
+  try {
+    // A stale threshold and heartbeat interval short enough to observe
+    // within a fast unit test, but with the heartbeat still comfortably
+    // inside the stale window (mirrors the real DEFAULT_HEARTBEAT_INTERVAL_MS
+    // being well inside STALE_LOCK_MS).
+    const holder = new FileControlledMergeTaskLock(dir, { staleLockMs: 40, heartbeatIntervalMs: 10 });
+    const contender = new FileControlledMergeTaskLock(dir, { staleLockMs: 40, heartbeatIntervalMs: 10 });
+
+    const held = holder.withLock("BOOT-025", async () => {
+      // Outlast the nominal stale threshold several times over; without a
+      // heartbeat refreshing the lock file, a concurrent caller would
+      // reclaim it well before this resolves.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return "holder-done";
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await assert.rejects(
+      () => contender.withLock("BOOT-025", async () => "should-not-run"),
+      (error) => {
+        assert.equal(error.code, "STATE_CONFLICT");
+        return true;
+      },
+    );
+
+    assert.equal(await held, "holder-done");
+
+    // Once genuinely released, a new caller succeeds immediately.
+    const result = await contender.withLock("BOOT-025", async () => "after-release");
+    assert.equal(result, "after-release");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a DONE task never touches the task lock", async () => {
+  const { store: evidence } = makeEvidenceStore();
+  evidence.record({
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:${revision}:${occurredAt}`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "already-done-sha",
+    policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
+    recordedAt: occurredAt,
+  });
+  const stateStore = new MemoryStateStore([[task.taskId, lifecycleRecord(task.taskId, "DONE")]]);
+  const taskLock = new FakeTaskLock();
+  const { controller } = makeController({ stateStore, evidenceStore: evidence, taskLock });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(taskLock.calls, 0, "the exclusive lock is never acquired for the pure-read DONE path");
+});
+
+test("the pre-merge recheck rejects a pull request retargeted to a different base", async () => {
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord()],
+    byNumber: [prRecord({ baseRef: "develop" })],
+  });
+  const { controller, state } = makeController({ pullRequests });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.equal(error.code, "HEAD_CHANGED");
+    return true;
+  });
+
+  assert.equal(pullRequests.mergeCalls, 0);
+  assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
+});
+
+test("the pre-merge recheck fetches the exact PR readiness selected by number, ignoring an unrelated stray PR that would otherwise look more recent", async () => {
+  // findPullRequestByHead (any state, most recent by creation) would return
+  // this stray, unrelated closed PR if it were consulted for the recheck —
+  // but getPullRequest(63) fetches the genuinely approved PR by number
+  // regardless, so the merge still succeeds.
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord()],
+    byNumber: [prRecord()],
+    mergeResult: { merged: true, sha: "merged-sha-1", message: "merged" },
+  });
+  const { controller, state } = makeController({ pullRequests });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("finalize reuses evidence already recorded for the exact confirmed merge rather than duplicating it", async () => {
+  const { store: evidence } = makeEvidenceStore();
+  const firstRecord = evidence.record({
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:${revision}:${occurredAt}`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "merged-sha-1",
+    policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
+    recordedAt: occurredAt,
+  });
+  assert.equal(firstRecord.ok, true);
+
+  // Simulates a crash between record() and the MERGED lifecycle-state save:
+  // lifecycle is still MERGE_READY, and the PR is now discovered merged.
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord({ merged: true, mergeCommitSha: "merged-sha-1" })],
+  });
+  const { controller, state } = makeController({ pullRequests, evidenceStore: evidence });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(result.evidenceLineageId, firstRecord.record.lineageId);
+  assert.equal(result.evidenceSequence, firstRecord.record.sequence);
+
+  const history = evidence.getHistory(mergeEvidenceLineageId(task.taskId));
+  assert.equal(history.length, 1, "no duplicate evidence record was appended for the same confirmed merge");
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("an invalid calendar date in occurredAt is rejected before any provider call", async () => {
+  const { controller, pullRequests, readiness } = makeController();
+
+  await assert.rejects(
+    () => controller.merge(request({ occurredAt: "2026-02-29T12:00:00Z" })), // 2026 is not a leap year
+    (error) => {
+      assert.equal(error.code, "INVALID_REQUEST");
+      return true;
+    },
+  );
+  await assert.rejects(
+    () => controller.merge(request({ occurredAt: "2026-04-31T12:00:00Z" })), // April has 30 days
+    (error) => error.code === "INVALID_REQUEST",
+  );
+  await assert.rejects(
+    () => controller.merge(request({ occurredAt: "2026-09-10T24:00:00Z" })), // hour 24 is invalid
+    (error) => error.code === "INVALID_REQUEST",
+  );
+
+  assert.equal(readiness.calls, 0);
+  assert.equal(pullRequests.findCalls, 0);
 });

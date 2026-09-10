@@ -30,7 +30,8 @@ import {
 } from "../task-registry/index.js";
 
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
-const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const RFC3339_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i;
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
 const DEFAULT_INTEGRATION_TARGET = "main";
 
@@ -39,6 +40,12 @@ const DEFAULT_INTEGRATION_TARGET = "main";
 // wedging the task indefinitely. Matches BOOT-018's/BOOT-019's/BOOT-020's/
 // BOOT-021's own task-lock thresholds.
 const STALE_LOCK_MS = 5 * 60 * 1000;
+
+// The held lock's timestamp is refreshed this often while `fn` is running,
+// well inside STALE_LOCK_MS, so a merge() call whose readiness/provider
+// calls legitimately run long is never mistaken for an abandoned holder and
+// reclaimed by a concurrent caller out from under it.
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 60 * 1000;
 
 /**
  * BOOT-025 controlled merge and completion transition — the only supported
@@ -72,6 +79,16 @@ export class ControlledMergeController {
       throw new ControlledMergeError("TASK_NOT_FOUND", `Task '${request.taskId}' is not registered.`, false);
     }
 
+    // The DONE path is a pure, side-effect-free read: it never needs the
+    // exclusive task lock, so it can never be blocked by lock contention (a
+    // concurrent in-progress attempt, or an abandoned-but-not-yet-stale lock
+    // file) from returning already-persisted evidence — checked here,
+    // before the lock is ever acquired.
+    const precheck = this.dependencies.stateStore.get(task.taskId);
+    if (precheck !== null && precheck.currentState === "DONE") {
+      return this.finishedResult(task.taskId);
+    }
+
     // Holds the lock across the entire read-decide-write critical section,
     // including the async provider calls below, so two concurrent merge()
     // calls for the same task can never interleave their reads and writes
@@ -80,6 +97,9 @@ export class ControlledMergeController {
   }
 
   private async mergeLocked(task: RegisteredTask, request: ControlledMergeRequest): Promise<ControlledMergeResult> {
+    // Re-read inside the lock: the unlocked pre-check above cannot see a
+    // concurrent caller that reaches DONE between that check and this
+    // caller acquiring the lock.
     const record = this.dependencies.stateStore.get(task.taskId) ?? createLifecycleRecord(task.taskId);
 
     if (record.currentState === "DONE") {
@@ -180,12 +200,29 @@ export class ControlledMergeController {
       );
     }
 
-    // Re-read the pull request's actual remote head one more time,
-    // immediately before invoking the merge provider: a push landing in the
-    // gap between the readiness evaluation above and this call must be
-    // detected locally even before the provider's own atomic head check.
-    const recheck = await this.findPullRequest(task.taskId, head);
-    if (recheck === null || recheck.number !== readiness.pullRequestNumber || recheck.merged || recheck.headSha !== revision) {
+    // Re-read the exact pull request readiness selected, by number, one
+    // more time immediately before invoking the merge provider: a push
+    // landing in the gap between the readiness evaluation above and this
+    // call must be detected locally even before the provider's own atomic
+    // head check. Fetching by number (rather than re-running the
+    // any-state/most-recent-by-head lookup findPullRequestByHead uses) is
+    // deliberate: a branch can legitimately have more than one pull request
+    // across its history (for example a stray closed PR against a
+    // different base, created more recently than the genuinely open,
+    // approved one), and a most-recent-by-head lookup could return that
+    // unrelated PR instead of the one readiness actually evaluated.
+    let recheck: ControlledMergePullRequestRecord | null;
+    try {
+      recheck = await this.dependencies.pullRequests.getPullRequest(readiness.pullRequestNumber);
+    } catch (error: unknown) {
+      throw normalizeProviderError(task.taskId, error);
+    }
+    if (
+      recheck === null ||
+      recheck.merged ||
+      recheck.headSha !== revision ||
+      recheck.baseRef !== integrationTarget
+    ) {
       throw new ControlledMergeError(
         "HEAD_CHANGED",
         `Task '${task.taskId}' pull request #${readiness.pullRequestNumber} changed between merge-readiness evaluation and merge; retry once the branch is stable.`,
@@ -241,28 +278,51 @@ export class ControlledMergeController {
   ): ControlledMergeResult {
     const { revision, pullRequestNumber, mergeCommitSha, policyDecisionReference, request, lockIdToRelease } = params;
 
-    const evidencePayload = {
-      schemaId: "ipt.merge-evidence",
-      schemaVersion: "1.0.0",
-      evidenceId: `${task.taskId}:merge:${revision}:${request.occurredAt}`,
-      taskId: task.taskId,
-      revisionIdentity: revision,
-      pullRequestNumber,
-      mergeCommitSha,
-      policyDecisionReference,
-      recordedAt: request.occurredAt,
-    };
+    // A prior attempt may have already recorded evidence for this exact
+    // confirmed merge and then crashed before persisting the MERGE_READY ->
+    // MERGED transition (lifecycle is still MERGE_READY, so this call
+    // reaches finalize() again via the already-merged fast path). Reusing
+    // that record — rather than appending a second, functionally duplicate
+    // one — keeps the "exactly one ipt.merge-evidence record per confirmed
+    // merge" invariant true even across that crash window.
+    const lineageId = mergeEvidenceLineageId(task.taskId);
+    const existingEvidence = this.dependencies.evidenceStore.getCurrent(lineageId);
+    const reusable =
+      existingEvidence !== null &&
+      existingEvidence.payload.revisionIdentity === revision &&
+      existingEvidence.payload.pullRequestNumber === pullRequestNumber &&
+      existingEvidence.payload.mergeCommitSha === mergeCommitSha;
 
-    const recorded = this.dependencies.evidenceStore.record(evidencePayload);
-    if (!recorded.ok) {
-      throw new ControlledMergeError(
-        "EVIDENCE_REJECTED",
-        `Task '${task.taskId}' merge evidence was rejected: ${recorded.rejection.code}: ${recorded.rejection.reasons.join("; ")}`,
-        false,
-      );
+    let evidenceLineageId: string;
+    let evidenceSequence: number;
+    if (reusable) {
+      evidenceLineageId = (existingEvidence as StoredEvidenceRecord).lineageId;
+      evidenceSequence = (existingEvidence as StoredEvidenceRecord).sequence;
+    } else {
+      const evidencePayload = {
+        schemaId: "ipt.merge-evidence",
+        schemaVersion: "1.0.0",
+        evidenceId: `${task.taskId}:merge:${revision}:${request.occurredAt}`,
+        taskId: task.taskId,
+        revisionIdentity: revision,
+        pullRequestNumber,
+        mergeCommitSha,
+        policyDecisionReference,
+        recordedAt: request.occurredAt,
+      };
+      const recorded = this.dependencies.evidenceStore.record(evidencePayload);
+      if (!recorded.ok) {
+        throw new ControlledMergeError(
+          "EVIDENCE_REJECTED",
+          `Task '${task.taskId}' merge evidence was rejected: ${recorded.rejection.code}: ${recorded.rejection.reasons.join("; ")}`,
+          false,
+        );
+      }
+      evidenceLineageId = recorded.record.lineageId;
+      evidenceSequence = recorded.record.sequence;
     }
 
-    const evidenceRef = `${recorded.record.lineageId}@${recorded.record.sequence}`;
+    const evidenceRef = `${evidenceLineageId}@${evidenceSequence}`;
 
     const mergedTransition = transitionLifecycle(record, {
       taskId: task.taskId,
@@ -290,8 +350,8 @@ export class ControlledMergeController {
       pullRequestNumber,
       mergeCommitSha,
       revision,
-      evidenceLineageId: recorded.record.lineageId,
-      evidenceSequence: recorded.record.sequence,
+      evidenceLineageId,
+      evidenceSequence,
       lockIdToRelease,
     });
   }
@@ -531,6 +591,7 @@ export interface ControlledMergeProviderResult {
 
 export interface ControlledMergePullRequestPort {
   findPullRequestByHead(head: string): Promise<ControlledMergePullRequestRecord | null>;
+  getPullRequest(number: number): Promise<ControlledMergePullRequestRecord | null>;
   mergePullRequest(params: MergePullRequestParams): Promise<ControlledMergeProviderResult>;
 }
 
@@ -607,6 +668,14 @@ export class FileControlledMergeStateStore implements ControlledMergeStateStore 
   }
 }
 
+export interface FileControlledMergeTaskLockOptions {
+  // Overridable only for tests; production callers rely on the defaults
+  // (STALE_LOCK_MS, DEFAULT_HEARTBEAT_INTERVAL_MS) matching the other task
+  // locks' own threshold.
+  readonly staleLockMs?: number;
+  readonly heartbeatIntervalMs?: number;
+}
+
 /**
  * Exclusive per-task mutual exclusion via an exclusive-create lock file,
  * shared across OS processes, mirroring BOOT-021's own `FileReviewReworkTaskLock`
@@ -614,20 +683,35 @@ export class FileControlledMergeStateStore implements ControlledMergeStateStore 
  * re-verifies it captured the stale instance rather than a fresh lock,
  * ownership-safe release) but with an async `withLock` so the held lock
  * spans this module's awaited provider calls rather than only synchronous
- * file I/O.
+ * file I/O — and, because those awaited calls can legitimately run long,
+ * with a periodic heartbeat that refreshes the lock file's timestamp while
+ * `fn` is active. Without the heartbeat, a `merge()` call whose readiness
+ * evaluation or GitHub provider calls took longer than the stale threshold
+ * would look identical to an abandoned lock, and a concurrent caller would
+ * reclaim it and enter the same "exclusive" section.
  */
 export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
-  constructor(private readonly root: string) {
+  private readonly staleLockMs: number;
+  private readonly heartbeatIntervalMs: number;
+
+  constructor(private readonly root: string, options: FileControlledMergeTaskLockOptions = {}) {
     if (root.trim().length === 0) throw new RangeError("Task lock root must be non-empty.");
     mkdirSync(root, { recursive: true });
+    this.staleLockMs = options.staleLockMs ?? STALE_LOCK_MS;
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   }
 
   async withLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
     const lockPath = this.lockPathFor(taskId);
-    const token = this.acquire(lockPath, taskId);
+    let token = this.acquire(lockPath, taskId);
+    const heartbeat = setInterval(() => {
+      token = this.refresh(lockPath, token);
+    }, this.heartbeatIntervalMs);
+    heartbeat.unref?.();
     try {
       return await fn();
     } finally {
+      clearInterval(heartbeat);
       this.release(lockPath, token);
     }
   }
@@ -643,6 +727,31 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       "STATE_CONFLICT",
       `Task '${taskId}' controlled merge is already in progress by a concurrent caller; retry once it finishes.`,
     );
+  }
+
+  // Rewrites the lock file with a fresh timestamp (same random suffix, so
+  // the token this holder tracks stays recognizably its own) only while it
+  // still actually owns the file; if the file no longer holds the token
+  // this holder last wrote, another process has already reclaimed it as
+  // stale (a heartbeat interval longer than staleLockMs, or a very slow
+  // process pause, could still race this) and there is nothing left to
+  // refresh.
+  private refresh(lockPath: string, currentToken: string): string {
+    let observed: string | null;
+    try {
+      observed = readFileSync(lockPath, "utf8");
+    } catch {
+      observed = null;
+    }
+    if (observed !== currentToken) return currentToken;
+    const randomPart = currentToken.slice(currentToken.indexOf(":") + 1);
+    const refreshed = `${Date.now()}:${randomPart}`;
+    try {
+      writeFileSync(lockPath, refreshed, { encoding: "utf8" });
+      return refreshed;
+    } catch {
+      return currentToken;
+    }
   }
 
   private release(lockPath: string, token: string): void {
@@ -687,7 +796,7 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       return false;
     }
     const heldSince = Number(observed.split(":")[0]);
-    if (!Number.isFinite(heldSince) || Date.now() - heldSince <= STALE_LOCK_MS) return false;
+    if (!Number.isFinite(heldSince) || Date.now() - heldSince <= this.staleLockMs) return false;
 
     const claimPath = `${lockPath}.reclaim-${randomLockToken()}`;
     try {
@@ -791,6 +900,22 @@ export class GitHubControlledMergePullRequestOperations implements ControlledMer
     }
     if (data.length === 0) return null;
     return toRecord(data[0]);
+  }
+
+  // Fetches the single pull request identified by number, unambiguously —
+  // never a "most recent for this branch" guess — so a caller that already
+  // knows exactly which PR it means (the pre-merge recheck, which already
+  // has readiness's own selected pullRequestNumber) can never be misled by
+  // an unrelated PR sharing the same head branch.
+  async getPullRequest(number: number): Promise<ControlledMergePullRequestRecord | null> {
+    let data: unknown;
+    try {
+      data = await this.request("GET", `/repos/${this.owner}/${this.repo}/pulls/${number}`);
+    } catch (error: unknown) {
+      if (error instanceof PullRequestProviderError && error.code === "NOT_FOUND") return null;
+      throw error;
+    }
+    return toRecord(data);
   }
 
   async mergePullRequest(params: MergePullRequestParams): Promise<ControlledMergeProviderResult> {
@@ -1003,14 +1128,43 @@ function validateRequest(request: ControlledMergeRequest): void {
     throw new ControlledMergeError("INVALID_REQUEST", "Controlled merge runId must be non-empty and trimmed.", false);
   }
   // Rejected strictly, and before any provider call: a loosely-parsed
-  // timestamp (missing a timezone offset/Z) would otherwise pass here, let
-  // the irreversible merge provider call proceed, and only be discovered
-  // as invalid later when schemas/v1/merge-evidence.schema.json's stricter
-  // RFC 3339 check rejects it at evidence-record time — after the merge
-  // already happened.
-  if (!RFC3339_PATTERN.test(request.occurredAt) || Number.isNaN(Date.parse(request.occurredAt))) {
+  // timestamp (missing a timezone offset/Z, or an out-of-range calendar
+  // component like Feb 29 on a non-leap year, day 31 of a 30-day month, or
+  // hour 24 — all of which Date.parse() silently rolls forward rather than
+  // rejecting) would otherwise pass here, let the irreversible merge
+  // provider call proceed, and only be discovered as invalid later when
+  // schemas/v1/merge-evidence.schema.json's stricter component-level check
+  // rejects it at evidence-record time — after the merge already happened.
+  if (!isValidRfc3339DateTime(request.occurredAt)) {
     throw new ControlledMergeError("INVALID_REQUEST", "Controlled merge occurredAt must be a valid RFC 3339 date-time.", false);
   }
+}
+
+// Mirrors control-plane.evidence-store's own isValidRfc3339DateTime exactly:
+// the regex plus Date.parse() alone cannot reject an out-of-range calendar
+// date (Date.parse silently rolls Feb 30 forward into March), so component
+// ranges are checked explicitly.
+function isValidRfc3339DateTime(value: string): boolean {
+  const match = RFC3339_PATTERN.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+
+  if (month < 1 || month > 12) return false;
+  const maxDay = month === 2 && isLeapYear(year) ? 29 : (DAYS_IN_MONTH[month - 1] as number);
+  if (day < 1 || day > maxDay) return false;
+  if (hour > 23) return false;
+  if (minute > 59) return false;
+  if (second > 59) return false;
+  return true;
+}
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
 }
 
 function hasHistoryEventBoundToRevision(record: LifecycleRecord, toState: TaskLifecycleState, revision: string): boolean {
