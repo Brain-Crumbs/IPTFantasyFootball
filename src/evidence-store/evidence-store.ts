@@ -494,19 +494,30 @@ function isValidRfc3339DateTime(value: string): boolean {
   if (hour > 23) return false;
   if (minute > 59) return false;
   // RFC 3339's grammar allows a seconds value of 60 for a leap second, but
-  // only ever at 23:59:60 — never any other minute/hour — so a bare
-  // `second > 59` upper bound would either reject every real leap-second
-  // timestamp (too strict) or, if simply raised to 60 everywhere, accept
-  // "12:00:60" as if any minute could run long (too loose). This checks
-  // both without needing an actual historical leap-second calendar.
+  // only ever at the instant 23:59:60 UTC — never any other minute/hour — so
+  // a bare `second > 59` upper bound would either reject every real
+  // leap-second timestamp (too strict) or, if simply raised to 60
+  // everywhere, accept "12:00:60" as if any minute could run long (too
+  // loose). This checks both without needing an actual historical
+  // leap-second calendar.
   if (second > 60) return false;
-  if (second === 60 && (hour !== 23 || minute !== 59)) return false;
 
+  let offsetMinutesTotal = 0;
   if (match[7] !== undefined) {
     const offsetHour = Number(match[8]);
     const offsetMinute = Number(match[9]);
     if (offsetHour > 23) return false;
     if (offsetMinute > 59) return false;
+    offsetMinutesTotal = (match[7] === "-" ? -1 : 1) * (offsetHour * 60 + offsetMinute);
+  }
+
+  if (second === 60) {
+    // A leap second carrying a nonzero offset need not read local 23:59:
+    // RFC 3339's own equivalent form "1990-12-31T15:59:60-08:00" is the
+    // same instant as "1990-12-31T23:59:60Z", so placement is checked
+    // against the UTC-equivalent hour/minute, not the local one.
+    const utcMinutesOfDay = (((hour * 60 + minute - offsetMinutesTotal) % 1440) + 1440) % 1440;
+    if (Math.floor(utcMinutesOfDay / 60) !== 23 || utcMinutesOfDay % 60 !== 59) return false;
   }
 
   return true;

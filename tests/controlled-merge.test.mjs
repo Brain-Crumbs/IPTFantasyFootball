@@ -992,6 +992,37 @@ test("FileControlledMergeTaskLock's heartbeat never leaves the lock path absent,
   }
 });
 
+test("an in-flight release() reservation blocks ordinary lock creation rather than letting a claimed-away path appear free", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-release-reservation-"));
+  try {
+    const { writeFileSync, rmSync: removeFile } = await import("node:fs");
+    const lockPath = join(dir, "BOOT-025.lifecycle.lock");
+    // Simulates the window release() holds open between claiming the lock
+    // path away for inspection and restoring/discarding it: without this
+    // reservation, a concurrent tryCreate() could succeed inside that
+    // window even though a live replacement holder's own release() call is
+    // still deciding what to do with the content it claimed (see
+    // release()'s own comment on FileControlledMergeTaskLock).
+    const reservationPath = `${lockPath}.release-reservation`;
+    writeFileSync(reservationPath, "", { encoding: "utf8" });
+
+    const taskLock = new FileControlledMergeTaskLock(dir);
+    await assert.rejects(
+      () => taskLock.withLock("BOOT-025", async () => "should-not-run"),
+      (error) => {
+        assert.equal(error.code, "STATE_CONFLICT");
+        return true;
+      },
+    );
+
+    removeFile(reservationPath);
+    const result = await taskLock.withLock("BOOT-025", async () => "acquired-after-clear");
+    assert.equal(result, "acquired-after-clear");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a DONE task never touches the task lock", async () => {
   const { store: evidence } = makeEvidenceStore();
   const recorded = evidence.record({
@@ -1194,6 +1225,48 @@ test("a genuine RFC 3339 leap-second occurredAt (23:59:60) is accepted, but seco
     () => rejectController.merge(request({ occurredAt: "2026-09-10T12:00:60Z" })), // not 23:59
     (error) => error.code === "INVALID_REQUEST",
   );
+});
+
+test("occurredAt accepts a leap second under a nonzero UTC offset even when its local time is not 23:59", async () => {
+  // RFC 3339's "1990-12-31T15:59:60-08:00" is the same instant as
+  // "1990-12-31T23:59:60Z"; placement must be checked against the
+  // UTC-equivalent hour/minute, not the local one.
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord()],
+    mergeResult: { merged: true, sha: "merged-sha-offset-leap", message: "merged" },
+  });
+  const { controller } = makeController({ pullRequests });
+  const result = await controller.merge(request({ occurredAt: "1990-12-31T15:59:60-08:00" }));
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(result.mergeCommitSha, "merged-sha-offset-leap");
+});
+
+test("a historical merged-then-reverted PR at the same revision does not shadow a currently open, not-yet-merged approval", async () => {
+  // The canonical branch and source SHA have been reused: an earlier PR
+  // for this exact branch was squash-merged to main and later reverted
+  // (its own record still, correctly, reports merged=true at this exact
+  // headSha/baseRef), while the task's actual, current PR for this
+  // approval remains open and has not merged at all. A merged candidate
+  // whose own PR number is *lower* than a still-open PR against the same
+  // base must not be treated as proof of this attempt's merge — the
+  // shortcut must defer to the live evaluate()-and-merge path instead of
+  // recording the stale historical merge commit and completing the task
+  // while the real approved change never lands.
+  const oldReverted = prRecord({ number: 10, merged: true, mergeCommitSha: "stale-reverted-sha" });
+  const current = prRecord({ number: 63, merged: false, state: "open" });
+  const pullRequests = new FakePullRequestPort({
+    existing: [oldReverted, current],
+    mergeResult: { merged: true, sha: "genuine-merge-sha", message: "merged" },
+  });
+  const { controller, state } = makeController({ pullRequests });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(result.mergeCommitSha, "genuine-merge-sha");
+  assert.equal(result.pullRequestNumber, 63);
+  assert.equal(pullRequests.mergeCalls, 1);
+  assert.equal(state.get(task.taskId).currentState, "DONE");
 });
 
 test("crash recovery finds the confirmed merge even when a stray unrelated PR is now the most recent for the branch", async () => {

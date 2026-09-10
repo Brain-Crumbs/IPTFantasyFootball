@@ -113,7 +113,8 @@ interface RecoveryClaim {
 }
 
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
-const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const RFC3339_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/i;
 
 export class FileAssignmentLockStore implements AssignmentLockStore {
   readonly #root: string;
@@ -183,10 +184,10 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     // began but before the exclusive file create succeeded. Roll back this just-
     // created assignment rather than allowing ordinary acquisition to bypass an
     // in-flight explicit stale-recovery operation.
-    if (!allowRecoveryClaim && this.#hasRecoveryClaim(request.taskId)) {
+    if (!allowRecoveryClaim && (this.#hasRecoveryClaim(request.taskId) || this.#hasReleaseClaim(request.taskId))) {
       const current = this.get(request.taskId);
       if (current && sameIdentity(current, request)) unlinkSync(this.#activePath(request.taskId));
-      return reject("LOCK_CONFLICT", `Task '${request.taskId}' has an explicit stale recovery in progress.`);
+      return reject("LOCK_CONFLICT", `Task '${request.taskId}' has an explicit stale recovery or release in progress.`);
     }
 
     this.#appendAudit(request.taskId, {
@@ -218,15 +219,72 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     const invalid = validateRelease(request);
     if (invalid) return reject("INVALID_REQUEST", invalid);
 
+    // Reserve intent to release before the active path is ever claimed away
+    // below: without this, the window between the claiming rename and this
+    // call's eventual restore-or-archive leaves activePath entirely absent,
+    // during which an ordinary acquire() (see #acquire's own check of this
+    // same marker) could create a brand-new, unrelated assignment there —
+    // and if this call then finds its claimed content doesn't match (a
+    // concurrent recoverStale() had already replaced it), its restore
+    // attempt would correctly defer to that new assignment, but the
+    // record this call actually claimed would simply be discarded with no
+    // one ever told they lost it. Ordinary acquisition stays blocked for
+    // the full duration this marker exists.
+    const releaseClaimPath = this.#releaseClaimPath(request.taskId);
+    try {
+      writeFileSync(
+        releaseClaimPath,
+        `${JSON.stringify({ lockId: request.lockId, occurredAt: request.occurredAt })}\n`,
+        { encoding: "utf8", flag: "wx" },
+      );
+    } catch {
+      return reject("LOCK_CONFLICT", `Task '${request.taskId}' already has a release in progress.`);
+    }
+    try {
+      return this.#releaseClaimed(request);
+    } finally {
+      try {
+        unlinkSync(releaseClaimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+    }
+  }
+
+  #releaseClaimed(request: ReleaseAssignmentRequest): LockResult {
     const activePath = this.#activePath(request.taskId);
     const claimPath = `${activePath}.release-claim-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try {
       renameSync(activePath, claimPath);
-    } catch {
-      return reject("LOCK_NOT_FOUND", `Task '${request.taskId}' has no active assignment lock.`);
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") {
+        return reject("LOCK_NOT_FOUND", `Task '${request.taskId}' has no active assignment lock.`);
+      }
+      // A permission error, a read-only filesystem, or another transient I/O
+      // failure leaves the original active assignment exactly where it was —
+      // this must not be reported the same way as a genuinely absent lock,
+      // since a caller (control-plane.controlled-merge) treats LOCK_NOT_FOUND
+      // as benign and proceeds to completion without ever retrying release.
+      throw error;
     }
 
-    const observed = freezeLock(JSON.parse(readFileSync(claimPath, "utf8")) as AssignmentLockRecord);
+    let observed: AssignmentLockRecord;
+    try {
+      observed = freezeLock(JSON.parse(readFileSync(claimPath, "utf8")) as AssignmentLockRecord);
+    } catch (error) {
+      // The claimed content is unreadable or malformed: restore it to the
+      // active path untouched rather than letting it vanish along with the
+      // claim file, so a future retry still finds an active assignment to
+      // contend with instead of silently observing none and skipping
+      // straight to completion.
+      try {
+        renameSync(claimPath, activePath);
+      } catch {
+        // Another operation has since created its own fresh record at
+        // activePath; nothing further can be restored onto it.
+      }
+      throw error;
+    }
     if (
       observed.lockId !== request.lockId ||
       (request.expectedOwnerId !== undefined && observed.ownerId !== request.expectedOwnerId) ||
@@ -375,6 +433,9 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
   #claimPath(taskId: string, staleLockId: string): string {
     return join(this.#claimsRoot(), `${safePart(taskId)}-${safePart(staleLockId)}.recovery.json`);
   }
+  #releaseClaimPath(taskId: string): string {
+    return join(this.#claimsRoot(), `${safePart(taskId)}.release.json`);
+  }
 
   #appendAudit(taskId: string, event: LockAuditEvent): void {
     writeFileSync(this.#auditPath(taskId), `${JSON.stringify(event)}\n`, { encoding: "utf8", flag: "a" });
@@ -413,6 +474,10 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
   #hasRecoveryClaim(taskId: string): boolean {
     const prefix = `${safePart(taskId)}-`;
     return readdirSync(this.#claimsRoot()).some((name) => name.startsWith(prefix) && name.endsWith(".recovery.json"));
+  }
+
+  #hasReleaseClaim(taskId: string): boolean {
+    return existsSync(this.#releaseClaimPath(taskId));
   }
 
   #uniqueArchivePath(taskId: string, lockId: string, action: string, occurredAt: string): string {
@@ -457,10 +522,32 @@ function requireText(name: string, value: string): string | null {
   return value.trim() ? null : `${name} must be a non-empty string.`;
 }
 
+// Mirrors control-plane.controlled-merge's/control-plane.evidence-store's own
+// isValidRfc3339DateTime: Date.parse() has no concept of an RFC 3339 leap
+// second (a seconds value of exactly 60) and unconditionally returns NaN for
+// one, so it is validated separately — including the UTC-equivalent
+// placement check for a leap second carrying a nonzero offset (RFC 3339's
+// "1990-12-31T15:59:60-08:00" is the same instant as "...T23:59:60Z" and
+// must be accepted, not just literal local 23:59:60) — before being
+// substituted with :59 for Date.parse's own remaining sanity check.
 function requireDate(name: string, value: string): string | null {
-  return RFC3339_PATTERN.test(value) && !Number.isNaN(Date.parse(value))
-    ? null
-    : `${name} must be a valid RFC 3339 date-time.`;
+  const match = RFC3339_PATTERN.exec(value);
+  if (!match) return `${name} must be a valid RFC 3339 date-time.`;
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (second === 60) {
+    let offsetMinutesTotal = 0;
+    if (match[7] !== undefined) {
+      offsetMinutesTotal = (match[7] === "-" ? -1 : 1) * (Number(match[8]) * 60 + Number(match[9]));
+    }
+    const utcMinutesOfDay = (((hour * 60 + minute - offsetMinutesTotal) % 1440) + 1440) % 1440;
+    if (Math.floor(utcMinutesOfDay / 60) !== 23 || utcMinutesOfDay % 60 !== 59) {
+      return `${name} must be a valid RFC 3339 date-time.`;
+    }
+  }
+  const parseableForm = second === 60 ? `${value.slice(0, 17)}59${value.slice(19)}` : value;
+  return Number.isNaN(Date.parse(parseableForm)) ? `${name} must be a valid RFC 3339 date-time.` : null;
 }
 
 function freezeLock(lock: AssignmentLockRecord): AssignmentLockRecord {
@@ -488,4 +575,10 @@ function parseAudit(path: string): LockAuditEvent[] {
 
 function safePart(value: string): string {
   return encodeURIComponent(value).replace(/%/g, "_");
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
 }

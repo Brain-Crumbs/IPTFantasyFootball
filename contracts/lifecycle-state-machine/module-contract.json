@@ -50,7 +50,8 @@
     ],
     "edgeCases": [
       "empty reason evidenceRef or eventId is rejected",
-      "invalid occurredAt date-time is rejected, except a genuine RFC 3339 leap second (23:59:60, in any offset), which is accepted despite Date.parse() being unable to represent one (BOOT-025) — a seconds value of 60 anywhere other than 23:59:60 is still rejected",
+      "invalid occurredAt date-time is rejected, except a genuine RFC 3339 leap second (23:59:60, in any offset), which is accepted despite Date.parse() being unable to represent one (BOOT-025) — a seconds value of 60 anywhere other than 23:59:60 is still rejected. 'In any offset' is checked against the UTC-equivalent hour/minute (computed from the timestamp's own offset), not the literal local digits, so a nonzero-offset leap second such as '1990-12-31T15:59:60-08:00' (the same instant as '...T23:59:60Z') is accepted even though its local time does not read 23:59",
+      "occurredAt's RFC 3339 date-time pattern is case-insensitive, accepting the grammar's permitted lowercase 't'/'z' designators — matching control-plane.controlled-merge's and control-plane.evidence-store's own validators, so a value either of those already accepted at entry can never be rejected this late, after an irreversible merge or evidence write",
       "duplicate required review roles are rejected",
       "attempting PLANNED READY or ASSIGNED to BLOCKED is rejected",
       "review target inconsistent with requiredReviewRoles is rejected"

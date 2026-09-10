@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -211,4 +211,60 @@ test("runtime rejects date-only values that violate schema date-time format", ()
   const released = release(store, { occurredAt: "2026-09-03" });
   assert.equal(released.ok, false);
   assert.equal(released.rejection.code, "INVALID_REQUEST");
+}));
+
+test("release accepts a genuine RFC 3339 leap-second occurredAt, matching the rest of the pipeline", () => withStore((store) => {
+  assert.equal(store.acquire(acquire()).ok, true);
+  const released = release(store, { occurredAt: "1990-12-31T23:59:60Z" });
+  assert.equal(released.ok, true);
+  assert.equal(released.lock.releasedAt, "1990-12-31T23:59:60Z");
+}));
+
+test("release accepts a leap second under a nonzero UTC offset whose local time is not 23:59, but rejects second 60 elsewhere", () => withStore((store) => {
+  assert.equal(store.acquire(acquire()).ok, true);
+  const released = release(store, { occurredAt: "1990-12-31T15:59:60-08:00" });
+  assert.equal(released.ok, true);
+
+  assert.equal(store.acquire(acquire({ ownerId: "agent-b", runId: "run-b", lockId: "lock-b" })).ok, true);
+  const rejected = release(store, {
+    ownerId: "agent-b", runId: "run-b", lockId: "lock-b", occurredAt: "1990-12-31T12:00:60Z",
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.rejection.code, "INVALID_REQUEST");
+}));
+
+test("ordinary acquire() is blocked while a release() reservation marker is present, and the active path is left untouched", () => withStore((store, root) => {
+  // Simulates the window release() holds open between claiming the active
+  // path away for inspection and restoring/archiving it: without this
+  // reservation, an ordinary acquire() could create a brand-new assignment
+  // in that window even though the task's existing assignment is still
+  // genuinely active, silently orphaning it (see release()'s own comment).
+  const reservationPath = join(root, ".claims", "BOOT-010.release.json");
+  writeFileSync(reservationPath, `${JSON.stringify({ lockId: "lock-a" })}\n`, { encoding: "utf8", flag: "wx" });
+
+  const blocked = store.acquire(acquire());
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.rejection.code, "LOCK_CONFLICT");
+  assert.equal(store.get("BOOT-010"), null);
+
+  rmSync(reservationPath);
+  const afterClear = store.acquire(acquire());
+  assert.equal(afterClear.ok, true);
+}));
+
+test("release() propagates unreadable/malformed claimed content rather than silently treating it as absent, but restores it to the active path first", () => withStore((store, root) => {
+  const activePath = join(root, "BOOT-010.lock.json");
+  writeFileSync(activePath, "{ this is not valid json", { encoding: "utf8", flag: "wx" });
+
+  assert.throws(() => release(store));
+
+  // The next attempt still finds the original (malformed) content rather
+  // than an assignment that silently vanished.
+  assert.equal(readFileSync(activePath, "utf8"), "{ this is not valid json");
+}));
+
+test("release() on a task with no active assignment still returns LOCK_NOT_FOUND, not a rethrown error", () => withStore((store) => {
+  const result = release(store);
+  assert.equal(result.ok, false);
+  assert.equal(result.rejection.code, "LOCK_NOT_FOUND");
 }));

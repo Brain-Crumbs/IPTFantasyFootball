@@ -199,18 +199,28 @@ export class ControlledMergeController {
     // changes after the fact, so searching by it finds the confirmed merge
     // regardless of anything that has happened to the branch since.
     const approvedRevision = latestHistoryEventToState(record, "MERGE_READY")?.revisionIdentity ?? null;
-    // The base-ref check is part of the candidate predicate itself, not a
-    // filter applied only to whatever match is found first: a more-recently-
-    // created merged PR against an unrelated base (for example an
-    // experimental integration branch) can otherwise sit ahead of the actual
-    // merged integration-target PR in `candidates`, in which case find()
-    // would stop at that wrong-base PR — now rejected by the check below —
-    // and never examine the real match behind it, permanently stranding a
-    // genuinely confirmed merge in MERGE_READY.
-    const existing =
+    const matched =
       approvedRevision !== null
         ? candidates.find((pr) => pr.merged && pr.headSha === approvedRevision && pr.baseRef === integrationTarget) ?? null
         : null;
+    // A merged, revision-and-base-matching candidate is not automatically
+    // proof of *this* attempt's confirmed merge: if the canonical branch and
+    // source SHA are ever reused after an earlier PR against the same base
+    // was squash-merged and later reverted on the integration target, that
+    // historical PR's own record still (correctly, historically) reports
+    // merged=true at the same headSha/baseRef, even while the task's actual,
+    // currently open pull request for this approval has not merged at all.
+    // A still-open pull request against the same base with a higher number
+    // than the matched candidate is necessarily a newer, later-created PR
+    // for this exact branch/base combination — meaning the matched
+    // candidate cannot be the approval this attempt is currently pursuing,
+    // and this shortcut must defer to the live evaluate()-and-merge path
+    // below instead of recording the stale historical merge commit and
+    // completing the task while the real approved change never lands.
+    const supersededByNewerOpenPr = matched !== null && candidates.some(
+      (pr) => pr.state === "open" && pr.baseRef === integrationTarget && pr.number > matched.number,
+    );
+    const existing = matched !== null && !supersededByNewerOpenPr ? matched : null;
     if (existing !== null && approvedRevision !== null) {
       // A prior attempt's merge provider call already succeeded (this exact
       // process crashed before recording evidence/transitioning, or the PR
@@ -1180,7 +1190,37 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
   // content is genuinely this holder's own token before discarding it (or
   // restoring it untouched otherwise), closes that gap the same way
   // reclaimIfStale's own claim already does.
+  //
+  // That claiming rename still leaves lockPath briefly absent while this
+  // call decides what to do with what it captured — and, on its own, a
+  // concurrent ordinary tryCreate() (used both by fresh acquisition and by
+  // a stale reclaimer's own replacement write) could succeed inside that
+  // window, making a still-live replacement lock appear unlocked and let a
+  // third caller start running its callback alongside it. A reservation
+  // file, checked by tryCreate() both before and after its own write (see
+  // there), keeps ordinary lock creation blocked for this call's full
+  // duration, so that window can no longer be exploited.
   private release(lockPath: string, token: string): void {
+    const reservationPath = this.releaseReservationPath(lockPath);
+    try {
+      writeFileSync(reservationPath, "", { encoding: "utf8", flag: "wx" });
+    } catch {
+      // Another release() for this exact lock path is already in flight;
+      // back off rather than risk two release() calls racing each other.
+      return;
+    }
+    try {
+      this.releaseClaimed(lockPath, token);
+    } finally {
+      try {
+        unlinkSync(reservationPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+    }
+  }
+
+  private releaseClaimed(lockPath: string, token: string): void {
     const claimPath = `${lockPath}.release-claim-${randomLockToken()}`;
     try {
       renameSync(lockPath, claimPath);
@@ -1218,19 +1258,44 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     }
   }
 
+  private releaseReservationPath(lockPath: string): string {
+    return `${lockPath}.release-reservation`;
+  }
+
   private tryCreate(lockPath: string): string | null {
+    // A release() call in flight for this exact lock path has claimed it
+    // away for inspection (see release()'s own comment): ordinary creation
+    // must stay blocked for that entire window, not just observe the path
+    // as transiently vacant, or a still-live replacement lock could appear
+    // unlocked to a concurrent caller.
+    const reservationPath = this.releaseReservationPath(lockPath);
+    if (existsSync(reservationPath)) return null;
     // The token is just a random identity, not a timestamp: staleness is
     // now determined from the lock file's own filesystem mtime (see
     // reclaimIfStale/refresh), not from anything embedded in its content.
     const token = randomLockToken();
     try {
       writeFileSync(lockPath, token, { encoding: "utf8", flag: "wx" });
-      return token;
     } catch (error: unknown) {
       if (errorCode(error) === "EEXIST") return null;
       const detail = error instanceof Error ? error.message : String(error);
       throw new ControlledMergeError("STATE_IO_FAILED", `Cannot create controlled-merge task lock at '${lockPath}': ${detail}`);
     }
+    if (existsSync(reservationPath)) {
+      // A release() call reserved this exact lock path in the narrow gap
+      // between this call's own pre-write check and its write landing;
+      // back off rather than let this freshly created lock stand in for
+      // real ownership while release() is still deciding what to do with
+      // the content it claimed.
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Already reclaimed or removed by someone else; nothing to roll
+        // back.
+      }
+      return null;
+    }
+    return token;
   }
 
   // See BOOT-020's `FileUatReviewTaskLock.reclaimIfStale` for the full
@@ -1675,19 +1740,30 @@ function isValidRfc3339DateTime(value: string): boolean {
   if (hour > 23) return false;
   if (minute > 59) return false;
   // RFC 3339's grammar allows a seconds value of 60 for a leap second, but
-  // only ever at 23:59:60 — never any other minute/hour — so a bare
-  // `second > 59` upper bound would either reject every real leap-second
-  // timestamp (too strict) or, if simply raised to 60 everywhere, accept
-  // "12:00:60" as if any minute could run long (too loose). This checks
-  // both without needing an actual historical leap-second calendar.
+  // only ever at the instant 23:59:60 UTC — never any other minute/hour — so
+  // a bare `second > 59` upper bound would either reject every real
+  // leap-second timestamp (too strict) or, if simply raised to 60
+  // everywhere, accept "12:00:60" as if any minute could run long (too
+  // loose). This checks both without needing an actual historical
+  // leap-second calendar.
   if (second > 60) return false;
-  if (second === 60 && (hour !== 23 || minute !== 59)) return false;
 
+  let offsetMinutesTotal = 0;
   if (match[7] !== undefined) {
     const offsetHour = Number(match[8]);
     const offsetMinute = Number(match[9]);
     if (offsetHour > 23) return false;
     if (offsetMinute > 59) return false;
+    offsetMinutesTotal = (match[7] === "-" ? -1 : 1) * (offsetHour * 60 + offsetMinute);
+  }
+
+  if (second === 60) {
+    // A leap second carrying a nonzero offset need not read local 23:59:
+    // RFC 3339's own equivalent form "1990-12-31T15:59:60-08:00" is the
+    // same instant as "1990-12-31T23:59:60Z", so placement is checked
+    // against the UTC-equivalent hour/minute, not the local one.
+    const utcMinutesOfDay = (((hour * 60 + minute - offsetMinutesTotal) % 1440) + 1440) % 1440;
+    if (Math.floor(utcMinutesOfDay / 60) !== 23 || utcMinutesOfDay % 60 !== 59) return false;
   }
 
   return true;

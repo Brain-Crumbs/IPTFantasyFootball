@@ -24,10 +24,18 @@
       "atomic-stale-recovery-claim",
       "auditable-release-recovery",
       "collision-safe-lock-archive",
-      "optional-atomic-full-identity-compare-and-swap-on-release"
+      "optional-atomic-full-identity-compare-and-swap-on-release",
+      "release-reserves-the-active-path-for-its-full-duration-so-ordinary-acquisition-stays-blocked-rather-than-observing-a-claimed-away-path-as-free",
+      "release-restores-unreadable-or-malformed-claimed-content-to-the-active-path-before-propagating-the-read-failure",
+      "release-distinguishes-a-genuinely-absent-lock-from-any-other-rename-failure-rather-than-reporting-both-as-lock-not-found",
+      "requireDate-accepts-a-genuine-rfc-3339-leap-second-including-under-a-nonzero-offset-consistent-with-the-rest-of-the-pipeline"
     ],
     "behavioralConstraints": [
       "release() claims the active record via an atomic rename before inspecting or mutating it, then checks lockId plus any supplied expectedOwnerId/expectedRunId/expectedCanonicalBranch guards against that exact claimed content — never a separate, earlier read a concurrent recoverStale() could invalidate before the actual mutation runs; a mismatch on any one rejects the entire call as LOCK_ID_MISMATCH with no partial effect and restores the claimed record to the active path byte-for-byte (or, if a third operation has since created its own fresh record there, leaves that record untouched instead of overwriting it), and omitting all three optional guards preserves the original lockId-only match exactly",
+      "release() writes an exclusive reservation marker before ever claiming the active path away, and holds it for the call's entire duration (removed only in a finally once the call resolves): acquire() checks for this marker the same way it already checks for an in-flight recoverStale() claim (after its own exclusive-create write succeeds, rolling that write back if a marker is found), so ordinary acquisition stays blocked for release()'s full window rather than observing the active path as transiently free while release() is still deciding what to do with the content it claimed",
+      "if the content release() claims away is unreadable or fails to parse as JSON, the claim is restored to the active path (renamed back) before the read failure is rethrown, rather than the claimed record silently vanishing along with the claim file — a caller that catches and normalizes the throw still finds an active assignment to retry against, not a task that falsely appears to have none",
+      "a rename failure while release() claims the active path is reported as LOCK_NOT_FOUND only when the underlying error is ENOENT (a genuinely absent lock); any other rename failure (a permission error, a read-only filesystem, a transient I/O error) propagates rather than being reported the same way, since a caller that treats LOCK_NOT_FOUND as benign would otherwise skip release entirely while the original assignment remains present on disk",
+      "requireDate (acquiredAt/expiresAt/occurredAt) accepts a seconds value of 60 only at the UTC-equivalent instant 23:59:60 — computed from the timestamp's own offset, not requiring the literal local digits to read 23:59 — consistent with control-plane.controlled-merge's and control-plane.evidence-store's own leap-second validators",
       "at most one active task lock file is authoritative for a task",
       "canonicalBranch must exactly equal task metadata supplied by the caller",
       "all durable date-time values are RFC 3339 and schema-compatible",

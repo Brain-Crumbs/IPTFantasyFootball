@@ -157,7 +157,8 @@ const REVIEW_STATE_BY_ROLE = new Map<ReviewRole, TaskLifecycleState>([
 const REVIEW_ORDER: readonly ReviewRole[] = ["QA", "Architect", "UAT/Product"];
 const VALID_REVIEW_ROLES: readonly ReviewRole[] = ["Developer", "QA", "Architect", "UAT/Product", "MergeController"];
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
-const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const RFC3339_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/i;
 
 export function createLifecycleRecord(taskId: string): LifecycleRecord {
   if (!TASK_ID_PATTERN.test(taskId)) {
@@ -291,24 +292,43 @@ function validateRequest(request: TransitionRequest): string | null {
     if (value !== undefined && value.trim().length === 0) return `Transition ${name}, when supplied, must be a non-empty string.`;
   }
 
-  if (!RFC3339_PATTERN.test(request.occurredAt)) {
+  const match = RFC3339_PATTERN.exec(request.occurredAt);
+  if (!match) {
     return "Transition occurredAt must be a valid RFC 3339 date-time.";
   }
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
   // Date.parse() has no concept of an RFC 3339 leap second (a seconds value
-  // of exactly 60, valid only at 23:59:60) and unconditionally returns NaN
-  // for one — a real concern here specifically because an upstream caller
-  // (control-plane.controlled-merge, control-plane.evidence-store) already
-  // accepts a leap-second occurredAt at its own entry validation, and by
-  // the time that same value reaches a lifecycle transition, an
-  // irreversible action (a confirmed merge, recorded evidence) has already
-  // happened; rejecting it only here, this late, would strand that
-  // otherwise-successful operation in a state whose own history event
-  // could never be recorded. The exact leap-second shape is substituted
-  // with :59 for Date.parse's own sanity check only (still catching a
-  // genuinely malformed date elsewhere in the string, like an out-of-range
-  // month), never persisted or reported back.
-  const leapSecondMatch = /^(\d{4}-\d{2}-\d{2}T23:59):60((?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))$/.exec(request.occurredAt);
-  const parseableForm = leapSecondMatch ? `${leapSecondMatch[1]}:59${leapSecondMatch[2]}` : request.occurredAt;
+  // of exactly 60, valid only at the instant 23:59:60 UTC) and
+  // unconditionally returns NaN for one — a real concern here specifically
+  // because an upstream caller (control-plane.controlled-merge,
+  // control-plane.evidence-store) already accepts a leap-second occurredAt
+  // at its own entry validation, and by the time that same value reaches a
+  // lifecycle transition, an irreversible action (a confirmed merge,
+  // recorded evidence) has already happened; rejecting it only here, this
+  // late, would strand that otherwise-successful operation in a state whose
+  // own history event could never be recorded. Placement is checked against
+  // the UTC-equivalent hour/minute (a leap second carrying a nonzero offset
+  // need not read local 23:59: RFC 3339's own equivalent form
+  // "1990-12-31T15:59:60-08:00" is the same instant as "...T23:59:60Z"),
+  // then the exact leap-second digit is substituted with :59 for Date.parse's
+  // own remaining sanity check only (still catching a genuinely malformed
+  // date elsewhere in the string, like an out-of-range month), never
+  // persisted or reported back.
+  if (second === 60) {
+    let offsetMinutesTotal = 0;
+    if (match[7] !== undefined) {
+      offsetMinutesTotal = (match[7] === "-" ? -1 : 1) * (Number(match[8]) * 60 + Number(match[9]));
+    }
+    const utcMinutesOfDay = (((hour * 60 + minute - offsetMinutesTotal) % 1440) + 1440) % 1440;
+    if (Math.floor(utcMinutesOfDay / 60) !== 23 || utcMinutesOfDay % 60 !== 59) {
+      return "Transition occurredAt must be a valid RFC 3339 date-time.";
+    }
+  }
+  const parseableForm = second === 60
+    ? `${request.occurredAt.slice(0, 17)}59${request.occurredAt.slice(19)}`
+    : request.occurredAt;
   if (Number.isNaN(Date.parse(parseableForm))) {
     return "Transition occurredAt must be a valid RFC 3339 date-time.";
   }

@@ -153,6 +153,27 @@ test("second 60 outside the leap-second position (23:59:60) is still rejected", 
   assert.equal(result.rejection.code, "INVALID_REQUEST");
 });
 
+test("a leap-second occurredAt under a nonzero UTC offset is accepted even when its local time is not 23:59, but second 60 elsewhere under that same offset is still rejected", () => {
+  // RFC 3339's "1990-12-31T15:59:60-08:00" is the same instant as
+  // "1990-12-31T23:59:60Z"; placement is checked against the UTC-equivalent
+  // hour/minute, not the local one, matching control-plane.controlled-merge
+  // and control-plane.evidence-store's own validators.
+  const record = createLifecycleRecord("BOOT-009");
+  const leap = transitionLifecycle(record, request(record, "READY", "offset-leap-second", { occurredAt: "1990-12-31T15:59:60-08:00" }));
+  assert.equal(leap.ok, true, leap.ok ? undefined : leap.rejection.reason);
+
+  const notLeap = transitionLifecycle(record, request(record, "READY", "offset-not-leap-second", { occurredAt: "1990-12-31T12:00:60-08:00" }));
+  assert.equal(notLeap.ok, false);
+  assert.equal(notLeap.rejection.code, "INVALID_REQUEST");
+});
+
+test("occurredAt accepts RFC 3339's permitted lowercase 't'/'z' designators, matching the other validators in the pipeline", () => {
+  const record = createLifecycleRecord("BOOT-009");
+  const result = transitionLifecycle(record, request(record, "READY", "lowercase-designators", { occurredAt: "2026-09-10t12:00:00z" }));
+  assert.equal(result.ok, true, result.ok ? undefined : result.rejection.reason);
+  assert.equal(result.record.history[0].occurredAt, "2026-09-10t12:00:00z");
+});
+
 test("transition table explicitly declares prerequisites", () => {
   assert.ok(TRANSITION_RULES.length > 0);
   assert.ok(TRANSITION_RULES.every((rule) => Array.isArray(rule.prerequisites)));

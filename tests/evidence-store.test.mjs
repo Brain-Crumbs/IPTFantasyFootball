@@ -405,6 +405,20 @@ test("accepts a genuine RFC 3339 leap-second recordedAt (23:59:60) but rejects s
   });
 });
 
+test("accepts a leap-second recordedAt under a nonzero UTC offset even when its local time is not 23:59", () => {
+  // RFC 3339's "1990-12-31T15:59:60-08:00" is the same instant as
+  // "1990-12-31T23:59:60Z"; placement must be checked against the
+  // UTC-equivalent hour/minute, not the local one.
+  withStore((store) => {
+    const leap = store.record(validationEvidence({ recordedAt: "1990-12-31T15:59:60-08:00" }));
+    assert.equal(leap.ok, true);
+
+    const notLeap = store.record(validationEvidence({ recordedAt: "1990-12-31T12:00:60-08:00" }));
+    assert.equal(notLeap.ok, false);
+    assert.equal(notLeap.rejection.code, "SCHEMA_VALIDATION_FAILED");
+  });
+});
+
 test("rejects an unexpected property nested inside a $ref-resolved review-result details shape", () => {
   withStore((store) => {
     const fixture = readFixture("review-result.valid.json");
