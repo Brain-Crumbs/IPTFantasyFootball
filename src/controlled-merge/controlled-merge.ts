@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FileAssignmentLockStore, type AssignmentLockRecord, type LockResult } from "../assignment-lock/index.js";
 import { LOCAL_AGENT_STATE_RELATIVE_PATH } from "../dev-start/index.js";
@@ -155,17 +155,24 @@ export class ControlledMergeController {
     // still be found here even when it is no longer the most-recent PR for
     // the branch.
     const candidates = await this.findPullRequests(task.taskId, head);
-    const existing = candidates.find((pr) => pr.merged && pr.headSha === revision) ?? null;
+    // The base-ref check is part of the candidate predicate itself, not a
+    // filter applied only to whatever match is found first: a more-recently-
+    // created merged PR against an unrelated base (for example an
+    // experimental integration branch) can otherwise sit ahead of the actual
+    // merged integration-target PR in `candidates`, in which case find()
+    // would stop at that wrong-base PR — now rejected by the check below —
+    // and never examine the real match behind it, permanently stranding a
+    // genuinely confirmed merge in MERGE_READY.
+    const existing =
+      candidates.find((pr) => pr.merged && pr.headSha === revision && pr.baseRef === integrationTarget) ?? null;
     // Trust an already-merged pull request as a confirmed prior result only
     // when this task's own lifecycle history still binds its MERGE_READY
-    // transition to the exact current revision and the merged PR's base
-    // matches the configured integration target — otherwise fall through to
+    // transition to the exact current revision — otherwise fall through to
     // the normal readiness-evaluate path below, which safely rejects (the
     // merged/closed PR is invisible to findOpenPullRequests, so evaluate()
-    // reports PULL_REQUEST_NOT_FOUND) rather than trusting a stale binding or
-    // a PR merged into the wrong base.
+    // reports PULL_REQUEST_NOT_FOUND) rather than trusting a stale binding.
     const mergeReadyForRevision = hasHistoryEventBoundToRevision(record, "MERGE_READY", revision);
-    if (existing !== null && mergeReadyForRevision && existing.baseRef === integrationTarget) {
+    if (existing !== null && mergeReadyForRevision) {
       // A prior attempt's merge provider call already succeeded (this exact
       // process crashed before recording evidence/transitioning, or the PR
       // was merged out of band); never call the merge endpoint again for a
@@ -485,6 +492,18 @@ export class ControlledMergeController {
   // as the lineage's current record right now — see parseEvidenceRef's doc
   // comment for why that distinction matters. Used to resume a MERGED task's
   // bookkeeping and to answer an already-DONE task's idempotent read.
+  //
+  // The lifecycle-history evidenceRef is treated as a claim, not a trusted
+  // pointer: a corrupted or hand-edited lifecycle-state file could name a
+  // syntactically valid lineage/sequence that belongs to a different task, a
+  // different lineage kind entirely, or a revision other than the one this
+  // exact transition recorded. Blindly trusting it would let the MERGED path
+  // cast arbitrary payload fields and transition to DONE without genuine
+  // task-specific merge evidence, or let the DONE path report another task's
+  // result as this task's own. Every field the rest of this module reads off
+  // the returned record (pullRequestNumber, mergeCommitSha, revisionIdentity)
+  // is therefore verified against this task's own merge-evidence lineage and
+  // the event's own revisionIdentity before it is returned.
   private resolvePinnedEvidence(taskId: string, record: LifecycleRecord, toState: "MERGED" | "DONE"): StoredEvidenceRecord {
     const event = latestHistoryEventToState(record, toState);
     if (event === null) {
@@ -495,10 +514,11 @@ export class ControlledMergeController {
       );
     }
     const parsed = parseEvidenceRef(event.evidenceRef);
-    if (parsed === null) {
+    const expectedLineageId = mergeEvidenceLineageId(taskId);
+    if (parsed === null || parsed.lineageId !== expectedLineageId) {
       throw new ControlledMergeError(
         "EVIDENCE_REJECTED",
-        `Task '${taskId}' ${toState} lifecycle-history event has a malformed evidenceRef '${event.evidenceRef}'.`,
+        `Task '${taskId}' ${toState} lifecycle-history event has an evidenceRef '${event.evidenceRef}' that does not name this task's own merge-evidence lineage '${expectedLineageId}'.`,
         false,
       );
     }
@@ -517,6 +537,13 @@ export class ControlledMergeController {
       throw new ControlledMergeError(
         "EVIDENCE_REJECTED",
         `Task '${taskId}' evidence record '${event.evidenceRef}' named by its ${toState} lifecycle-history event no longer exists.`,
+        false,
+      );
+    }
+    if (!isMergeEvidencePayloadFor(exact.payload, taskId, event.revisionIdentity)) {
+      throw new ControlledMergeError(
+        "EVIDENCE_REJECTED",
+        `Task '${taskId}' evidence record '${event.evidenceRef}' named by its ${toState} lifecycle-history event is not valid merge evidence for this task's revision.`,
         false,
       );
     }
@@ -557,7 +584,23 @@ export class ControlledMergeController {
     if (lockIdentityToRelease === null) {
       return;
     }
-    const current = this.dependencies.lockStore.get(taskId);
+    // The merge and MERGED transition are already persisted by the time this
+    // runs; an I/O failure reading the concrete lock store's own state (a
+    // full disk, a malformed lock file) must never escape as a raw
+    // exception — it is normalized to the same recoverable
+    // LOCK_RELEASE_FAILED a rejected release already reports, so a caller
+    // resuming this task's bookkeeping gets an actionable, typed error
+    // rather than an opaque crash.
+    let current: AssignmentLockRecord | null;
+    try {
+      current = this.dependencies.lockStore.get(taskId);
+    } catch (error: unknown) {
+      throw new ControlledMergeError(
+        "LOCK_RELEASE_FAILED",
+        `Task '${taskId}' assignment lock could not be read during completion: ${detail(error)}`,
+        true,
+      );
+    }
     if (
       current === null ||
       current.status !== "ACTIVE" ||
@@ -832,78 +875,48 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     );
   }
 
-  // Rewrites the lock file with a fresh timestamp (same random suffix, so
-  // the token this holder tracks stays recognizably its own) only while it
-  // still actually owns the file. This must be ownership-atomic, not a bare
-  // read-then-write: a plain overwrite could otherwise land in the gap
-  // between another process's stale-reclaim rename (which momentarily
-  // removes the file) and that process's own fresh tryCreate, silently
-  // clobbering the new holder's token — after which both processes believe
-  // they alone hold the lock. Renaming the lock path away first (an atomic
-  // "claim," identical in spirit to reclaimIfStale's own technique) makes
-  // this holder's continued ownership provable: the rename only succeeds if
-  // the file still exists at that path, and only this refresh (or a
-  // concurrent reclaim) ever touches it. If the file no longer holds the
-  // token this holder last wrote — another process has already reclaimed it
-  // as stale (a heartbeat interval longer than staleLockMs, or a very slow
-  // process pause, could still race this) — there is nothing left to
-  // refresh, and this holder must stop touching the lock file entirely; the
-  // eventual release() call then correctly no-ops, since its own content
-  // check will not match this holder's last-known token.
-  private refresh(lockPath: string, currentToken: string): string {
-    const claimPath = `${lockPath}.heartbeat-${randomLockToken()}`;
-    try {
-      renameSync(lockPath, claimPath);
-    } catch {
-      return currentToken;
-    }
-
+  // Extends the lock file's modification time — never its content, and
+  // never by removing it — only while this holder still actually owns the
+  // file. An earlier version of this method renamed the lock path away to
+  // perform the ownership check atomically, then wrote a fresh file back;
+  // that left a real (if brief) window, once per heartbeat interval, where
+  // the lock path did not exist at all. Any concurrent, ordinary acquire()
+  // for the same task — not merely a stale-reclaim contender — could then
+  // succeed inside that window via its own exclusive-create tryCreate(),
+  // producing two callbacks running inside the supposedly exclusive section
+  // at once. Touching only mtime, via a metadata-only utimesSync call,
+  // never deletes or truncates the file: the lock path remains continuously
+  // present and continuously EEXIST to any concurrent tryCreate() for the
+  // entire time this holder legitimately owns it, so that race cannot
+  // occur. Staleness detection (reclaimIfStale) reads this mtime rather
+  // than a timestamp embedded in the file's content, so this refresh is
+  // exactly the same signal reclaimIfStale checks. The read-then-touch pair
+  // below is not perfectly atomic — a concurrent stale-reclaim could still
+  // land in the narrow gap between them — but the worst case is merely
+  // nudging a just-reclaimed lock's mtime forward slightly (never
+  // resurrecting removed content, never faking exclusive ownership away
+  // from a fresh holder), the same order of residual risk already accepted
+  // for a heartbeat interval that itself runs longer than staleLockMs.
+  private refresh(lockPath: string, token: string): string {
     let observed: string | null;
     try {
-      observed = readFileSync(claimPath, "utf8");
+      observed = readFileSync(lockPath, "utf8");
     } catch {
-      observed = null;
+      return token;
     }
-    if (observed !== currentToken) {
-      // Should not normally happen (this holder's own rename just captured
-      // whatever was at lockPath), but if it does, restore that content
-      // rather than discarding someone else's lock state.
-      if (observed !== null) {
-        try {
-          writeFileSync(lockPath, observed, { encoding: "utf8", flag: "wx" });
-        } catch {
-          // A fresh lock now exists at lockPath; nothing to restore onto.
-        }
-      }
-      try {
-        unlinkSync(claimPath);
-      } catch {
-        // Already gone; nothing left to clean up.
-      }
-      return currentToken;
-    }
-
-    const randomPart = currentToken.slice(currentToken.indexOf(":") + 1);
-    const refreshed = `${Date.now()}:${randomPart}`;
-    try {
-      writeFileSync(lockPath, refreshed, { encoding: "utf8", flag: "wx" });
-    } catch {
-      // Another process created its own fresh lock at lockPath in the gap
-      // this rename opened; this holder has lost ownership and must not
-      // restore its own (now-stale) content over it.
-      try {
-        unlinkSync(claimPath);
-      } catch {
-        // Already gone; nothing left to clean up.
-      }
-      return currentToken;
+    if (observed !== token) {
+      // Reclaimed by another process as stale; nothing left for this
+      // (former) holder to refresh.
+      return token;
     }
     try {
-      unlinkSync(claimPath);
+      const now = new Date();
+      utimesSync(lockPath, now, now);
     } catch {
-      // Already gone; nothing left to clean up.
+      // Lost ownership in the gap between the read above and this call;
+      // nothing further to do.
     }
-    return refreshed;
+    return token;
   }
 
   private release(lockPath: string, token: string): void {
@@ -923,7 +936,10 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
   }
 
   private tryCreate(lockPath: string): string | null {
-    const token = `${Date.now()}:${randomLockToken()}`;
+    // The token is just a random identity, not a timestamp: staleness is
+    // now determined from the lock file's own filesystem mtime (see
+    // reclaimIfStale/refresh), not from anything embedded in its content.
+    const token = randomLockToken();
     try {
       writeFileSync(lockPath, token, { encoding: "utf8", flag: "wx" });
       return token;
@@ -940,15 +956,27 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
   // after the original stale holder legitimately released it," so the
   // content the rename actually captured is re-read and compared against
   // what was observed as stale before it is discarded.
+  //
+  // Staleness itself is judged from the lock file's own filesystem mtime
+  // (bumped by a live holder's heartbeat via refresh()'s utimesSync call)
+  // rather than a timestamp parsed out of its content: this is the same
+  // signal a legitimate holder's heartbeat actually updates, so a holder
+  // that is still refreshing on schedule is never mistaken for abandoned.
   private reclaimIfStale(lockPath: string): boolean {
+    let stats: { readonly mtimeMs: number };
+    try {
+      stats = statSync(lockPath);
+    } catch {
+      return false;
+    }
+    if (Date.now() - stats.mtimeMs <= this.staleLockMs) return false;
+
     let observed: string;
     try {
       observed = readFileSync(lockPath, "utf8");
     } catch {
       return false;
     }
-    const heldSince = Number(observed.split(":")[0]);
-    if (!Number.isFinite(heldSince) || Date.now() - heldSince <= this.staleLockMs) return false;
 
     const claimPath = `${lockPath}.reclaim-${randomLockToken()}`;
     try {
@@ -1051,20 +1079,29 @@ export class GitHubControlledMergePullRequestOperations implements ControlledMer
   }
 
   // Returns every pull request matching this head branch, in any state, in
-  // descending creation order — never only the single most recent one — so
-  // a caller scanning for a specific already-merged candidate (see
-  // ControlledMergeController's own use) can never have that candidate
-  // hidden behind an unrelated, more-recently-created PR sharing the same
-  // branch. Capped at 100 per page (GitHub's own maximum): a single branch
-  // realistically never accumulates more pull requests across its history
-  // than that.
+  // descending creation order — never only the single most recent one, and
+  // never only the first page — so a caller scanning for a specific
+  // already-merged candidate (see ControlledMergeController's own use) can
+  // never have that candidate hidden behind an unrelated, more-recently-
+  // created PR sharing the same branch, nor behind page-100-plus of a
+  // long-lived reused branch's history. Pages at GitHub's own maximum
+  // per_page (100) and keeps requesting subsequent pages until a
+  // less-than-full page confirms there is nothing left to fetch.
   async findPullRequestsByHead(head: string): Promise<readonly ControlledMergePullRequestRecord[]> {
-    const query = `state=all&head=${encodeURIComponent(`${this.owner}:${head}`)}&sort=created&direction=desc&per_page=100`;
-    const data = await this.request("GET", `/repos/${this.owner}/${this.repo}/pulls?${query}`);
-    if (!Array.isArray(data)) {
-      throw new PullRequestProviderError("PROVIDER_ERROR", "GitHub pulls list response was not an array.");
+    const perPage = 100;
+    const results: ControlledMergePullRequestRecord[] = [];
+    for (let page = 1; ; page += 1) {
+      const query = `state=all&head=${encodeURIComponent(`${this.owner}:${head}`)}&sort=created&direction=desc&per_page=${perPage}&page=${page}`;
+      const data = await this.request("GET", `/repos/${this.owner}/${this.repo}/pulls?${query}`);
+      if (!Array.isArray(data)) {
+        throw new PullRequestProviderError("PROVIDER_ERROR", "GitHub pulls list response was not an array.");
+      }
+      for (const entry of data) {
+        results.push(toRecord(entry));
+      }
+      if (data.length < perPage) break;
     }
-    return Object.freeze(data.map((entry) => toRecord(entry)));
+    return Object.freeze(results);
   }
 
   // Fetches the single pull request identified by number, unambiguously —
@@ -1366,6 +1403,27 @@ function latestHistoryEventToState(record: LifecycleRecord, toState: TaskLifecyc
 // hypothetical later write to the same lineage (an administrative repair, a
 // future bug) must never silently change what an already-persisted MERGED
 // or DONE transition is understood to describe.
+// Guards resolvePinnedEvidence's trust in a lifecycle-history-named evidence
+// record: it must actually be an `ipt.merge-evidence` record for this exact
+// task and the exact revision the history event itself recorded, and must
+// carry a usable pull-request number and merge commit SHA — anything else
+// means the evidenceRef, however syntactically well-formed, does not
+// describe this task's confirmed merge.
+function isMergeEvidencePayloadFor(payload: unknown, taskId: string, expectedRevision: string | undefined): boolean {
+  if (typeof payload !== "object" || payload === null) return false;
+  const candidate = payload as Record<string, unknown>;
+  return (
+    candidate.schemaId === "ipt.merge-evidence" &&
+    candidate.taskId === taskId &&
+    typeof expectedRevision === "string" &&
+    candidate.revisionIdentity === expectedRevision &&
+    typeof candidate.pullRequestNumber === "number" &&
+    candidate.pullRequestNumber >= 1 &&
+    typeof candidate.mergeCommitSha === "string" &&
+    candidate.mergeCommitSha.length > 0
+  );
+}
+
 function parseEvidenceRef(ref: string): { readonly lineageId: string; readonly sequence: number } | null {
   const at = ref.lastIndexOf("@");
   if (at <= 0) return null;

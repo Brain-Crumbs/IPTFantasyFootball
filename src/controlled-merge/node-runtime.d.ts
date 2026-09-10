@@ -1,3 +1,7 @@
+declare module "node:fs" {
+  export function utimesSync(path: string, atime: Date, mtime: Date): void;
+}
+
 interface IptFetchResponse {
   readonly ok: boolean;
   readonly status: number;

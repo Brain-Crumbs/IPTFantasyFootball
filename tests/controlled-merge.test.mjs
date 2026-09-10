@@ -183,6 +183,34 @@ class FakeLockStore {
   }
 }
 
+// Simulates the concrete lock store's own get() throwing on a read that
+// happens *after* the merge and MERGED transition have already persisted —
+// an I/O error or a malformed lock file, distinct from a normal, well-formed
+// rejection the FakeLockStore above models. The snapshot captured at merge()
+// entry (the first get() call) must still succeed so the merge can proceed;
+// only the completion-time re-read (the second call, inside
+// releaseLockIfPresent) fails.
+class FakeLockStoreThrowsOnSecondGet {
+  constructor(lock = lockRecord()) {
+    this.lock = lock;
+    this.getCalls = 0;
+    this.releaseCalls = [];
+  }
+
+  get() {
+    this.getCalls += 1;
+    if (this.getCalls >= 2) {
+      throw new Error("lock store unavailable");
+    }
+    return this.lock;
+  }
+
+  release(request) {
+    this.releaseCalls.push(request);
+    throw new Error("release should not be reached in this fixture");
+  }
+}
+
 function prRecord(overrides = {}) {
   return Object.freeze({
     number: 63,
@@ -499,6 +527,25 @@ test("a lock-release failure other than not-found/mismatch blocks the DONE trans
   assert.equal(state.get(task.taskId).currentState, "DONE");
 });
 
+test("an assignment-lock read failure during completion is normalized to LOCK_RELEASE_FAILED, not a raw throw", async () => {
+  const lock = new FakeLockStoreThrowsOnSecondGet();
+  const { controller, state } = makeController({ lock });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "LOCK_RELEASE_FAILED");
+    assert.equal(error.recoverable, true);
+    return true;
+  });
+
+  assert.equal(
+    state.get(task.taskId).currentState,
+    "MERGED",
+    "the MERGED transition already persisted before the completion-time lock read failed",
+  );
+  assert.equal(lock.releaseCalls.length, 0, "release() is never reached once the read itself throws");
+});
+
 test("an already-released lock is treated as idempotent, not an error", async () => {
   const lock = new FakeLockStore(null);
   const { controller, state } = makeController({ lock });
@@ -593,6 +640,41 @@ test("GitHubControlledMergePullRequestOperations finds a merged pull request via
   assert.equal(records[0].merged, true);
   assert.equal(records[0].mergeCommitSha, "merged-abc");
   assert.match(capturedUrl, /state=all/);
+});
+
+test("GitHubControlledMergePullRequestOperations paginates findPullRequestsByHead past the first 100 results", async () => {
+  const capturedUrls = [];
+  const firstPage = Array.from({ length: 100 }, (_, index) => ({
+    number: index + 1,
+    head: { sha: revision },
+    base: { ref: "main" },
+    state: "closed",
+    merged_at: null,
+    merge_commit_sha: null,
+  }));
+  const secondPage = [
+    { number: 101, head: { sha: revision }, base: { ref: "main" }, state: "closed", merged_at: "2026-09-10T12:00:00Z", merge_commit_sha: "recovered-on-page-2" },
+  ];
+  const fetchImpl = async (url) => {
+    capturedUrls.push(url);
+    const page = capturedUrls.length;
+    return { ok: true, status: 200, json: async () => (page === 1 ? firstPage : secondPage) };
+  };
+  const adapter = new GitHubControlledMergePullRequestOperations({
+    owner: "Brain-Crumbs",
+    repo: "IPTFantasyFootball",
+    token: "fixture-token",
+    fetchImpl,
+  });
+
+  const records = await adapter.findPullRequestsByHead(canonicalBranch);
+
+  assert.equal(capturedUrls.length, 2, "a full first page must trigger a second page request");
+  assert.match(capturedUrls[0], /page=1/);
+  assert.match(capturedUrls[1], /page=2/);
+  assert.equal(records.length, 101);
+  assert.equal(records[100].number, 101);
+  assert.equal(records[100].mergeCommitSha, "recovered-on-page-2");
 });
 
 test("GitHubControlledMergePullRequestOperations rejects empty owner/repo/token at construction", () => {
@@ -696,8 +778,14 @@ test("FileControlledMergeTaskLock rejects a concurrent withLock call for the sam
 test("FileControlledMergeTaskLock reclaims a stale lock file rather than wedging the task forever", async () => {
   const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-stale-"));
   try {
-    const { writeFileSync } = await import("node:fs");
-    writeFileSync(join(dir, "BOOT-025.lifecycle.lock"), `${Date.now() - 10 * 60 * 1000}:stale-token`, { encoding: "utf8" });
+    const { writeFileSync, utimesSync } = await import("node:fs");
+    const lockPath = join(dir, "BOOT-025.lifecycle.lock");
+    writeFileSync(lockPath, "stale-token", { encoding: "utf8" });
+    // Staleness is judged from the lock file's filesystem mtime, not from a
+    // timestamp embedded in its content, so an abandoned lock is simulated
+    // by backdating the file's own mtime.
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(lockPath, old, old);
 
     const taskLock = new FileControlledMergeTaskLock(dir);
     const result = await taskLock.withLock("BOOT-025", async () => "resumed");
@@ -739,6 +827,37 @@ test("FileControlledMergeTaskLock's heartbeat keeps a long-running holder from b
     // Once genuinely released, a new caller succeeds immediately.
     const result = await contender.withLock("BOOT-025", async () => "after-release");
     assert.equal(result, "after-release");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("FileControlledMergeTaskLock's heartbeat never leaves the lock path absent, so a concurrent acquire can never slip in", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-heartbeat-presence-"));
+  try {
+    const { existsSync } = await import("node:fs");
+    const lockPath = join(dir, "BOOT-025.lifecycle.lock");
+    const holder = new FileControlledMergeTaskLock(dir, { staleLockMs: 5000, heartbeatIntervalMs: 5 });
+
+    let observedAbsent = false;
+    const held = holder.withLock("BOOT-025", async () => {
+      // Poll far more often than the heartbeat interval, across many
+      // heartbeat cycles: an earlier rename-based refresh implementation
+      // removed the lock file for the duration of one syscall gap on every
+      // single heartbeat tick, which a poll at this frequency would catch.
+      const deadline = Date.now() + 100;
+      while (Date.now() < deadline) {
+        if (!existsSync(lockPath)) {
+          observedAbsent = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      return "holder-done";
+    });
+
+    assert.equal(await held, "holder-done");
+    assert.equal(observedAbsent, false, "the lock path must never be observably absent while a holder is active");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -894,6 +1013,98 @@ test("crash recovery finds the confirmed merge even when a stray unrelated PR is
   assert.equal(result.pullRequestNumber, 63);
   assert.equal(pullRequests.mergeCalls, 0);
   assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("a wrong-base merged PR at the same revision does not shadow the actual integration-target merge behind it", async () => {
+  // A more-recently-created merged PR against an unrelated base (the same
+  // source revision, pushed at a different target as an experiment) sits
+  // ahead of the genuinely approved, integration-target merge in the
+  // candidate array. The base-ref check must be part of the selection
+  // predicate itself, not applied only after find() has already committed
+  // to the first head-matching candidate — otherwise this wrong-base PR
+  // would be selected, rejected by a later check, and the real match never
+  // examined.
+  const wrongBase = prRecord({ number: 90, merged: true, mergeCommitSha: "wrong-base-sha", baseRef: "experimental" });
+  const correct = prRecord({ number: 63, merged: true, mergeCommitSha: "recovered-sha", baseRef: "main" });
+  const pullRequests = new FakePullRequestPort({ existing: [wrongBase, correct] });
+  const { controller, state } = makeController({ pullRequests });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(result.mergeCommitSha, "recovered-sha");
+  assert.equal(result.pullRequestNumber, 63);
+  assert.equal(pullRequests.mergeCalls, 0);
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("resume rejects a lifecycle-history evidenceRef naming another task's merge-evidence lineage", async () => {
+  const { store: evidence } = makeEvidenceStore();
+  const otherTaskPayload = {
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: "BOOT-099:merge:rev:when",
+    taskId: "BOOT-099",
+    revisionIdentity: revision,
+    pullRequestNumber: 99,
+    mergeCommitSha: "someone-elses-merge",
+    policyDecisionReference: "control-plane.merge-readiness:BOOT-099@rev:ready",
+    recordedAt: occurredAt,
+  };
+  const otherRecorded = evidence.record(otherTaskPayload);
+  assert.equal(otherRecorded.ok, true);
+
+  const stateStore = new MemoryStateStore([
+    [
+      task.taskId,
+      lifecycleRecord(task.taskId, "MERGED", [
+        // Forged/corrupted evidenceRef: syntactically valid, but points at a
+        // different task's lineage rather than this task's own.
+        historyEventFor("MERGED", otherRecorded.record),
+      ]),
+    ],
+  ]);
+  const { controller } = makeController({ evidenceStore: evidence, stateStore });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "EVIDENCE_REJECTED");
+    return true;
+  });
+});
+
+test("resume rejects a lifecycle-history evidenceRef whose record does not match the event's own revision", async () => {
+  const { store: evidence } = makeEvidenceStore();
+  const mismatchedPayload = {
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:other-rev:when`,
+    taskId: task.taskId,
+    revisionIdentity: "0000000000000000000000000000000000000000",
+    pullRequestNumber: 63,
+    mergeCommitSha: "belongs-to-a-different-revision",
+    policyDecisionReference: `control-plane.merge-readiness:${task.taskId}@other-rev:ready`,
+    recordedAt: occurredAt,
+  };
+  const recorded = evidence.record(mismatchedPayload);
+  assert.equal(recorded.ok, true);
+
+  const stateStore = new MemoryStateStore([
+    [
+      task.taskId,
+      // The history event itself still claims `revision` (the current
+      // fixture revision), but the record it points to was recorded against
+      // a different one.
+      lifecycleRecord(task.taskId, "MERGED", [historyEventFor("MERGED", recorded.record)]),
+    ],
+  ]);
+  const { controller } = makeController({ evidenceStore: evidence, stateStore });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "EVIDENCE_REJECTED");
+    return true;
+  });
 });
 
 test("resume pins evidence to the exact record the lifecycle history names, not whatever is merely current", async () => {
