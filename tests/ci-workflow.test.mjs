@@ -46,6 +46,18 @@ test("CI workflow pins actions to exact major versions, not floating refs", () =
   }
 });
 
+// Codex review finding on PR #61 (verified): actions/checkout's default ref
+// for a pull_request event is the synthetic merge commit, not the PR's actual
+// head commit, so results should be bound to the exact head SHA a reviewer
+// and a future merge-readiness reader both mean by "this PR".
+test("both jobs check out the PR's actual head SHA, not the default pull_request merge-commit ref", () => {
+  const checkoutBlocks = [...workflowText.matchAll(/uses: actions\/checkout@v4\n(?:.*\n)*?(?=\n\s*- name:|\n {2}\S|$)/g)];
+  assert.equal(checkoutBlocks.length, 2, "expected exactly one checkout step per job");
+  for (const [block] of checkoutBlocks) {
+    assert.match(block, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
+  }
+});
+
 test("build-and-test job reruns the repository's own build and full test suite", () => {
   assert.match(workflowText, /run: npm ci/);
   assert.match(workflowText, /run: npm run build/);

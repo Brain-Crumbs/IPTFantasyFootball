@@ -31,7 +31,9 @@ Configuring branch protection itself (marking these checks "required" in the Git
 
 ### `build-and-test`
 
-1. `actions/checkout@v4` with `fetch-depth: 0` (full history, not the default shallow single-ref clone) — required because `tests/architecture-review.test.mjs`/`tests/qa-review.test.mjs` run `git merge-base` against `main`/`origin/main` in the real checked-out repository (they use `process.cwd()`, not an isolated fixture repo); under the default shallow checkout neither ref is resolvable and both test files fail with `Cannot resolve a merge base between 'main' (or 'origin/main') and revision 'HEAD'.` — this was caught by this workflow's own first CI run on this PR and reproduced locally with a real `git clone --depth 1` before being fixed
+1. `actions/checkout@v4` with `ref: ${{ github.event.pull_request.head.sha || github.sha }}` and `fetch-depth: 0` (full history, not the default shallow single-ref clone). Both non-default settings were added after real findings against this workflow's own first CI run on this PR:
+   - `fetch-depth: 0` — required because `tests/architecture-review.test.mjs`/`tests/qa-review.test.mjs` run `git merge-base` against `main`/`origin/main` in the real checked-out repository (they use `process.cwd()`, not an isolated fixture repo); under the default shallow checkout neither ref is resolvable and both test files fail with `Cannot resolve a merge base between 'main' (or 'origin/main') and revision 'HEAD'.` Reproduced locally with a real `git clone --depth 1` before being fixed.
+   - `ref: ...head.sha` — a Codex review finding: `actions/checkout`'s default ref for a `pull_request` event checks out the synthetic merge commit rather than the PR's actual head commit. Explicitly checking out the head SHA binds this job's result to the exact revision a reviewer and a future merge-readiness reader both mean by "this PR" (`github.sha` is used unchanged for `push`/`workflow_dispatch`, where there is no PR head). See "PR head vs. merge-commit checkout" below for why this changed even though the check *was* already discoverable by PR head SHA either way.
 2. `actions/setup-node@v4` — Node.js `20` (matches this repository's `package.json` `engines.node: ">=20"`)
 3. `npm ci` — installs exactly the versions pinned in `package-lock.json` (newly committed by BOOT-023; the repository had no lockfile before), failing rather than silently drifting if `package.json` and the lockfile disagree
 4. `npm run build` — `tsc -p tsconfig.json`
@@ -39,7 +41,7 @@ Configuring branch protection itself (marking these checks "required" in the Git
 
 ### `schema-validation`
 
-1. `actions/checkout@v4`
+1. `actions/checkout@v4` with `ref: ${{ github.event.pull_request.head.sha || github.sha }}` (see `build-and-test` above — same head-SHA checkout, so both jobs' results are bound to the same exact revision; this job does not need `fetch-depth: 0`)
 2. `actions/setup-python@v5` — Python `3.11`
 3. `pip install -r schemas/requirements.txt`
 4. `python schemas/validate_fixtures.py` — BOOT-003's existing schema-fixture validator (unchanged by BOOT-023)
@@ -62,6 +64,12 @@ python schemas/validate_repository_contracts.py
 ```
 
 There is no separate "CI-only" command and no separate "local-only" command: CI runs exactly these commands and nothing else, so a clean local run of both blocks is deterministic parity with CI for the same commit.
+
+## PR head vs. merge-commit checkout
+
+For a `pull_request` event, `actions/checkout`'s default `ref` is `refs/pull/<n>/merge` — a synthetic commit GitHub computes by merging the PR head into the current base — not the PR's actual head commit; `github.sha` for that event names the same merge commit. Both jobs instead pin `ref: ${{ github.event.pull_request.head.sha || github.sha }}`, so the exact commit tested is the PR's real head (a plain `github.sha` still applies for `push`/`workflow_dispatch`, where there is no PR/merge commit).
+
+This repository's `pull_request_read`/Checks-API tooling already resolves check runs by querying the PR's head SHA directly, and GitHub associates a `pull_request`-triggered workflow's check runs with that head SHA for the PR's Checks tab and required-status-check gating regardless of which ref was actually checked out inside the job — so a merge-readiness reader was never at risk of failing to *find* these checks (verified directly against this PR before this change: `get_check_runs` against the PR already returned this job's status keyed to the real head SHA, not the merge commit, under the pre-fix workflow). The reason to pin the head SHA anyway is what code is *tested*, not check discoverability: this repository's own revision-bound-evidence invariant (`CONSTITUTION.md` §10; BOOT-022's `REMOTE_HEAD_MISMATCH` check) treats "the exact PR head" as authoritative over any GitHub-computed preview of a hypothetical merge, so CI should test that same exact commit rather than a synthetic stand-in for it.
 
 ## Determinism and toolchain pinning
 

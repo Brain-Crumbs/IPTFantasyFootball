@@ -22,6 +22,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # On a pull_request event, actions/checkout's default ref checks out
+          # the synthetic merge commit rather than the PR's actual head commit.
+          # Check out the exact head SHA instead, so results are bound to the
+          # exact revision a merge-readiness reader (BOOT-024/BOOT-025) and a
+          # reviewer both mean by "this PR" (github.sha still applies as-is
+          # for push/workflow_dispatch, where there is no pull_request head).
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # Full history (not the default shallow single-ref checkout) so that
           # `git merge-base main`/`origin/main` resolves. The repository's own
           # architecture-review/qa-review context-source tests run git diff
@@ -51,6 +58,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # See build-and-test's checkout step: check out the PR's actual head
+          # commit rather than the pull_request event's default synthetic
+          # merge-commit ref, so this job's result is bound to the exact same
+          # revision as build-and-test's.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5

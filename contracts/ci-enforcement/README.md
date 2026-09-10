@@ -15,8 +15,8 @@
 ## Structural contract
 
 - Workflow file: `.github/workflows/ci.yml`, workflow name `CI`
-- Job `build-and-test` (check context `CI / Build and test (Node)`) — checks out full history (`fetch-depth: 0`), then runs `npm ci`, `npm run build`, `npm test`
-- Job `schema-validation` (check context `CI / Schema and contract validation (Python)`) — runs `python schemas/validate_fixtures.py`, then `python schemas/validate_repository_contracts.py`
+- Job `build-and-test` (check context `CI / Build and test (Node)`) — checks out the PR's exact head SHA (`ref: github.event.pull_request.head.sha || github.sha`) with full history (`fetch-depth: 0`), then runs `npm ci`, `npm run build`, `npm test`
+- Job `schema-validation` (check context `CI / Schema and contract validation (Python)`) — checks out the same exact head SHA, then runs `python schemas/validate_fixtures.py`, then `python schemas/validate_repository_contracts.py`
 - Triggers: `pull_request` (branches: `main`), `push` (branches: `main`), `workflow_dispatch`
 - `schemas/validate_repository_contracts.py` — a standalone script (no importable API; invoked as `python schemas/validate_repository_contracts.py`) that exits `0` and prints `PASS: <n> repository contract/task record(s) validated against their schema` on success, or exits `1` and prints one `FAIL: <path>: <reason>` line per invalid/malformed/missing record on failure
 
@@ -32,6 +32,7 @@
 
 - Both jobs run unconditionally on every `pull_request` targeting `main`, every `push` to `main`, and manual `workflow_dispatch` — neither job is skipped based on which files changed.
 - `build-and-test`'s checkout uses `fetch-depth: 0` rather than the action's default shallow single-ref clone: `tests/architecture-review.test.mjs`/`tests/qa-review.test.mjs` run `git merge-base` against `main`/`origin/main` in the real checked-out repository (`process.cwd()`, not an isolated fixture repo), which is unresolvable under a shallow clone. This was caught by this workflow's own first CI run and reproduced locally with a real `git clone --depth 1` before the fix.
+- Both jobs' checkouts pin `ref: github.event.pull_request.head.sha || github.sha` rather than the action's default `pull_request`-event ref (the synthetic merge commit GitHub computes, not the PR's actual head commit), so the exact commit tested is the same one a reviewer or a future merge-readiness reader means by "this PR" — see `docs/CI.md` "PR head vs. merge-commit checkout" for why this changed even though check-run discoverability by head SHA was independently verified unaffected either way.
 - `build-and-test` fails (non-zero exit) if `npm run build` or `npm test` exits non-zero; it never proceeds to report success after a failing step, since GitHub Actions steps run sequentially and a failing step halts the job by default.
 - `schema-validation` fails if `schemas/validate_fixtures.py` or `schemas/validate_repository_contracts.py` exits non-zero.
 - `schemas/validate_repository_contracts.py` fails (`SystemExit(1)`) if: a scanned JSON file is not valid JSON; a scanned record does not validate against its schema; or zero `contracts/**/module-contract.json` files are found (a stale/broken glob is a failure, not a vacuous pass). Zero `tasks/definitions/*.task.json` files is not itself a failure, since the repository-native task registry may legitimately hold no records yet (see `tasks/README.md`).
