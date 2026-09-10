@@ -6,7 +6,7 @@
   "structuralContract": {
     "interfaces": [
       "Workflow file .github/workflows/ci.yml, workflow name 'CI'",
-      "Job build-and-test, check context 'CI / Build and test (Node)': npm ci, npm run build, npm test",
+      "Job build-and-test, check context 'CI / Build and test (Node)': actions/checkout@v4 with fetch-depth: 0, npm ci, npm run build, npm test",
       "Job schema-validation, check context 'CI / Schema and contract validation (Python)': python schemas/validate_fixtures.py, python schemas/validate_repository_contracts.py",
       "Triggers: pull_request (branches: main), push (branches: main), workflow_dispatch",
       "schemas/validate_repository_contracts.py: standalone script invoked as `python schemas/validate_repository_contracts.py`; exits 0 with 'PASS: <n> repository contract/task record(s) validated against their schema', or exits 1 with one 'FAIL: <path>: <reason>' line per violation"
@@ -24,6 +24,7 @@
     ],
     "behavioralConstraints": [
       "both jobs (build-and-test, schema-validation) run unconditionally on every pull_request targeting main, every push to main, and manual workflow_dispatch; neither job is conditioned on which files changed",
+      "build-and-test's checkout uses fetch-depth: 0 (full history) rather than the action's default shallow single-ref clone, because tests/architecture-review.test.mjs and tests/qa-review.test.mjs run git merge-base against main/origin/main in the real checked-out repository (process.cwd(), not an isolated fixture repo), which is unresolvable under a shallow clone",
       "build-and-test fails if npm run build or npm test exits non-zero; a failing step halts the job rather than allowing a later step to report an independent success",
       "schema-validation fails if schemas/validate_fixtures.py or schemas/validate_repository_contracts.py exits non-zero",
       "schemas/validate_repository_contracts.py exits 1 when: a scanned contracts/**/module-contract.json or tasks/definitions/*.task.json file is not valid JSON; a scanned record does not validate against its corresponding schemas/v1/*.schema.json document; or zero contracts/**/module-contract.json files are found",

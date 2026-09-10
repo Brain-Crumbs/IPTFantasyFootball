@@ -31,7 +31,7 @@ Configuring branch protection itself (marking these checks "required" in the Git
 
 ### `build-and-test`
 
-1. `actions/checkout@v4`
+1. `actions/checkout@v4` with `fetch-depth: 0` (full history, not the default shallow single-ref clone) — required because `tests/architecture-review.test.mjs`/`tests/qa-review.test.mjs` run `git merge-base` against `main`/`origin/main` in the real checked-out repository (they use `process.cwd()`, not an isolated fixture repo); under the default shallow checkout neither ref is resolvable and both test files fail with `Cannot resolve a merge base between 'main' (or 'origin/main') and revision 'HEAD'.` — this was caught by this workflow's own first CI run on this PR and reproduced locally with a real `git clone --depth 1` before being fixed
 2. `actions/setup-node@v4` — Node.js `20` (matches this repository's `package.json` `engines.node: ">=20"`)
 3. `npm ci` — installs exactly the versions pinned in `package-lock.json` (newly committed by BOOT-023; the repository had no lockfile before), failing rather than silently drifting if `package.json` and the lockfile disagree
 4. `npm run build` — `tsc -p tsconfig.json`

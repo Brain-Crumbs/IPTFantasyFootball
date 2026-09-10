@@ -52,6 +52,23 @@ test("build-and-test job reruns the repository's own build and full test suite",
   assert.match(workflowText, /run: npm test/);
 });
 
+// Regression test for a real CI failure: actions/checkout's default shallow,
+// single-ref clone leaves neither `main` nor `origin/main` resolvable, and
+// tests/architecture-review.test.mjs / tests/qa-review.test.mjs run
+// `git merge-base` against the real checked-out repository (they use
+// process.cwd(), not an isolated fixture repo), so they fail under the
+// default checkout with "Cannot resolve a merge base between 'main' (or
+// 'origin/main') and revision 'HEAD'." Reproduced locally with a real
+// `git clone --depth 1` against this exact branch before this fix.
+test("build-and-test job's checkout fetches full history so merge-base against main resolves", () => {
+  const buildAndTestJob = workflowText.slice(
+    workflowText.indexOf("\n  build-and-test:\n"),
+    workflowText.indexOf("\n  schema-validation:\n"),
+  );
+  const checkoutStep = buildAndTestJob.slice(buildAndTestJob.indexOf("uses: actions/checkout@v4"));
+  assert.match(checkoutStep, /fetch-depth: 0/);
+});
+
 test("schema-validation job reruns fixture validation and real-record validation", () => {
   assert.match(workflowText, /run: python schemas\/validate_fixtures\.py/);
   assert.match(workflowText, /run: python schemas\/validate_repository_contracts\.py/);

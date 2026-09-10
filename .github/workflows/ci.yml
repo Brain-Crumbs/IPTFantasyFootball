@@ -21,6 +21,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history (not the default shallow single-ref checkout) so that
+          # `git merge-base main`/`origin/main` resolves. The repository's own
+          # architecture-review/qa-review context-source tests run git diff
+          # against the base branch using the real checked-out repository
+          # (tests/architecture-review.test.mjs, tests/qa-review.test.mjs) and
+          # fail with "Cannot resolve a merge base" under a shallow checkout.
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
