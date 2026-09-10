@@ -120,6 +120,13 @@ test("still-reserved review command fails clearly instead of silently succeeding
   assert.match(result.stderr, /BOOT-017/);
 });
 
+test("still-reserved rework command fails clearly instead of silently succeeding", async () => {
+  const result = await runCli(["rework"]);
+  assert.equal(result.exitCode, EXIT_CODES.NOT_IMPLEMENTED);
+  assert.match(result.stderr, /^COMMAND_NOT_IMPLEMENTED:/);
+  assert.match(result.stderr, /BOOT-021/);
+});
+
 test("validate requires exactly task, actor, and run identity", async () => {
   const missing = await runCli(["validate"]);
   const partial = await runCli(["validate", "BOOT-016"]);

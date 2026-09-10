@@ -1,0 +1,147 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.review-rework",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "ReviewReworkGate.enterRework(request): EnterReworkResult",
+      "EnterReworkRequest { taskId, actorId, runId, occurredAt }",
+      "EnterReworkResult { taskId, lifecycleState, revision, failedRole, failedOutcome, evidenceLineageId, evidenceSequence }",
+      "ReviewReworkGate.resumeDevelopment(request): ResumeDevelopmentResult",
+      "ResumeDevelopmentRequest { taskId, actorId, runId, occurredAt }",
+      "ResumeDevelopmentResult { taskId, lifecycleState, revision }",
+      "ReviewReworkGate.getApprovalStatus(request): ApprovalStatusResult",
+      "ApprovalStatusRequest { taskId }",
+      "ApprovalStatusResult { taskId, revision, roles }",
+      "RoleApprovalRecord { role, approval, historyCount }",
+      "RoleApprovalStatus NONE | STALE { outcome, revisionIdentity, sequence } | CURRENT { outcome, sequence }",
+      "ReviewReworkStateStore.get/save lifecycle persistence boundary",
+      "ReviewReworkTaskLock.withLock(taskId, fn) mutual-exclusion boundary",
+      "ReviewReworkBranchAdapter.assertCurrentTaskBranch/currentRevision boundary",
+      "ReviewReworkEvidencePort.getCurrent/getHistory(lineageId) boundary onto control-plane.evidence-store",
+      "ReviewReworkError { code, recoverable }",
+      "FileReviewReworkStateStore(root)",
+      "FileReviewReworkTaskLock(root)",
+      "createLocalReviewReworkGate(repositoryRoot) local composition root"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "qa-architecture-uat-failed-to-rework-required-transition",
+      "rework-required-to-in-development-transition",
+      "rework-transition-bound-to-exact-failed-review-evidence-not-a-copy",
+      "revision-bound-rework-entry-verification",
+      "read-only-per-role-approval-currency-query",
+      "coarse-whole-revision-invalidation-policy",
+      "permanent-review-history-auditability",
+      "whole-transaction-lock-based-mutual-exclusion",
+      "ownership-safe-abandoned-lock-reclaim",
+      "lock-io-failure-distinguished-from-contention"
+    ],
+    "behavioralConstraints": [
+      "enterRework() only accepts a task whose current lifecycle state is exactly QA_FAILED, ARCHITECTURE_FAILED, or UAT_FAILED; every other state is rejected as TASK_STATE_NOT_REWORKABLE",
+      "enterRework() maps QA_FAILED -> QA, ARCHITECTURE_FAILED -> Architect, UAT_FAILED -> UAT/Product",
+      "enterRework() independently confirms the task's lifecycle history records the current *_FAILED state bound to the exact current revision, or it is rejected as TASK_STATE_NOT_REWORKABLE before the evidence store is even read -- the lifecycle history and the evidence store are each verified on their own, neither trusted as proof of the other",
+      "enterRework() parses the *_FAILED history event's own evidenceRef (lineageId@sequence) and requires the evidence store's *current* record for that lineage to still be exactly that sequence, bound to the exact current revision, and not PASS -- not merely 'whatever is current now' -- so a later same-role review attempt recorded after the *_FAILED transition (which control-plane.review-framework permits) cannot bind rework to findings that did not cause the failure, or make a still-unaddressed failure unreworkable because a later attempt superseded it; a mismatch on any of those is rejected as FAILURE_EVIDENCE_REJECTED",
+      "enterRework() binds the REWORK_REQUIRED transition's evidenceRef to that exact failed review-result record's lineageId@sequence rather than copying or summarizing its findings, so the structured findings that caused the failure remain exactly as originally recorded",
+      "resumeDevelopment() only accepts a task whose current lifecycle state is exactly REWORK_REQUIRED; every other state is rejected as TASK_STATE_NOT_REWORKABLE",
+      "resumeDevelopment() requires the task's lifecycle history to record a REWORK_REQUIRED transition bound to the exact current branch revision, or it is rejected as TASK_STATE_NOT_REWORKABLE before any transition is attempted",
+      "both enterRework() and resumeDevelopment() assert canonical branch identity and resolve the exact revision before any evidence or lifecycle state is touched",
+      "both transitions are made through the unmodified control-plane.lifecycle-state-machine's transitionLifecycle(), carrying the exact revision as revisionIdentity and the caller's actorId/runId",
+      "getApprovalStatus() takes no lock and mutates no state; it asserts branch identity, resolves the exact current revision, and reads each relevant role's current review-result lineage directly from the evidence store, normalizing any evidence-store read failure into a structured FAILURE_EVIDENCE_REJECTED error rather than propagating a raw exception",
+      "getApprovalStatus() reports the Developer role plus every role in the task's requiredReviewRoles, in QA -> Architect -> UAT/Product -> MergeController order, and no role outside that set",
+      "getApprovalStatus() reports NONE when a role's lineage has no record, CURRENT when its current record's revisionIdentity equals the task's exact current revision, and STALE otherwise -- with no distinction made between a code, contract, or metadata-only change that produced the new revision",
+      "getApprovalStatus()'s historyCount reports the full length of a role's evidence lineage (every CURRENT and SUPERSEDED record), so multiple rework cycles remain visible as a growing, fully-ordered history",
+      "enterRework()/resumeDevelopment() hold an exclusive per-task lock (ReviewReworkTaskLock) across their entire re-verification and lifecycle-transition sequence; a concurrent call for the same task is rejected as STATE_CONFLICT rather than interleaving reads and writes with the lock holder",
+      "a task-lock file older than five minutes is treated as abandoned and reclaimed via an atomic rename-based compare-and-take that re-verifies it captured the stale instance rather than a fresh lock acquired in between; release only removes the lock file when it still holds this holder's own per-acquisition token",
+      "a lock-file-creation failure other than ordinary contention (EEXIST) is surfaced as STATE_IO_FAILED rather than misreported as a concurrent caller holding the task"
+    ],
+    "invariants": [
+      "the gate decides no QA/Architecture/UAT/Product judgment itself and performs no review of its own",
+      "the gate performs no diff-semantic analysis of what a revision actually changed; invalidation is a pure function of exact revisionIdentity equality, deliberately coarse rather than surface-aware",
+      "the gate never deletes, overwrites, or mutates a prior review-result or validation-evidence record; every prior record remains permanently retrievable through the unmodified control-plane.evidence-store's getHistory()",
+      "the gate computes no merge readiness and creates no pull request",
+      "the gate invokes no agent provider and automatically fixes no review finding",
+      "getApprovalStatus() takes no lock and mutates no state; only enterRework() and resumeDevelopment() write, and only inside the task lock",
+      "a branch, evidence-verification, or lifecycle-transition failure leaves the task's lifecycle state unchanged"
+    ],
+    "examples": [
+      "a task in QA_FAILED with a current QA FAIL review-result bound to the exact revision advances to REWORK_REQUIRED via enterRework(), then to IN_DEVELOPMENT via resumeDevelopment()",
+      "after a new commit and a fresh QA PASS review-result bound to the new revision, getApprovalStatus() reports QA as CURRENT/PASS while the earlier FAIL remains SUPERSEDED-but-readable in the same lineage's history",
+      "a task with an Architecture PASS bound to revision R1 whose branch has since moved to R2 (with no new Architecture review yet) reports Architect as STALE via getApprovalStatus(), even though no review ever failed and no rework was ever entered",
+      "a metadata-only commit that changes nothing but a comment still produces a new revisionIdentity, so every role's prior CURRENT approval reports STALE uniformly, per the documented coarse invalidation policy"
+    ],
+    "edgeCases": [
+      "a task not currently QA_FAILED/ARCHITECTURE_FAILED/UAT_FAILED is rejected by enterRework() as TASK_STATE_NOT_REWORKABLE",
+      "a task not currently REWORK_REQUIRED is rejected by resumeDevelopment() as TASK_STATE_NOT_REWORKABLE",
+      "an unregistered task ID is rejected as TASK_NOT_FOUND",
+      "a wrong current branch is rejected as BRANCH_REJECTED before evidence or lifecycle state is touched",
+      "enterRework() rejects when the failed role's current review-result evidence is bound to a stale revision, or is (contrary to the failed lifecycle state) PASS, as FAILURE_EVIDENCE_REJECTED",
+      "enterRework() rejects when a later same-role review attempt has superseded the exact evidence sequence the *_FAILED transition's evidenceRef named, as FAILURE_EVIDENCE_REJECTED, even though the lineage's current record is itself non-stale and non-PASS",
+      "resumeDevelopment() rejects when the REWORK_REQUIRED history entry is bound to a revision other than the exact current one, as TASK_STATE_NOT_REWORKABLE",
+      "two concurrent enterRework()/resumeDevelopment() calls for the same task never both proceed past the task lock; the loser is rejected as STATE_CONFLICT without touching evidence or lifecycle state",
+      "a lock file left behind by a crashed call is reclaimed once it is older than the abandonment threshold",
+      "getApprovalStatus() for a task whose requiredReviewRoles omits Architect, UAT/Product, and MergeController reports only Developer and QA",
+      "getApprovalStatus() for a task whose requiredReviewRoles includes MergeController reports it, alongside Developer/QA/Architect/UAT/Product, even though MergeController has no lifecycle review-sequence state of its own"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.lifecycle-state-machine",
+    "control-plane.evidence-store",
+    "control-plane.git-branch-lifecycle",
+    "control-plane.task-registry",
+    "control-plane.dev-start",
+    "node:fs",
+    "node:path"
+  ],
+  "forbiddenDependencies": [
+    "control-plane.review-framework",
+    "control-plane.context-compiler",
+    "agent-provider/*",
+    "pull-request-lifecycle/*",
+    "merge-controller/*",
+    "fantasy-product/*",
+    "control-plane.qa-review",
+    "control-plane.architecture-review",
+    "control-plane.uat-review"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-pull-request-and-merge-controller-workflow",
+      "expectations": [
+        "BOOT-022/BOOT-024/BOOT-025 can call getApprovalStatus() to compute merge readiness from exactly which role approvals are current for the PR's exact head revision, instead of re-deriving the revision-bound staleness check themselves"
+      ],
+      "requiredCapabilities": [
+        "read-only-per-role-approval-currency-query",
+        "coarse-whole-revision-invalidation-policy"
+      ],
+      "acceptedRanges": [
+        "an ApprovalStatusResult whose roles cover exactly Developer plus the task's requiredReviewRoles"
+      ],
+      "requiredReachableRanges": [
+        "a role reported CURRENT with outcome PASS",
+        "a role reported CURRENT with outcome FAIL or BLOCKED",
+        "a role reported STALE after a later revision",
+        "a role reported NONE before any review has run"
+      ]
+    },
+    {
+      "consumerId": "future-orchestration-engine",
+      "expectations": [
+        "BOOT-026 onward may expose enterRework()/resumeDevelopment() through an agent rework command and may drive enterRework() automatically whenever a QA/Architecture/UAT gate returns a non-PASS outcome"
+      ],
+      "requiredCapabilities": [
+        "qa-architecture-uat-failed-to-rework-required-transition",
+        "rework-required-to-in-development-transition"
+      ],
+      "acceptedRanges": [
+        "an EnterReworkResult with lifecycleState REWORK_REQUIRED",
+        "a ResumeDevelopmentResult with lifecycleState IN_DEVELOPMENT"
+      ],
+      "requiredReachableRanges": [
+        "a full rework cycle: <role>_FAILED -> REWORK_REQUIRED -> IN_DEVELOPMENT -> (new revision) -> DEV_VALIDATED -> the same review stage again"
+      ]
+    }
+  ]
+}
