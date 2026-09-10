@@ -1023,6 +1023,34 @@ test("an in-flight release() reservation blocks ordinary lock creation rather th
   }
 });
 
+test("an abandoned task-lock release reservation (process crashed mid-release) is reclaimed, restoring the orphaned lock so it re-enters the normal stale-lock lifecycle", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-abandoned-reservation-"));
+  try {
+    const { writeFileSync, renameSync, utimesSync, existsSync } = await import("node:fs");
+    const lockPath = join(dir, "BOOT-025.lifecycle.lock");
+    const claimedRecordPath = `${lockPath}.release-claim`;
+    const reservationPath = `${lockPath}.release-reservation`;
+
+    // Simulate a crash immediately after release() renamed the held lock
+    // away to its fixed claim path, but before it restored or discarded it:
+    // nothing in-process is left to clean up either file.
+    writeFileSync(lockPath, "abandoned-token", { encoding: "utf8" });
+    renameSync(lockPath, claimedRecordPath);
+    writeFileSync(reservationPath, "", { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(reservationPath, old, old);
+    utimesSync(claimedRecordPath, old, old);
+
+    const taskLock = new FileControlledMergeTaskLock(dir, { staleLockMs: 5 * 60 * 1000 });
+    const result = await taskLock.withLock("BOOT-025", async () => "resumed-after-reclaim");
+    assert.equal(result, "resumed-after-reclaim");
+    assert.equal(existsSync(reservationPath), false);
+    assert.equal(existsSync(claimedRecordPath), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a DONE task never touches the task lock", async () => {
   const { store: evidence } = makeEvidenceStore();
   const recorded = evidence.record({
@@ -1266,6 +1294,74 @@ test("a historical merged-then-reverted PR at the same revision does not shadow 
   assert.equal(result.mergeCommitSha, "genuine-merge-sha");
   assert.equal(result.pullRequestNumber, 63);
   assert.equal(pullRequests.mergeCalls, 1);
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("a historical merged-then-reverted PR at the same revision does not shadow the task even when the actual newer PR has since been closed without merging", async () => {
+  // Unlike the "still open" case above, here the task's actual pull request
+  // for this approval has been closed without merging (rejected,
+  // superseded, abandoned) after readiness last evaluated it. The
+  // historical, same-base, same-revision reverted PR must still not be
+  // trusted as proof of this attempt's merge merely because the real one is
+  // no longer open — the shortcut correctly declines either way, and the
+  // task must never be marked DONE using the stale historical merge commit
+  // (the live path itself then correctly fails, since the actual PR is no
+  // longer mergeable at all).
+  const oldReverted = prRecord({ number: 10, merged: true, mergeCommitSha: "stale-reverted-sha" });
+  const current = prRecord({ number: 63, merged: false, state: "closed" });
+  const pullRequests = new FakePullRequestPort({ existing: [oldReverted, current] });
+  const { controller, state } = makeController({ pullRequests });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.equal(error.code, "HEAD_CHANGED");
+    return true;
+  });
+
+  assert.equal(pullRequests.mergeCalls, 0);
+  assert.notEqual(state.get(task.taskId).currentState, "DONE");
+});
+
+test("finalize() never reuses a stored evidence record whose payload is malformed, not even a null one that would otherwise crash", async () => {
+  const { store: evidence, dir: evidenceDir } = makeEvidenceStore();
+  const lineageId = mergeEvidenceLineageId(task.taskId);
+  const seeded = evidence.record({
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:seed`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 1,
+    mergeCommitSha: "placeholder",
+    policyDecisionReference: "placeholder",
+    recordedAt: occurredAt,
+  });
+  assert.equal(seeded.ok, true);
+
+  // Hand-corrupt the seeded record in place — simulating a partially
+  // written or hand-edited evidence file, which record()'s own write-time
+  // schema validation would never itself produce.
+  const { readdirSync, writeFileSync: write } = await import("node:fs");
+  const lineageDirName = readdirSync(evidenceDir)[0];
+  const lineageDir = join(evidenceDir, lineageDirName);
+  const fileName = readdirSync(lineageDir).find((name) => /^\d+\.json$/.test(name));
+  write(
+    join(lineageDir, fileName),
+    `${JSON.stringify({ lineageId, sequence: seeded.record.sequence, storedAt: occurredAt, payload: null })}\n`,
+    { encoding: "utf8" },
+  );
+
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord({ merged: true, mergeCommitSha: "merged-sha-1" })],
+  });
+  const { controller, state } = makeController({ pullRequests, evidenceStore: evidence });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(result.mergeCommitSha, "merged-sha-1");
+  const history = evidence.getHistory(lineageId);
+  assert.equal(history.length, 2, "the malformed record was not reused; a fresh valid one was appended instead");
+  assert.equal(history[1].payload.mergeCommitSha, "merged-sha-1");
   assert.equal(state.get(task.taskId).currentState, "DONE");
 });
 

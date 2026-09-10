@@ -209,18 +209,28 @@ export class ControlledMergeController {
     // was squash-merged and later reverted on the integration target, that
     // historical PR's own record still (correctly, historically) reports
     // merged=true at the same headSha/baseRef, even while the task's actual,
-    // currently open pull request for this approval has not merged at all.
-    // A still-open pull request against the same base with a higher number
-    // than the matched candidate is necessarily a newer, later-created PR
-    // for this exact branch/base combination — meaning the matched
-    // candidate cannot be the approval this attempt is currently pursuing,
-    // and this shortcut must defer to the live evaluate()-and-merge path
-    // below instead of recording the stale historical merge commit and
+    // current pull request for this approval has not merged at all — whether
+    // it is still open, or has since been closed without merging (rejected,
+    // superseded, abandoned) after readiness last evaluated it. Either way,
+    // a higher-numbered pull request against the same base than the matched
+    // candidate is necessarily a newer, later-created PR for this exact
+    // branch/base combination — meaning the matched candidate cannot be the
+    // approval this attempt is currently pursuing, and this shortcut must
+    // defer to the live evaluate()-and-merge path below (which will itself
+    // correctly reject, since evaluate() only ever considers open pull
+    // requests) instead of recording the stale historical merge commit and
     // completing the task while the real approved change never lands.
-    const supersededByNewerOpenPr = matched !== null && candidates.some(
-      (pr) => pr.state === "open" && pr.baseRef === integrationTarget && pr.number > matched.number,
+    // (A pull request retargeted away from integrationTarget after
+    // approval, rather than closed, is not distinguishable from an
+    // unrelated PR that always targeted a different base by baseRef alone —
+    // closing that narrower gap needs the approved PR's own identity
+    // persisted at MERGE_READY time, which is out of scope for this
+    // controller alone since three separate, already-shipped review
+    // modules write that transition.)
+    const supersededByNewerSameBasePr = matched !== null && candidates.some(
+      (pr) => !pr.merged && pr.baseRef === integrationTarget && pr.number > matched.number,
     );
-    const existing = matched !== null && !supersededByNewerOpenPr ? matched : null;
+    const existing = matched !== null && !supersededByNewerSameBasePr ? matched : null;
     if (existing !== null && approvedRevision !== null) {
       // A prior attempt's merge provider call already succeeded (this exact
       // process crashed before recording evidence/transitioning, or the PR
@@ -407,9 +417,21 @@ export class ControlledMergeController {
     // merge" invariant true even across that crash window.
     const lineageId = mergeEvidenceLineageId(task.taskId);
     const existingEvidence = this.getCurrentEvidence(task.taskId, lineageId);
+    // isMergeEvidencePayloadFor performs the same full structural check
+    // (schemaId, taskId, a well-formed pullRequestNumber/mergeCommitSha)
+    // resolvePinnedEvidence already requires of a resumed record, closing
+    // two gaps a bare three-field comparison left open: a null/non-object
+    // payload (a hand-edited or corrupted evidence file) previously threw a
+    // raw TypeError on every retry rather than being treated as simply not
+    // reusable, and an object payload with the right three field values but
+    // a wrong schemaId/taskId or missing other required fields would
+    // otherwise still have been reused to persist MERGED/DONE. A record
+    // that fails this check is never reused — finalize() falls through to
+    // writing a fresh, valid record instead, self-healing past the
+    // malformed one rather than trusting it or hard-failing on it.
     const reusable =
       existingEvidence !== null &&
-      existingEvidence.payload.revisionIdentity === revision &&
+      isMergeEvidencePayloadFor(existingEvidence.payload, task.taskId, revision) &&
       existingEvidence.payload.pullRequestNumber === pullRequestNumber &&
       existingEvidence.payload.mergeCommitSha === mergeCommitSha;
 
@@ -1201,6 +1223,8 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
   // there), keeps ordinary lock creation blocked for this call's full
   // duration, so that window can no longer be exploited.
   private release(lockPath: string, token: string): void {
+    this.reclaimAbandonedReservation(lockPath);
+
     const reservationPath = this.releaseReservationPath(lockPath);
     try {
       writeFileSync(reservationPath, "", { encoding: "utf8", flag: "wx" });
@@ -1221,7 +1245,13 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
   }
 
   private releaseClaimed(lockPath: string, token: string): void {
-    const claimPath = `${lockPath}.release-claim-${randomLockToken()}`;
+    // Fixed, not randomized: the reservation marker above already
+    // guarantees only one release() or reclaimIfStale() attempt is ever in
+    // flight for this exact lock path at a time, so a fixed path cannot
+    // collide, and a fixed, well-known name is what makes an orphaned claim
+    // (left by a process that crashed mid-release) recoverable by
+    // reclaimAbandonedReservation later.
+    const claimPath = this.releaseClaimedPath(lockPath);
     try {
       renameSync(lockPath, claimPath);
     } catch {
@@ -1262,12 +1292,66 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     return `${lockPath}.release-reservation`;
   }
 
+  private releaseClaimedPath(lockPath: string): string {
+    return `${lockPath}.release-claim`;
+  }
+
+  private reclaimClaimedPath(lockPath: string): string {
+    return `${lockPath}.reclaim-claim`;
+  }
+
+  // The reservation marker above (and whichever claimed-content file it was
+  // guarding — release()'s own, or reclaimIfStale()'s) is normally cleaned
+  // up in that call's own `finally` within microseconds. If the process
+  // holding it is instead killed or crashes mid-operation, nothing else
+  // ever cleans either up: the marker would otherwise block every future
+  // tryCreate() forever (this.staleLockMs never revisited, since tryCreate
+  // only ever checked existence), permanently wedging controlled merge for
+  // the task, and — if the crash happened after the lock path was already
+  // renamed away but before it was restored or replaced — that content
+  // would sit orphaned at a fixed path no other code path ever revisits.
+  // Once the marker is older than staleLockMs (the same abandoned-holder
+  // threshold already governing the lock file itself), this restores
+  // whichever fixed claim path actually holds orphaned content back to
+  // lockPath — so it re-enters the normal held/stale lifecycle rather than
+  // vanishing or leaving the task appearing falsely unlocked — before
+  // dropping the stale marker itself.
+  private reclaimAbandonedReservation(lockPath: string): void {
+    const reservationPath = this.releaseReservationPath(lockPath);
+    let stats: { readonly mtimeMs: number };
+    try {
+      stats = statSync(reservationPath);
+    } catch {
+      return;
+    }
+    if (Date.now() - stats.mtimeMs <= this.staleLockMs) return;
+
+    for (const claimPath of [this.releaseClaimedPath(lockPath), this.reclaimClaimedPath(lockPath)]) {
+      try {
+        renameSync(claimPath, lockPath);
+        break;
+      } catch {
+        // Not present at this candidate location, or lockPath already
+        // holds a fresh record; try the other one (harmless if it also
+        // fails — there is nothing further to restore either way).
+      }
+    }
+    try {
+      unlinkSync(reservationPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+  }
+
   private tryCreate(lockPath: string): string | null {
-    // A release() call in flight for this exact lock path has claimed it
-    // away for inspection (see release()'s own comment): ordinary creation
-    // must stay blocked for that entire window, not just observe the path
-    // as transiently vacant, or a still-live replacement lock could appear
-    // unlocked to a concurrent caller.
+    // A release() or reclaimIfStale() call in flight for this exact lock
+    // path has claimed it away for inspection (see their own comments):
+    // ordinary creation must stay blocked for that entire window, not just
+    // observe the path as transiently vacant, or a still-live replacement
+    // lock could appear unlocked to a concurrent caller. Reclaiming first
+    // means an abandoned (crashed) reservation never wedges this check
+    // forever.
+    this.reclaimAbandonedReservation(lockPath);
     const reservationPath = this.releaseReservationPath(lockPath);
     if (existsSync(reservationPath)) return null;
     // The token is just a random identity, not a timestamp: staleness is
@@ -1311,6 +1395,8 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
   // signal a legitimate holder's heartbeat actually updates, so a holder
   // that is still refreshing on schedule is never mistaken for abandoned.
   private reclaimIfStale(lockPath: string): boolean {
+    this.reclaimAbandonedReservation(lockPath);
+
     let stats: { readonly mtimeMs: number };
     try {
       stats = statSync(lockPath);
@@ -1319,6 +1405,35 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     }
     if (Date.now() - stats.mtimeMs <= this.staleLockMs) return false;
 
+    // Claiming the path away below leaves it briefly absent while this call
+    // decides whether the captured content is genuinely still the stale
+    // lock it observed — the same window release() closes with the
+    // identical reservation, applied here for the identical reason: without
+    // it, a concurrent tryCreate() (fresh acquisition, or a live holder B
+    // that already legitimately replaced this stale lock before this
+    // rename landed) could succeed inside that window and start running
+    // its callback alongside whatever this reclaim ultimately decides,
+    // breaking exclusivity around the controlled-merge critical section.
+    const reservationPath = this.releaseReservationPath(lockPath);
+    try {
+      writeFileSync(reservationPath, "", { encoding: "utf8", flag: "wx" });
+    } catch {
+      // A release() or another reclaimIfStale() attempt is already in
+      // flight for this exact lock path; back off rather than race it.
+      return false;
+    }
+    try {
+      return this.reclaimClaimed(lockPath);
+    } finally {
+      try {
+        unlinkSync(reservationPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+    }
+  }
+
+  private reclaimClaimed(lockPath: string): boolean {
     let observed: string;
     try {
       observed = readFileSync(lockPath, "utf8");
@@ -1326,7 +1441,10 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       return false;
     }
 
-    const claimPath = `${lockPath}.reclaim-${randomLockToken()}`;
+    // Fixed, not randomized: see releaseClaimed's own comment — the
+    // reservation held above guarantees exclusivity, and a fixed, well-known
+    // name is what makes an orphaned claim recoverable after a crash.
+    const claimPath = this.reclaimClaimedPath(lockPath);
     try {
       renameSync(lockPath, claimPath);
     } catch {

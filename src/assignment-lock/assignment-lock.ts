@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const ASSIGNMENT_LOCK_SCHEMA_ID = "ipt.assignment-lock" as const;
@@ -116,6 +116,16 @@ const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
 const RFC3339_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/i;
 
+// release()'s own reservation marker and claimed-record files are held only
+// for the duration of one synchronous release() call — effectively
+// microseconds in the normal case. A marker older than this by a wide
+// margin can only mean the process that created it crashed or was killed
+// mid-release, never a still-running call; it is then safe for a later
+// caller to reclaim it the same way an abandoned assignment/task lock is
+// already reclaimed elsewhere in this pipeline (mirrors controlled-merge's
+// own STALE_LOCK_MS convention).
+const RELEASE_CLAIM_STALE_MS = 5 * 60 * 1000;
+
 export class FileAssignmentLockStore implements AssignmentLockStore {
   readonly #root: string;
 
@@ -140,6 +150,17 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
         `Task '${request.taskId}' requires canonical branch '${request.expectedCanonicalBranch}', not '${request.canonicalBranch}'.`,
       );
     }
+
+    // Restore any orphaned claim left by a release() call that crashed
+    // before this attempt's own exclusive-create write below, so that write
+    // correctly fails against the restored (possibly stale) record instead
+    // of succeeding into a path that is only vacant because of an abandoned
+    // release — which would otherwise let a brand-new assignment silently
+    // replace one that was never actually, successfully released, bypassing
+    // the explicit-recovery requirement every other stale-lock path enforces.
+    // A live, in-flight release() leaves its reservation marker fresh, so
+    // this is a no-op for it; only a genuinely abandoned one is reclaimed.
+    this.#reclaimAbandonedRelease(request.taskId);
 
     const lock = freezeLock({
       schemaId: ASSIGNMENT_LOCK_SCHEMA_ID,
@@ -230,6 +251,8 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     // record this call actually claimed would simply be discarded with no
     // one ever told they lost it. Ordinary acquisition stays blocked for
     // the full duration this marker exists.
+    this.#reclaimAbandonedRelease(request.taskId);
+
     const releaseClaimPath = this.#releaseClaimPath(request.taskId);
     try {
       writeFileSync(
@@ -253,7 +276,12 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
 
   #releaseClaimed(request: ReleaseAssignmentRequest): LockResult {
     const activePath = this.#activePath(request.taskId);
-    const claimPath = `${activePath}.release-claim-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    // Fixed, not randomized: release()'s own reservation marker already
+    // guarantees only one release() call is ever active for this taskId at
+    // a time, so a fixed path cannot collide, and a fixed, well-known name
+    // is what makes an orphaned claim (left by a crashed release() call)
+    // recoverable by #reclaimAbandonedRelease later.
+    const claimPath = this.#releaseClaimedRecordPath(request.taskId);
     try {
       renameSync(activePath, claimPath);
     } catch (error) {
@@ -436,6 +464,9 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
   #releaseClaimPath(taskId: string): string {
     return join(this.#claimsRoot(), `${safePart(taskId)}.release.json`);
   }
+  #releaseClaimedRecordPath(taskId: string): string {
+    return `${this.#activePath(taskId)}.release-claim`;
+  }
 
   #appendAudit(taskId: string, event: LockAuditEvent): void {
     writeFileSync(this.#auditPath(taskId), `${JSON.stringify(event)}\n`, { encoding: "utf8", flag: "a" });
@@ -480,6 +511,48 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     return existsSync(this.#releaseClaimPath(taskId));
   }
 
+  // A release() reservation marker (and the claimed record it may have
+  // renamed the active path to) is normally cleaned up in release()'s own
+  // finally within microseconds. If the process is instead killed or
+  // crashes mid-release, neither is ever cleaned up by anything: the
+  // marker would otherwise block every future ordinary acquire() forever
+  // (#hasReleaseClaim staying true indefinitely), and — if the crash
+  // happened after the active record was already renamed away but before
+  // it was restored or finished — that record itself would sit orphaned at
+  // a fixed, well-known path no other code path ever revisits. Once the
+  // marker is old enough that no genuinely in-flight release() call could
+  // still own it (RELEASE_CLAIM_STALE_MS, mirroring the same abandoned-
+  // holder reasoning STALE_LOCK_MS already applies elsewhere in this
+  // pipeline), this restores that orphaned record to the active path
+  // first — so it re-enters the normal active/stale lifecycle rather than
+  // being silently discarded or leaving the task appearing unassigned —
+  // and only then drops the stale marker itself.
+  #reclaimAbandonedRelease(taskId: string): void {
+    const releaseClaimPath = this.#releaseClaimPath(taskId);
+    let stats: { readonly mtimeMs: number };
+    try {
+      stats = statSync(releaseClaimPath);
+    } catch {
+      return;
+    }
+    if (Date.now() - stats.mtimeMs <= RELEASE_CLAIM_STALE_MS) return;
+
+    try {
+      renameSync(this.#releaseClaimedRecordPath(taskId), this.#activePath(taskId));
+    } catch {
+      // Either there was no orphaned claimed record (the crash happened
+      // before release() ever renamed the active path away, or after
+      // everything had already been written back/archived), or the active
+      // path already holds a fresh record; either way there is nothing
+      // further to restore.
+    }
+    try {
+      unlinkSync(releaseClaimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+  }
+
   #uniqueArchivePath(taskId: string, lockId: string, action: string, occurredAt: string): string {
     const stem = `${safePart(taskId)}-${safePart(lockId)}-${safePart(action)}-${safePart(occurredAt)}`;
     for (let attempt = 0; ; attempt += 1) {
@@ -495,7 +568,7 @@ function sameIdentity(lock: AssignmentLockRecord, request: AcquireAssignmentRequ
 }
 
 function isStale(lock: AssignmentLockRecord, now: string): boolean {
-  return Boolean(lock.expiresAt && Date.parse(lock.expiresAt) <= Date.parse(now));
+  return Boolean(lock.expiresAt && toComparableInstant(lock.expiresAt) <= toComparableInstant(now));
 }
 
 function validateAcquire(request: AcquireAssignmentRequest): string | null {
@@ -507,7 +580,7 @@ function validateAcquire(request: AcquireAssignmentRequest): string | null {
     ?? requireText("lockId", request.lockId)
     ?? requireDate("acquiredAt", request.acquiredAt)
     ?? (request.expiresAt ? requireDate("expiresAt", request.expiresAt) : null)
-    ?? (request.expiresAt && Date.parse(request.expiresAt) <= Date.parse(request.acquiredAt)
+    ?? (request.expiresAt && toComparableInstant(request.expiresAt) <= toComparableInstant(request.acquiredAt)
       ? "expiresAt must be later than acquiredAt." : null);
 }
 
@@ -546,8 +619,23 @@ function requireDate(name: string, value: string): string | null {
       return `${name} must be a valid RFC 3339 date-time.`;
     }
   }
-  const parseableForm = second === 60 ? `${value.slice(0, 17)}59${value.slice(19)}` : value;
-  return Number.isNaN(Date.parse(parseableForm)) ? `${name} must be a valid RFC 3339 date-time.` : null;
+  return Number.isNaN(toComparableInstant(value)) ? `${name} must be a valid RFC 3339 date-time.` : null;
+}
+
+// A leap second (a seconds value of exactly 60) has no representation
+// Date.parse() can produce — it unconditionally returns NaN for one, not
+// only when first validating a string but for every later comparison
+// against it too. Any code that needs to order or compare two already-
+// validated RFC 3339 instants (isStale, expiresAt-after-acquiredAt) must
+// go through this substituted form, the same way requireDate's own
+// Date.parse sanity check already does, or a leap-second expiresAt would
+// silently compare as NaN forever: validateAcquire could never reject an
+// expiry that is not later than acquisition, and isStale could never
+// consider that lock expired, permanently blocking explicit recovery.
+function toComparableInstant(value: string): number {
+  const isLeapSecond = value.length > 18 && value[17] === "6" && value[18] === "0";
+  const parseableForm = isLeapSecond ? `${value.slice(0, 17)}59${value.slice(19)}` : value;
+  return Date.parse(parseableForm);
 }
 
 function freezeLock(lock: AssignmentLockRecord): AssignmentLockRecord {

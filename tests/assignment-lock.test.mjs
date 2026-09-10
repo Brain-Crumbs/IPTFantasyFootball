@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -267,4 +267,53 @@ test("release() on a task with no active assignment still returns LOCK_NOT_FOUND
   const result = release(store);
   assert.equal(result.ok, false);
   assert.equal(result.rejection.code, "LOCK_NOT_FOUND");
+}));
+
+test("an abandoned release() reservation (process crashed mid-release) is reclaimed by the next acquire() attempt, restoring the orphaned record", () => withStore((store, root) => {
+  const acquired = store.acquire(acquire());
+  assert.equal(acquired.ok, true);
+  const original = store.get("BOOT-010");
+
+  // Simulate a crash immediately after release() renamed the active record
+  // away to its fixed claim path, but before it restored or finished it:
+  // the reservation marker and the claimed record both survive, with
+  // nothing left in-process to clean either up.
+  const activePath = join(root, "BOOT-010.lock.json");
+  const claimedRecordPath = `${activePath}.release-claim`;
+  const reservationPath = join(root, ".claims", "BOOT-010.release.json");
+  renameSync(activePath, claimedRecordPath);
+  writeFileSync(reservationPath, `${JSON.stringify({ lockId: "lock-a" })}\n`, { encoding: "utf8", flag: "wx" });
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(reservationPath, old, old);
+
+  // A fresh, unrelated acquire() attempt must not simply succeed into the
+  // vacant active path forever: the abandoned reservation is reclaimed
+  // first, restoring the original (still genuinely active, non-expired)
+  // record, so this sees a real conflict rather than silently replacing an
+  // assignment nobody ever actually released.
+  const attempted = store.acquire(acquire({ ownerId: "agent-c", runId: "run-c", lockId: "lock-c" }));
+  assert.equal(attempted.ok, false);
+  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
+  assert.deepEqual(store.get("BOOT-010"), original);
+  assert.equal(existsSync(reservationPath), false);
+}));
+
+test("a leap-second expiresAt is compared correctly against acquiredAt/now instead of as NaN", () => withStore((store) => {
+  // expiresAt no later than acquiredAt must still be rejected even when
+  // acquiredAt itself is a leap second (Date.parse(':60') is NaN, so a raw
+  // comparison would otherwise never reject anything).
+  const badOrder = store.acquire(acquire({
+    acquiredAt: "1990-12-31T23:59:60Z",
+    expiresAt: "1990-12-31T23:59:60Z",
+  }));
+  assert.equal(badOrder.ok, false);
+  assert.equal(badOrder.rejection.code, "INVALID_REQUEST");
+
+  // A lock whose expiresAt is a leap second long in the past must be
+  // treated as genuinely stale, not perpetually "not yet expired".
+  const initial = store.acquire(acquire({ acquiredAt: "1990-12-30T00:00:00Z", expiresAt: "1990-12-31T23:59:60Z" }));
+  assert.equal(initial.ok, true);
+  const blocked = store.acquire(acquire({ ownerId: "agent-b", runId: "run-b", lockId: "lock-b", acquiredAt: "2026-09-03T23:02:00Z" }));
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.rejection.code, "LOCK_STALE");
 }));
