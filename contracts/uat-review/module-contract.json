@@ -1,0 +1,155 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.uat-review",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "UatReviewGate.prepareContext(request): UatReviewContextResult",
+      "UatReviewContextRequest { taskId }",
+      "UatReviewContextResult { taskId, revision, context }",
+      "UatReviewGate.review(request): UatReviewResult",
+      "UatReviewRequest { taskId, reviewerId, runId, occurredAt, context, outcome, findings, details, evidenceRefs?, nonPass? }",
+      "UatReviewStateStore.get/save lifecycle persistence boundary",
+      "UatReviewTaskLock.withLock(taskId, fn) mutual-exclusion boundary",
+      "UatReviewBranchAdapter.assertCurrentTaskBranch/currentRevision boundary",
+      "UatReviewContextSource.artifactsFor(task, registry, revision) boundary",
+      "UatReviewFrameworkPort.submit(request) boundary onto control-plane.review-framework",
+      "UatReviewEvidencePort.getCurrent(lineageId) boundary onto control-plane.evidence-store",
+      "UatReviewResult { taskId, outcome, lifecycleState, revision, reviewId, blockingFindings, context, evidenceLocation, evidenceLineageId, evidenceSequence }",
+      "UatReviewError { code, recoverable }",
+      "FileUatReviewStateStore(root)",
+      "FileUatReviewTaskLock(root)",
+      "RepositoryUatContextSource(repositoryRoot)",
+      "createLocalUatReviewGate(repositoryRoot) local composition root"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "read-only-context-preparation-before-judgment",
+      "uat-review-review-only-after-review-sequence-position",
+      "qa-passed-evidence-gated-entry-when-qa-required",
+      "architecture-passed-evidence-gated-entry-when-architect-required",
+      "referenced-validation-evidence-read-back-verification",
+      "exact-revision-uat-context-compilation-with-minimized-implementation-detail",
+      "bridged-developer-handoff-for-independent-review",
+      "non-pass-developer-handoff-preservation",
+      "qa-and-architecture-outcomes-surfaced-as-evidence-not-authority",
+      "review-framework-bound-uat-judgment-persistence",
+      "unconditional-merge-ready-advancement-on-pass",
+      "uat-failure-routing-without-skipping-stages",
+      "stale-revision-reentry-rejection",
+      "whole-transaction-lock-based-mutual-exclusion",
+      "ownership-safe-abandoned-lock-reclaim",
+      "lock-io-failure-distinguished-from-contention",
+      "supplied-context-identity-verification"
+    ],
+    "behavioralConstraints": [
+      "prepareContext() only accepts a task whose current lifecycle state is exactly UAT_REVIEW; every other state is rejected as TASK_STATE_NOT_REVIEWABLE before branch identity is checked",
+      "canonical branch identity is asserted before context compilation, developer-handoff bridging, or review submission, so a wrong-branch invocation touches none of them",
+      "the task's lifecycle history must record a UAT_REVIEW transition bound to the exact current revision, or prepareContext()/review() is rejected as TASK_STATE_NOT_REVIEWABLE before context is compiled",
+      "the task's lifecycle history must also record a DEV_VALIDATED transition bound to the exact current revision, and every lineageId@sequence entry that event's evidenceRef names is resolved through the evidence store and confirmed CURRENT at that exact sequence and revision-matched before it is trusted as context or as the basis for a bridged Developer handoff",
+      "when the task's requiredReviewRoles includes QA, a current QA review-result record with outcome PASS bound to the exact revision must exist in the evidence store or the gate rejects as TASK_STATE_NOT_REVIEWABLE; independently, when requiredReviewRoles includes Architect, the same check applies to the Architect review-result record; both are verified by reading the evidence record itself, never inferred from lifecycle state alone; when a role is not required, no record for it is required",
+      "UAT/Product and Developer context packages are compiled through the unmodified control-plane.context-compiler from the same artifact catalog, including a derived Developer evidence artifact and, when required, derived QA and/or Architecture evidence artifacts -- neither prior outcome is included as an implicit UAT PASS",
+      "the control-plane.context-compiler's own UAT/Product-role behavior (unmodified by this module) admits only local scenario artifacts and local QA/Architect evidence artifacts, requires no requirement/contract/diff artifact, and reduces the compiled task view to {taskId, title, objective, acceptanceCriteria}",
+      "review() recompiles the UAT/Product-role context package from the current artifact catalog and rejects, as CONTEXT_REJECTED, a caller-supplied context whose content identity (computeContextPackageId) does not match it exactly; only once verified is that exact caller-supplied ContextPackage object bound to the submission, so the persisted contextPackageId is proof both that the reviewer's package matches the current catalog and of what the reviewer actually saw before deciding",
+      "review() holds an exclusive per-task lock (UatReviewTaskLock) across its entire re-verification, developer-handoff-bridge, UAT-evidence-submission, and lifecycle-transition sequence; a concurrent review() for the same task is rejected as STATE_CONFLICT rather than interleaving reads and writes with the lock holder",
+      "a Developer role review-result record is bridged from the DEV_VALIDATED evidence when no current record exists for the exact revision, or the current exact-revision record is already PASS (no-op); a current exact-revision record that is FAIL or BLOCKED is never overwritten and is rejected as DEVELOPER_HANDOFF_REJECTED instead",
+      "the caller-supplied UAT outcome/findings/details are submitted unmodified through the unmodified control-plane.review-framework, which enforces blocking-finding/PASS contradiction, non-PASS detail, self-approval, and context-package-identity rules",
+      "a QA PASS and/or an Architecture PASS never force or imply a UAT PASS: the gate performs no automated outcome judgment of its own and only binds the caller-supplied outcome",
+      "on outcome PASS, the lifecycle advances UAT_REVIEW -> MERGE_READY unconditionally, because UAT/Product is always the last role in the control-plane.lifecycle-state-machine's own review order",
+      "on outcome FAIL or BLOCKED, the lifecycle advances UAT_REVIEW -> UAT_FAILED",
+      "every lifecycle transition carries the exact reviewed revision as revisionIdentity",
+      "a task that already advanced past UAT_REVIEW rejects a further review() call as TASK_STATE_NOT_REVIEWABLE rather than silently reusing a stale revision",
+      "a task-lock file older than five minutes is treated as abandoned and reclaimed via an atomic rename-based compare-and-take, so at most one of several callers that concurrently observe the same stale lock ever wins the reclaim; release only removes the lock file when it still holds this holder's own per-acquisition token, so a holder that merely ran past the staleness threshold (without crashing) can never delete a different holder's freshly reclaimed lock",
+      "a lock-file-creation failure other than ordinary contention (EEXIST) -- a permission error, a read-only state directory, exhausted disk -- is surfaced as STATE_IO_FAILED rather than misreported as a concurrent reviewer holding the task",
+      "RepositoryUatContextSource performs no Git revision resolution because the UAT/Product role requires no requirement/contract/diff artifact; it discovers no scenario artifacts today because no repository convention for them exists yet"
+    ],
+    "invariants": [
+      "the gate decides no UAT/Product judgment itself; outcome/findings/details are the reviewer's, not derived here",
+      "the gate performs no QA or Architecture review",
+      "the gate creates no pull request and performs no merge-readiness computation",
+      "the gate invokes no agent provider",
+      "prepareContext() takes no lock and mutates no state; only review() writes, and only inside its task lock",
+      "a branch, evidence-verification, context, developer-handoff, or review-submission failure leaves the task's lifecycle state unchanged",
+      "a UAT FAIL is representable and persisted even when the task's own QA review-result, Architecture review-result, and developer-validation evidence are all PASS, per issue #1 section 4 and the acceptance-criteria scenario of an implementation that passes local unit tests but misses a stated user scenario"
+    ],
+    "examples": [
+      "a task in UAT_REVIEW with QA and Architect required and current QA/Architecture PASS records advances to MERGE_READY on a UAT PASS",
+      "a task that reached UAT_REVIEW directly from DEV_VALIDATED (neither QA nor Architect required) still receives a bridged Developer handoff before UAT review can submit",
+      "a UAT FAIL with a blocking finding describing a missed intended-outcome scenario and a nonPass reason/remediation advances the task to UAT_FAILED even though the same revision's QA review-result, Architecture review-result, and developer-validation evidence are all PASS",
+      "a reviewer who finds no realistic usage scenario was exercised, or otherwise judges the supplied context insufficient to assess the intended outcome, submits outcome BLOCKED with a nonPass reason/remediation rather than guessing an approval; BLOCKED is bound, persisted, and routed to UAT_FAILED exactly like FAIL",
+      "a UAT reviewerId equal to the bridged Developer handoff's actor ID is rejected as a self-approval attempt",
+      "a reviewer calls prepareContext(), decides PASS from the returned package, and review() persists a review-result whose contextPackageId matches that exact package"
+    ],
+    "edgeCases": [
+      "a task not currently UAT_REVIEW is rejected as TASK_STATE_NOT_REVIEWABLE before branch identity is even checked",
+      "an unregistered task ID is rejected as TASK_NOT_FOUND",
+      "a wrong current branch is rejected as BRANCH_REJECTED before context is compiled",
+      "a task whose UAT_REVIEW or DEV_VALIDATED history event does not match the current branch revision is rejected as TASK_STATE_NOT_REVIEWABLE",
+      "a task whose requiredReviewRoles includes QA but has no current QA PASS evidence for the exact revision is rejected as TASK_STATE_NOT_REVIEWABLE before context is compiled; the same applies independently to Architect",
+      "an evidence-store read failure while resolving a required QA or Architecture review-result (malformed record, unreadable storage) is converted to TASK_STATE_NOT_REVIEWABLE rather than propagating a raw exception, mirroring the same normalization already applied to developer-validation evidence reads",
+      "a caller-supplied context whose content identity does not match a freshly recompiled UAT/Product package for the exact task/role/revision artifact catalog is rejected as CONTEXT_REJECTED and persists no UAT evidence",
+      "a DEV_VALIDATED history event referencing validation evidence that was deleted, never persisted, or since superseded by a later run is rejected as TASK_STATE_NOT_REVIEWABLE",
+      "two concurrent review() calls for the same task never both proceed past the task lock; the loser is rejected as STATE_CONFLICT without touching evidence or lifecycle state",
+      "a lock file left behind by a crashed review() call is reclaimed once it is older than the abandonment threshold",
+      "a revision change after a UAT PASS leaves the prior UAT review-result evidence REVISION_MISMATCH for the new revision rather than treating it as still current"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.lifecycle-state-machine",
+    "control-plane.context-compiler",
+    "control-plane.review-framework",
+    "control-plane.evidence-store",
+    "control-plane.git-branch-lifecycle",
+    "control-plane.task-registry",
+    "control-plane.dev-start",
+    "node:fs",
+    "node:path"
+  ],
+  "forbiddenDependencies": [
+    "agent-provider/*",
+    "pull-request-lifecycle/*",
+    "merge-controller/*",
+    "fantasy-product/*",
+    "control-plane.qa-review",
+    "control-plane.architecture-review"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-review-rework-invalidation-loop",
+      "expectations": [
+        "BOOT-021 can read the UAT review-result lineage this gate writes (through the unmodified evidence store) to decide which UAT approvals remain valid after a revision changes"
+      ],
+      "requiredCapabilities": [
+        "review-framework-bound-uat-judgment-persistence",
+        "stale-revision-reentry-rejection"
+      ],
+      "acceptedRanges": [
+        "a CURRENT ipt.review-result record for the UAT/Product role lineage bound to the exact revision it was submitted for"
+      ],
+      "requiredReachableRanges": [
+        "a lineage with a single CURRENT UAT record",
+        "a lineage whose CURRENT record no longer matches a since-changed revision (REVISION_MISMATCH)"
+      ]
+    },
+    {
+      "consumerId": "future-merge-controller-workflow",
+      "expectations": [
+        "BOOT-024/BOOT-025 can treat a task's arrival at MERGE_READY through this gate's PASS path as one of the facts merge readiness is computed from",
+        "this gate never computes merge readiness itself and never creates or manages a pull request"
+      ],
+      "requiredCapabilities": [
+        "unconditional-merge-ready-advancement-on-pass"
+      ],
+      "acceptedRanges": [
+        "a UatReviewResult with outcome PASS and lifecycleState MERGE_READY",
+        "a UatReviewResult with outcome FAIL or BLOCKED and lifecycleState UAT_FAILED"
+      ],
+      "requiredReachableRanges": [
+        "successful UAT PASS advancing to MERGE_READY",
+        "a UAT failure that blocks further advancement even when QA and Architecture already passed"
+      ]
+    }
+  ]
+}
