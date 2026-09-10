@@ -1,0 +1,87 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.ci-enforcement",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "Workflow file .github/workflows/ci.yml, workflow name 'CI'",
+      "Job build-and-test, check context 'CI / Build and test (Node)': actions/checkout@v4 with ref: github.event.pull_request.head.sha || github.sha and fetch-depth: 0, npm ci, npm run build, npm test",
+      "Job schema-validation, check context 'CI / Schema and contract validation (Python)': actions/checkout@v4 with ref: github.event.pull_request.head.sha || github.sha, python schemas/validate_fixtures.py, python schemas/validate_repository_contracts.py",
+      "Triggers: pull_request (branches: main), push (branches: main), workflow_dispatch",
+      "schemas/validate_repository_contracts.py: standalone script invoked as `python schemas/validate_repository_contracts.py`; exits 0 with 'PASS: <n> repository contract/task record(s) validated against their schema', or exits 1 with one 'FAIL: <path>: <reason>' line per violation"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "independent-rerun-of-build-and-full-test-suite-per-commit",
+      "independent-rerun-of-schema-fixture-validation-per-commit",
+      "real-module-contract-json-schema-validation",
+      "real-task-json-schema-validation",
+      "stale-glob-detection-via-zero-match-failure",
+      "documented-check-contexts-and-local-parity-commands",
+      "in-flight-run-cancellation-on-newer-push-to-same-ref"
+    ],
+    "behavioralConstraints": [
+      "both jobs (build-and-test, schema-validation) run unconditionally on every pull_request targeting main, every push to main, and manual workflow_dispatch; neither job is conditioned on which files changed",
+      "build-and-test's checkout uses fetch-depth: 0 (full history) rather than the action's default shallow single-ref clone, because tests/architecture-review.test.mjs and tests/qa-review.test.mjs run git merge-base against main/origin/main in the real checked-out repository (process.cwd(), not an isolated fixture repo), which is unresolvable under a shallow clone",
+      "both jobs' checkouts pin ref: github.event.pull_request.head.sha || github.sha rather than the action's default pull_request-event ref (the synthetic merge commit GitHub computes, not the PR's actual head commit), so the exact commit tested is the same one a reviewer or a future merge-readiness reader means by 'this PR'",
+      "build-and-test fails if npm run build or npm test exits non-zero; a failing step halts the job rather than allowing a later step to report an independent success",
+      "schema-validation fails if schemas/validate_fixtures.py or schemas/validate_repository_contracts.py exits non-zero",
+      "schemas/validate_repository_contracts.py exits 1 when: a scanned contracts/**/module-contract.json or tasks/definitions/*.task.json file is not valid JSON; a scanned record does not validate against its corresponding schemas/v1/*.schema.json document; or zero contracts/**/module-contract.json files are found",
+      "schemas/validate_repository_contracts.py does not fail on zero tasks/definitions/*.task.json files, since the repository-native task registry may legitimately hold no records yet",
+      "no workflow step reads a checked-in 'evidence' or 'passed' file as a substitute for rerunning the underlying check; every reported result comes from that run's own process exit code",
+      "actions are pinned to major-version tags (actions/checkout@v4, actions/setup-node@v4, actions/setup-python@v5); node-version is pinned to '20' matching package.json engines.node; python-version is pinned to '3.11' matching schemas/requirements.txt",
+      "a newer push to the same ref cancels an in-flight run for that ref (concurrency.cancel-in-progress: true) rather than letting a stale run's result be read after a newer commit exists for the same ref"
+    ],
+    "invariants": [
+      "this module performs no lifecycle-state transition, no merge, and no merge-readiness computation",
+      "this module decides no QA/Architecture/UAT judgment; it enforces only deterministic, reproducible checks",
+      "every check a job performs is also runnable locally with the exact command documented in docs/CI.md, so CI never depends on GitHub-only state",
+      "schemas/validate_repository_contracts.py never mutates a scanned file; it is read-only"
+    ],
+    "examples": [
+      "a PR that introduces a failing node --test assertion receives a failing build-and-test check; schema-validation is unaffected and still reports its own independent result",
+      "a PR that edits contracts/pr-lifecycle/module-contract.json to remove a required field (for example knownConsumers) receives a failing schema-validation check via schemas/validate_repository_contracts.py, identifying the exact file and the missing field",
+      "a clean PR that changes only documentation receives a passing build-and-test and a passing schema-validation, using the exact toolchain versions documented in docs/CI.md",
+      "a push directly to main reruns both jobs against that merge commit independently of whatever the source PR's last recorded run reported"
+    ],
+    "edgeCases": [
+      "a malformed (non-JSON) contracts/**/module-contract.json file fails schemas/validate_repository_contracts.py with a JSON-parse error identifying the file, rather than crashing the script or being silently skipped",
+      "if every contracts/**/module-contract.json file were ever deleted, schemas/validate_repository_contracts.py fails explicitly ('expected at least one file ... found none') rather than reporting a vacuous pass",
+      "a second commit pushed to the same PR while an earlier run is still in progress cancels that earlier run rather than letting a stale run's result be read after a newer one exists for the same ref"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.task-registry (schema family only, via schemas/v1/task.schema.json)",
+    "contracts/* (schema family only, via schemas/v1/module-contract.schema.json)",
+    "schemas/v1/*",
+    "actions/checkout",
+    "actions/setup-node",
+    "actions/setup-python"
+  ],
+  "forbiddenDependencies": [
+    "agent-provider/*",
+    "merge-controller/*",
+    "fantasy-product/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-merge-readiness-policy-engine",
+      "expectations": [
+        "a success result for both jobs on a given commit means that commit's build, full test suite, schema fixtures, and real contract/task records all passed at that exact revision"
+      ],
+      "requiredCapabilities": [
+        "independent-rerun-of-build-and-full-test-suite-per-commit",
+        "independent-rerun-of-schema-fixture-validation-per-commit"
+      ],
+      "acceptedRanges": [
+        "each job's check status is exactly one of GitHub's own success/failure/cancelled/skipped states for that commit; this module introduces no additional custom status vocabulary"
+      ],
+      "requiredReachableRanges": [
+        "a success result must remain reachable for a commit whose code genuinely satisfies every check",
+        "a failure result must remain reachable for a commit whose code genuinely violates any required check"
+      ]
+    }
+  ]
+}

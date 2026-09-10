@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test tests/cli.test.mjs tests/task-registry.test.mjs tests/dependency-graph.test.mjs tests/next-task.test.mjs tests/lifecycle-state-machine.test.mjs tests/assignment-lock.test.mjs tests/git-branch-lifecycle.test.mjs tests/context-compiler.test.mjs tests/context-compiler-review-regressions.test.mjs tests/dev-start.test.mjs tests/validation-framework.test.mjs tests/evidence-store.test.mjs tests/dev-validation.test.mjs tests/review-framework.test.mjs tests/qa-review.test.mjs tests/architecture-review.test.mjs tests/uat-review.test.mjs tests/review-rework.test.mjs tests/pr-lifecycle.test.mjs",
+    "test": "npm run build && node --test tests/cli.test.mjs tests/task-registry.test.mjs tests/dependency-graph.test.mjs tests/next-task.test.mjs tests/lifecycle-state-machine.test.mjs tests/assignment-lock.test.mjs tests/git-branch-lifecycle.test.mjs tests/context-compiler.test.mjs tests/context-compiler-review-regressions.test.mjs tests/dev-start.test.mjs tests/validation-framework.test.mjs tests/evidence-store.test.mjs tests/dev-validation.test.mjs tests/review-framework.test.mjs tests/qa-review.test.mjs tests/architecture-review.test.mjs tests/uat-review.test.mjs tests/review-rework.test.mjs tests/pr-lifecycle.test.mjs tests/ci-workflow.test.mjs",
     "preagent": "npm run build",
     "agent": "node dist/cli/cli.js"
   },

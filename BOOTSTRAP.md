@@ -24,8 +24,9 @@ Implemented foundation through the task-start boundary:
 - BOOT-019 — Architecture / semantic dependency review
 - BOOT-020 — UAT / product-intent review
 - BOOT-021 — Review rework and approval invalidation loop
-- **Current implementation task: BOOT-022 — Pull-request lifecycle integration / issue #24**
-- Canonical BOOT-022 branch: `bootstrap/boot-022-pr-lifecycle`
+- BOOT-022 — Pull-request lifecycle integration
+- **Current implementation task: BOOT-023 — GitHub Actions CI enforcement / issue #25**
+- Canonical BOOT-023 branch: `bootstrap/boot-023-ci-enforcement`
 - Bootstrap marker: see [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION)
 
 The repository-native control plane can now load and order tasks, evaluate next-task eligibility, enforce lifecycle transition prerequisites, acquire assignment locks, ensure canonical local branches, resolve exact source revision, compile bounded Developer context, and compose those capabilities through `agent start <owner-id> <run-id>`. It can also deterministically gate `IN_DEVELOPMENT -> DEV_VALIDATED`/`DEV_VALIDATION_FAILED` through `agent validate <task-id> <actor-id> <run-id>`, bind/persist an already-decided role judgment through the generic review framework, and drive the full independent review pipeline: `QaReviewGate.review()` advances `DEV_VALIDATED -> QA_REVIEW -> {ARCHITECTURE_REVIEW | UAT_REVIEW | MERGE_READY}` on QA `PASS` or `-> QA_FAILED` otherwise; `ArchitectureReviewGate.review()` advances `ARCHITECTURE_REVIEW -> {UAT_REVIEW | MERGE_READY}` on Architecture `PASS` or `-> ARCHITECTURE_FAILED` otherwise; and `UatReviewGate.review()` advances `UAT_REVIEW -> MERGE_READY` on UAT `PASS` (UAT/Product is always the last review stage) or `-> UAT_FAILED` otherwise.
@@ -33,6 +34,8 @@ The repository-native control plane can now load and order tasks, evaluate next-
 BOOT-021 closes the loop those gates leave open: `ReviewReworkGate.enterRework()` drives the BOOT-009-declared-but-previously-undriven `QA_FAILED`/`ARCHITECTURE_FAILED`/`UAT_FAILED -> REWORK_REQUIRED` transition, binding it to the exact failed review-result evidence rather than copying its findings; `ReviewReworkGate.resumeDevelopment()` drives `REWORK_REQUIRED -> IN_DEVELOPMENT` so the developer-validation and review gates can run again for the next revision; and the read-only `ReviewReworkGate.getApprovalStatus()` reports, per role, whether its current evidence is `NONE`, `STALE` (bound to a revision that is not the task's exact current revision — including after a metadata-only commit, since the policy is deliberately coarse and whole-revision rather than diff-aware), or `CURRENT`, making the revision-bound invalidation policy every earlier gate already enforces lazily into a single documented, queryable, and tested answer.
 
 BOOT-022 adds `control-plane.pr-lifecycle`, integrating the task workflow with GitHub pull requests while keeping GitHub as a replaceable adapter rather than the workflow domain model. `PullRequestLifecycleAdapter.ensurePullRequest()` resolves the task's canonical branch and exact current revision through the unmodified BOOT-011 Git branch adapter, reads current per-role approval evidence through the unmodified BOOT-021 `getApprovalStatus()`, and discovers or creates exactly one canonical open pull request for that branch into `main` through a `PullRequestOperations` adapter boundary: zero existing open PRs create one, exactly one reuses it unchanged or updates its title/body in place only when the desired content actually changed, and more than one is rejected as a conflict rather than silently choosing between them. `GitHubPullRequestOperations` is the concrete GitHub REST API implementation of that boundary and normalizes every GitHub HTTP failure into a structured `PullRequestProviderError`. It performs no CI policy evaluation, computes no merge readiness, and merges nothing; those remain owned by BOOT-023 onward. No CLI command is added.
+
+BOOT-023 adds `control-plane.ci-enforcement` (documented in [contracts/ci-enforcement/README.md](contracts/ci-enforcement/README.md) and [docs/CI.md](docs/CI.md)): a GitHub Actions workflow (`.github/workflows/ci.yml`) that independently reruns this repository's own deterministic checks — `npm run build`, `npm test`, `schemas/validate_fixtures.py` — against the exact commit of every pull request targeting `main` and every push to `main`, plus a new repository-invariant script (`schemas/validate_repository_contracts.py`) that validates every real authored `contracts/**/module-contract.json` and `tasks/definitions/*.task.json` record against its schema, rather than only proving the schema definitions accept/reject their own hand-written fixtures. Both jobs are independently rerun (never trusted from a checked-in "passed" flag), pin their actions/toolchain to exact major versions, and cancel a stale in-flight run when a newer commit lands on the same ref. It performs no branch-protection configuration, no merge-readiness computation, and no AI semantic review; those remain owned by BOOT-024 onward.
 
 BOOT-013 is a start-only workflow. It does not run deterministic developer validation, invoke an AI provider, execute independent reviews, create/manage pull requests, merge, or establish completion. Those remain later BOOT responsibilities.
 
@@ -100,13 +103,13 @@ A branch, resolution, or evidence-persistence failure leaves the task's lifecycl
 The repository still contains no fantasy-football product implementation. The bootstrap has progressed beyond documentation-only scaffolding, but these downstream capabilities remain outside the current boundary:
 
 - rework entry for `DEV_VALIDATION_FAILED`/`MERGE_BLOCKED`/`BLOCKED` (only a failed QA/Architecture/UAT review is reworkable today, via BOOT-021's `ReviewReworkGate`; deciding QA/Architecture/UAT/Product judgments themselves remains the reviewer's, not this repository's — see `contracts/review-rework/README.md` "Out-of-scope follow-up");
-- GitHub Actions CI policy enforcement (BOOT-022's `PullRequestLifecycleAdapter` discovers/creates/updates a canonical PR only — see `contracts/pr-lifecycle/README.md` "Out-of-scope follow-up");
+- GitHub branch-protection required-status-check configuration (BOOT-023's workflow reruns checks and documents the exact check contexts a repository administrator should require, but does not itself configure branch protection — see `docs/CI.md` "Out of scope follow-up");
 - merge policy/controller and controlled completion;
 - agent provider adapters/runners;
 - sequential orchestration/cutover tooling;
 - fantasy-football product behavior.
 
-Later BOOT issues own those capabilities and must not be pulled into BOOT-013, BOOT-016, BOOT-018, BOOT-019, BOOT-020, BOOT-021, or BOOT-022.
+Later BOOT issues own those capabilities and must not be pulled into BOOT-013, BOOT-016, BOOT-018, BOOT-019, BOOT-020, BOOT-021, BOOT-022, or BOOT-023.
 
 ## Bootstrap validation principle
 

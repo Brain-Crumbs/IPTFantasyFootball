@@ -2,7 +2,7 @@
 
 IPTFantasyFootball is currently in **agentic-development bootstrap**, not fantasy-football product implementation.
 
-The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with BOOT-000 / issue #2. The repository has since added the CLI shell (BOOT-005), task registry (BOOT-006), dependency DAG (BOOT-007), next-task selector (BOOT-008), lifecycle transition engine (BOOT-009), assignment locks (BOOT-010), Git branch lifecycle adapter (BOOT-011), role-aware context compiler (BOOT-012), the Developer task-start workflow (BOOT-013 / issue #15), the validation executor framework (BOOT-014 / issue #16), the evidence and review artifact store (BOOT-015 / issue #17), and the developer validation gate (BOOT-016 / issue #18).
+The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with BOOT-000 / issue #2. The repository has since added the CLI shell (BOOT-005), task registry (BOOT-006), dependency DAG (BOOT-007), next-task selector (BOOT-008), lifecycle transition engine (BOOT-009), assignment locks (BOOT-010), Git branch lifecycle adapter (BOOT-011), role-aware context compiler (BOOT-012), the Developer task-start workflow (BOOT-013 / issue #15), the validation executor framework (BOOT-014 / issue #16), the evidence and review artifact store (BOOT-015 / issue #17), the developer validation gate (BOOT-016 / issue #18), the generic review framework (BOOT-017), the QA/Architecture/UAT review gates (BOOT-018/019/020), the review rework/invalidation loop (BOOT-021), pull-request lifecycle integration (BOOT-022), and GitHub Actions CI enforcement (BOOT-023 / issue #25, see [docs/CI.md](docs/CI.md)).
 
 ## Bootstrap purpose
 
@@ -29,6 +29,7 @@ The control plane now has a start-only Developer workflow that composes determin
 | `reviews/` | Structured review definitions/artifacts owned by later review tasks. |
 | `evidence/` | Documentation for `control-plane.evidence-store` (BOOT-015); runtime records persist locally under ignored `.agent/state/`. |
 | `.agent/` | Ignored local runtime state for repository-native workflows such as BOOT-013/BOOT-016. |
+| `.github/workflows/` | GitHub Actions CI (BOOT-023); see [docs/CI.md](docs/CI.md). |
 
 Placeholder documentation must not be interpreted as implemented behavior.
 
@@ -98,3 +99,7 @@ BOOT-015 adds `control-plane.evidence-store`, documented in [contracts/evidence-
 BOOT-016 adds `control-plane.dev-validation`, documented in [contracts/dev-validation/README.md](contracts/dev-validation/README.md). It wires BOOT-014 and BOOT-015 into the BOOT-009 lifecycle engine: a task must be `IN_DEVELOPMENT` on its canonical branch; the gate resolves the validators required for the task/repository (a pluggable `DeveloperValidatorResolver`; the local default runs the repository's own `npm run build`/`npm test`), runs them through the unmodified `ValidationExecutor`, persists every result as revision-bound `ipt.validation-evidence`, and reads each record back through `checkRevision` — never trusting the bare in-memory run result — before transitioning `IN_DEVELOPMENT -> DEV_VALIDATED` (all required checks `PASS`) or `IN_DEVELOPMENT -> DEV_VALIDATION_FAILED` (any required check not `PASS`).
 
 The result reports every check's status, mapped evidence outcome, and evidence location, plus which required checks failed. A wrong branch, an unregistered task, or a task not `IN_DEVELOPMENT` fails explicitly (`WORKFLOW_BLOCKED`, exit code `4`) before any validator runs or evidence is written. BOOT-016 performs no QA/Architecture/UAT review and creates no pull request; those remain owned by BOOT-017 onward.
+
+### Continuous integration
+
+BOOT-023 adds `control-plane.ci-enforcement`, documented in [docs/CI.md](docs/CI.md) and [contracts/ci-enforcement/README.md](contracts/ci-enforcement/README.md). `.github/workflows/ci.yml` independently reruns `npm run build`/`npm test` and `schemas/validate_fixtures.py` against the exact commit of every pull request into `main` and every push to `main`, plus a new `schemas/validate_repository_contracts.py` invariant that validates every real `contracts/**/module-contract.json` and `tasks/definitions/*.task.json` record against its schema. Local parity commands are documented in `docs/CI.md`. This module performs no branch-protection configuration, merge-readiness computation, or AI semantic review; those remain owned by BOOT-024 onward.

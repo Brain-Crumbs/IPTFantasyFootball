@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# A newer push on the same PR/branch supersedes an in-flight run rather than
+# queuing behind it; PR merge-readiness (BOOT-024/BOOT-025) must always read
+# the status of the exact current head, never a stale queued run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # On a pull_request event, actions/checkout's default ref checks out
+          # the synthetic merge commit rather than the PR's actual head commit.
+          # Check out the exact head SHA instead, so results are bound to the
+          # exact revision a merge-readiness reader (BOOT-024/BOOT-025) and a
+          # reviewer both mean by "this PR" (github.sha still applies as-is
+          # for push/workflow_dispatch, where there is no pull_request head).
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Full history (not the default shallow single-ref checkout) so that
+          # `git merge-base main`/`origin/main` resolves. The repository's own
+          # architecture-review/qa-review context-source tests run git diff
+          # against the base branch using the real checked-out repository
+          # (tests/architecture-review.test.mjs, tests/qa-review.test.mjs) and
+          # fail with "Cannot resolve a merge base" under a shallow checkout.
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (tsc)
+        run: npm run build
+
+      - name: Test (node --test)
+        run: npm test
+
+  schema-validation:
+    name: Schema and contract validation (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # See build-and-test's checkout step: check out the PR's actual head
+          # commit rather than the pull_request event's default synthetic
+          # merge-commit ref, so this job's result is bound to the exact same
+          # revision as build-and-test's.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install schema-validation dependencies
+        run: pip install -r schemas/requirements.txt
+
+      - name: Validate schema fixtures
+        run: python schemas/validate_fixtures.py
+
+      - name: Validate real repository contract/task records
+        run: python schemas/validate_repository_contracts.py
