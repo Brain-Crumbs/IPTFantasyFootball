@@ -1,0 +1,129 @@
+# Controlled Merge and Completion Transition
+
+**Task:** BOOT-025 / issue #27
+**Parent architecture:** issue #1
+**Module ID:** `control-plane.controlled-merge`
+
+## Identity and purpose
+
+- **Module ID:** `control-plane.controlled-merge`
+- **Module version:** `1.0.0`
+- **Manifest:** `./module-contract.json`
+
+`control-plane.controlled-merge` is the only supported path that merges a task's merge-ready pull request, verifies the merged result, finalizes revision-bound audit evidence, releases the assignment lock, and transitions the task `MERGE_READY -> MERGED -> DONE`. It performs no QA/Architecture/UAT/MergeController judgment itself — that already happened before the task ever reached `MERGE_READY` (BOOT-017–BOOT-021) — and it never overrides a failed merge-readiness gate; it consumes BOOT-024's `MergeReadinessPolicyEngine.evaluate()` as its sole readiness precondition.
+
+## Why a second readiness check and a second head check
+
+`control-plane.merge-readiness` (BOOT-024) is a pure, side-effect-free query: by the time its `ready: true` result reaches a caller, the world may already have moved on — a push could land, or CI could regress, in the gap between that call returning and this controller invoking the merge provider. `merge()` therefore:
+
+1. Re-evaluates `MergeReadinessPolicyEngine.evaluate()` itself, immediately before merging, and rejects if its own resolved revision differs from what this controller already resolved (`HEAD_CHANGED`).
+2. Re-reads the pull request's actual remote head one more time, immediately before calling the merge provider, and rejects on any change in number, head SHA, or merged status (`HEAD_CHANGED`).
+3. Passes the expected head SHA to GitHub's own merge endpoint as its `sha` parameter, so a head that moved in the final gap between step 2 and GitHub actually processing the request is rejected server-side (HTTP 409) — mapped to `HEAD_CHANGED` here rather than a generic provider failure.
+
+No step ever overrides a failed check with a caller-supplied flag.
+
+## Resumability: the central design constraint
+
+Issue #27's validation scenarios require: "merge succeeds but bookkeeping is interrupted, then resume without duplicate merge." This module's control flow is organized entirely around that requirement, using the task's own persisted lifecycle state as the resume dispatch key:
+
+- **`MERGE_READY`** — the normal entry point. Before evaluating readiness at all, the canonical branch's pull request is looked up in *any* state (not only `open`). If it is already `merged: true` — because this exact controller's own earlier call already confirmed the merge but crashed before persisting evidence, or because the PR was merged out of band — the confirmed result is verified against the task's approved revision and used to finalize directly, with **no** merge-readiness evaluation and **no** second `mergePullRequest` call. Only when the pull request is not yet merged does the full readiness-evaluate → re-check → merge sequence run.
+- **`MERGED`** — evidence and the `MERGED` transition already persisted; only lock release and the `MERGED -> DONE` transition were interrupted. Resuming here reads the already-persisted `ipt.merge-evidence` record and finishes bookkeeping with **zero** pull-request provider calls and **zero** merge-readiness calls.
+- **`DONE`** — fully complete. Returns the persisted evidence unchanged, with no writes of any kind.
+
+Every other lifecycle state is rejected as `TASK_STATE_NOT_MERGEABLE` before any branch, evidence, or provider call.
+
+This ordering — write evidence, *then* transition to `MERGED`, *then* release the lock, *then* transition to `DONE` — means a crash at any point leaves the task in a state whose resume path is fully determined by what was actually persisted, never by what the crashed process merely intended.
+
+## Structural contract
+
+Primary API:
+
+- `new ControlledMergeController(dependencies)`
+- `ControlledMergeController.merge(request: ControlledMergeRequest): Promise<ControlledMergeResult>`
+- `ControlledMergeRequest { taskId, actorId, runId, occurredAt }`
+- `ControlledMergeResult { taskId, lifecycleState: "DONE", pullRequestNumber, sourceRevision, mergeCommitSha, evidenceLineageId, evidenceSequence }`
+- `ControlledMergeError { code, recoverable }` — `code` is one of `INVALID_REQUEST | TASK_NOT_FOUND | TASK_STATE_NOT_MERGEABLE | BRANCH_REJECTED | NOT_MERGE_READY | HEAD_CHANGED | MERGE_PROVIDER_FAILED | MERGE_NOT_CONFIRMED | EVIDENCE_REJECTED | LIFECYCLE_REJECTED | LOCK_RELEASE_FAILED | STATE_CONFLICT | STATE_IO_FAILED`
+
+Dependency-port boundaries (satisfied structurally by existing modules):
+
+- `ControlledMergeBranchAdapter.canonicalBranch/assertCurrentTaskBranch/currentRevision` — satisfied by the unmodified `control-plane.git-branch-lifecycle`'s `GitBranchLifecycleAdapter`
+- `ControlledMergeReadinessPort.evaluate({ taskId })` — satisfied by the unmodified `control-plane.merge-readiness`'s `MergeReadinessPolicyEngine`
+- `ControlledMergeEvidenceStore.record(payload)/getCurrent(lineageId)` — satisfied by the unmodified `control-plane.evidence-store`'s `FileEvidenceStore`, now also serving the new `ipt.merge-evidence` schema (see below)
+- `ControlledMergeLockStore.get(taskId)/release(request)` — satisfied by the unmodified `control-plane.assignment-lock`'s `FileAssignmentLockStore`
+- `ControlledMergePullRequestPort.findPullRequestByHead(head)/mergePullRequest({ number, expectedHeadSha })` — satisfied by this module's own `GitHubControlledMergePullRequestOperations`
+
+Concrete provider adapter:
+
+- `new GitHubControlledMergePullRequestOperations({ owner, repo, token, apiBaseUrl?, fetchImpl? })` — `findPullRequestByHead` queries `state=all` (never `state=open`) so an already-merged pull request is still discovered and its `merged`/`merge_commit_sha` fields trusted; `mergePullRequest` calls GitHub's `PUT .../merge` with `sha: expectedHeadSha`, mapping a `409` response to `ControlledMergeError("HEAD_CHANGED", ...)` directly (rather than a generic provider error) and every other non-2xx/transport failure into BOOT-022's own `PullRequestProviderError`.
+- `createLocalControlledMergeController(repositoryRoot, options)` — local composition root sharing the same `.agent/state/lifecycle`, `.agent/state/evidence`, and `.agent/state/assignments` stores every earlier gate uses, and BOOT-024's own `createLocalMergeReadinessPolicyEngine`.
+
+## A new, purely additive evidence schema
+
+`control-plane.evidence-store` (BOOT-015) is extended with a third supported schema, `ipt.merge-evidence` (`schemas/v1/merge-evidence.schema.json`, v1.0.0), and a new lineage helper `mergeEvidenceLineageId(taskId) = "${taskId}::merge"`. This is additive only: `ipt.validation-evidence` and `ipt.review-result`'s schemas, lineages, and behavior are byte-for-byte unchanged; the store's existing schema-resolution-by-`payload.schemaId` mechanism required no structural change to accept the third schema. A merge-evidence record carries `taskId`, `revisionIdentity` (the merged source revision), `pullRequestNumber`, `mergeCommitSha`, a free-text `policyDecisionReference` (naming the merge-readiness evaluation this merge relied on), and `recordedAt`.
+
+## Capabilities
+
+- Merge a task's merge-ready pull request through the sole supported path, and transition the task through `MERGED` to `DONE` only after the merge is confirmed.
+- Re-evaluate merge readiness and re-check the pull request's remote head immediately before merging, rejecting on any drift since the caller's own last observation.
+- Detect a server-side head mismatch on the merge call itself via GitHub's `sha` parameter and HTTP 409 response.
+- Record one revision-bound `ipt.merge-evidence` record naming the task, source revision, pull-request number, merge commit SHA, and policy decision reference, before ever writing the `MERGED` lifecycle transition.
+- Resume cleanly from any interruption point without ever calling the merge provider a second time for an already-confirmed merge.
+- Release the assignment lock as a best-effort, idempotent step, tolerating a lock already released or reassigned.
+- Return an idempotent result for a task already `DONE`, with no further writes.
+
+## Invariants
+
+- This is the only module in the bootstrap that writes lifecycle state `MERGED` or `DONE`.
+- `merge()` never invokes the merge provider more than once for the same confirmed merge.
+- `merge()` never records merge evidence or writes a lifecycle transition for a merge that was not confirmed by the provider.
+- Every failure that occurs before a merge is confirmed leaves the task's persisted lifecycle state exactly as it was found, so it is always safely retryable.
+
+## Dependencies
+
+### Allowed
+
+- `control-plane.task-registry`
+- `control-plane.git-branch-lifecycle`
+- `control-plane.lifecycle-state-machine`
+- `control-plane.evidence-store`
+- `control-plane.assignment-lock`
+- `control-plane.merge-readiness`
+- `control-plane.pr-lifecycle` (`PullRequestProviderError` type reuse only)
+- global `fetch`
+
+### Forbidden
+
+- `agent-provider/*`
+- `fantasy-product/*`
+- `ci-enforcement/*`
+
+## Known consumers
+
+### future-agent-runner-and-orchestration (BOOT-026+)
+
+Why this consumer depends on the module:
+
+- It can call `merge()` once per attempt for a `MERGE_READY` task and trust `NOT_MERGE_READY`/`HEAD_CHANGED`/`MERGE_PROVIDER_FAILED`/`MERGE_NOT_CONFIRMED` as exact, safely-retryable reasons a call did not reach `DONE`, without itself re-deriving merge readiness, re-checking the pull-request head, or tracking whether a prior attempt already merged.
+
+Required capabilities:
+
+- `sole-supported-merge-and-completion-transition-path`
+- `idempotent-resume-after-interrupted-post-merge-bookkeeping`
+- `no-duplicate-merge-call-across-a-crash-and-resume`
+
+## Out-of-scope follow-up
+
+Per issue #27, this module deliberately does not: perform any QA/Architecture/UAT/MergeController judgment (those already happened before `MERGE_READY`); override a failed merge-readiness gate or a failed merge; run general release/deployment automation; or delete historical evidence. CLI wiring for a `merge` command, and coordinating this module as one step of a larger sequential orchestration loop, remain owned by BOOT-026 onward — the same boundary BOOT-022's/BOOT-023's/BOOT-024's own contracts already document for their own commands.
+
+## Change-impact checklist
+
+- [ ] Did a public interface/type/schema change?
+- [ ] Did a capability disappear or become conditional?
+- [ ] Did a behavioral range narrow or expand (for example, which `ControlledMergeErrorCode` values are produced, or which lifecycle state a given entry state resumes to)?
+- [ ] Did an invariant change?
+- [ ] Did an edge-case behavior change?
+- [ ] Did dependency direction change?
+- [ ] Is the producer reachable range still contained by each relevant consumer accepted range?
+- [ ] Is each consumer-required reachable range still contained by the producer reachable range?
+
+If structural compatibility remains but semantic behavior changes (for example, which lifecycle states are treated as resumable entry points, or when a lock-release rejection blocks completion), explicitly route the change for downstream semantic compatibility review — BOOT-026+ is the named known consumer above.

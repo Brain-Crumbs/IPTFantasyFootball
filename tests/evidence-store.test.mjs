@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   EVIDENCE_STORE_SUPPORTED_SCHEMAS,
   FileEvidenceStore,
+  mergeEvidenceLineageId,
   reviewResultLineageId,
   validationEvidenceLineageId,
 } from "../dist/evidence-store/index.js";
@@ -41,10 +42,38 @@ function validationEvidence(overrides = {}) {
   };
 }
 
-test("supported schema registry names validation-evidence at v1.0.0 and review-result at v1.1.0", () => {
+test("supported schema registry names validation-evidence at v1.0.0, review-result at v1.1.0, and merge-evidence at v1.0.0", () => {
   assert.deepEqual(EVIDENCE_STORE_SUPPORTED_SCHEMAS, {
     "ipt.validation-evidence": "1.0.0",
     "ipt.review-result": "1.1.0",
+    "ipt.merge-evidence": "1.0.0",
+  });
+});
+
+test("merge-evidence records derive a per-task merge lineage distinct from validator/role lineages", () => {
+  withStore((store) => {
+    const payload = {
+      schemaId: "ipt.merge-evidence",
+      schemaVersion: "1.0.0",
+      evidenceId: "evidence-merge-1",
+      taskId: "BOOT-025",
+      revisionIdentity: "sha-aaa111",
+      pullRequestNumber: 63,
+      mergeCommitSha: "sha-merge-1",
+      policyDecisionReference: "control-plane.merge-readiness:BOOT-025@sha-aaa111:ready",
+      recordedAt: "2026-09-10T00:00:00Z",
+    };
+
+    const result = store.record(payload);
+    assert.equal(result.ok, true);
+
+    const lineageId = mergeEvidenceLineageId("BOOT-025");
+    assert.equal(result.record.lineageId, lineageId);
+    assert.notEqual(lineageId, validationEvidenceLineageId("BOOT-025", "npm-test"));
+    assert.notEqual(lineageId, reviewResultLineageId("BOOT-025", "MergeController"));
+
+    const current = store.getCurrent(lineageId);
+    assert.equal(current.payload.mergeCommitSha, "sha-merge-1");
   });
 });
 

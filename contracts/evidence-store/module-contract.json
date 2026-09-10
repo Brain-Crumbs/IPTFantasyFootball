@@ -16,8 +16,9 @@
       "RevisionCheckResult = { status: 'CURRENT', record } | { status: 'REVISION_MISMATCH', record, expectedRevisionIdentity } | { status: 'NOT_FOUND' }",
       "validationEvidenceLineageId(taskId, validatorId): string",
       "reviewResultLineageId(taskId, role): string",
+      "mergeEvidenceLineageId(taskId): string",
       "EVIDENCE_STORE_SUPPORTED_SCHEMAS",
-      "durable records: schemas/v1/validation-evidence.schema.json v1.0.0, schemas/v1/review-result.schema.json v1.1.0"
+      "durable records: schemas/v1/validation-evidence.schema.json v1.0.0, schemas/v1/review-result.schema.json v1.1.0, schemas/v1/merge-evidence.schema.json v1.0.0"
     ]
   },
   "semanticContract": {
@@ -33,7 +34,7 @@
     "behavioralConstraints": [
       "record() accepts only payloads whose schemaId is a supported evidence schema and whose schemaVersion matches the reader's exact supported version",
       "record() validates the full payload against the corresponding schemas/v1/*.schema.json document, including $ref-resolved nested shapes and role/outcome-conditioned allOf/if/then requirements, before acceptance",
-      "a lineage is derived deterministically from taskId plus validatorId for validation-evidence records, or taskId plus role for review-result records, so the two record kinds never collide even for the same taskId",
+      "a lineage is derived deterministically from taskId plus validatorId for validation-evidence records, taskId plus role for review-result records, or taskId alone for merge-evidence records, so the three record kinds never collide even for the same taskId",
       "every accepted record is written to a new, never-reused sequence file within its lineage; no existing record file is ever overwritten or deleted",
       "getCurrent returns the highest-sequence record for a lineage; getHistory returns every record for a lineage in sequence order with status CURRENT on the last entry and SUPERSEDED on all earlier entries",
       "checkRevision distinguishes CURRENT (matches expectedRevisionIdentity), REVISION_MISMATCH (a current record exists but for a different revision), and NOT_FOUND (no record exists for the lineage) so a caller can never mistake evidence as applying to a revision it was not recorded against"
@@ -49,7 +50,8 @@
       "recording BOOT-014's ValidationRunResult-derived ipt.validation-evidence for a task/validator pair and reading it back via getCurrent",
       "recording a second ipt.validation-evidence for the same task/validator at a newer revisionIdentity leaves the first record queryable via getHistory as SUPERSEDED",
       "recording ipt.review-result documents for Developer, QA, Architect, UAT/Product, and MergeController roles on the same task keeps five independent current lineages",
-      "checkRevision against a stale expectedRevisionIdentity returns REVISION_MISMATCH carrying both the current record and the mismatched expectation"
+      "checkRevision against a stale expectedRevisionIdentity returns REVISION_MISMATCH carrying both the current record and the mismatched expectation",
+      "recording one ipt.merge-evidence document for a task's controlled merge (BOOT-025) and reading it back via getCurrent(mergeEvidenceLineageId(taskId)) never collides with that same task's ipt.validation-evidence or ipt.review-result lineages"
     ],
     "edgeCases": [
       "a non-object payload is rejected as INVALID_PAYLOAD",
@@ -63,7 +65,8 @@
     "node:fs",
     "node:path",
     "schemas/v1/validation-evidence.schema.json",
-    "schemas/v1/review-result.schema.json"
+    "schemas/v1/review-result.schema.json",
+    "schemas/v1/merge-evidence.schema.json"
   ],
   "forbiddenDependencies": [
     "lifecycle-state-machine/*",
@@ -108,6 +111,24 @@
       "requiredReachableRanges": [
         "one current review-result per role per task",
         "prior review-result revisions for the same role remain queryable as SUPERSEDED history"
+      ]
+    },
+    {
+      "consumerId": "controlled-merge",
+      "expectations": [
+        "BOOT-025 can persist one ipt.merge-evidence record per task via mergeEvidenceLineageId(taskId) immediately after a merge is confirmed, and read it back via getCurrent both to finish interrupted post-merge bookkeeping and to answer a repeated call for an already-DONE task idempotently"
+      ],
+      "requiredCapabilities": [
+        "revision-bound-evidence-persistence",
+        "schema-validated-acceptance",
+        "multi-schema-record-support"
+      ],
+      "acceptedRanges": [
+        "a RecordResult with ok:true and a CURRENT StoredEvidenceRecord for the task's merge lineage",
+        "a RecordResult with ok:false and a structured EvidenceRejection"
+      ],
+      "requiredReachableRanges": [
+        "one current merge-evidence record per task, read back byte-for-byte identical to what was recorded"
       ]
     }
   ]

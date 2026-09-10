@@ -6,6 +6,7 @@ type JsonObject = Record<string, unknown>;
 const SUPPORTED_SCHEMAS = {
   "ipt.validation-evidence": "1.0.0",
   "ipt.review-result": "1.1.0",
+  "ipt.merge-evidence": "1.0.0",
 } as const;
 
 export type SupportedEvidenceSchemaId = keyof typeof SUPPORTED_SCHEMAS;
@@ -16,6 +17,7 @@ export const EVIDENCE_STORE_SUPPORTED_SCHEMAS: Readonly<Record<SupportedEvidence
 const DEFAULT_SCHEMA_RELATIVE_PATHS: Readonly<Record<SupportedEvidenceSchemaId, string>> = Object.freeze({
   "ipt.validation-evidence": "schemas/v1/validation-evidence.schema.json",
   "ipt.review-result": "schemas/v1/review-result.schema.json",
+  "ipt.merge-evidence": "schemas/v1/merge-evidence.schema.json",
 });
 
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
@@ -71,6 +73,10 @@ export function validationEvidenceLineageId(taskId: string, validatorId: string)
 
 export function reviewResultLineageId(taskId: string, role: string): string {
   return `${taskId}::role::${role}`;
+}
+
+export function mergeEvidenceLineageId(taskId: string): string {
+  return `${taskId}::merge`;
 }
 
 interface LoadedSchema {
@@ -264,6 +270,9 @@ function lineageIdFor(schemaId: SupportedEvidenceSchemaId, payload: JsonObject):
     return typeof validatorId === "string" && validatorId.trim().length > 0
       ? validationEvidenceLineageId(taskId, validatorId)
       : null;
+  }
+  if (schemaId === "ipt.merge-evidence") {
+    return mergeEvidenceLineageId(taskId);
   }
   const role = payload.role;
   return typeof role === "string" && role.trim().length > 0 ? reviewResultLineageId(taskId, role) : null;

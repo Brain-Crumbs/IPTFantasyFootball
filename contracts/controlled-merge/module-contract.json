@@ -1,0 +1,123 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.controlled-merge",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "ControlledMergeController.merge(request): Promise<ControlledMergeResult>",
+      "ControlledMergeRequest { taskId, actorId, runId, occurredAt }",
+      "ControlledMergeResult { taskId, lifecycleState: 'DONE', pullRequestNumber, sourceRevision, mergeCommitSha, evidenceLineageId, evidenceSequence }",
+      "ControlledMergeErrorCode = INVALID_REQUEST | TASK_NOT_FOUND | TASK_STATE_NOT_MERGEABLE | BRANCH_REJECTED | NOT_MERGE_READY | HEAD_CHANGED | MERGE_PROVIDER_FAILED | MERGE_NOT_CONFIRMED | EVIDENCE_REJECTED | LIFECYCLE_REJECTED | LOCK_RELEASE_FAILED | STATE_CONFLICT | STATE_IO_FAILED",
+      "ControlledMergeError { code, recoverable }",
+      "ControlledMergeBranchAdapter.canonicalBranch/assertCurrentTaskBranch/currentRevision boundary onto control-plane.git-branch-lifecycle",
+      "ControlledMergeReadinessPort.evaluate({ taskId }): Promise<EvaluateMergeReadinessResult> boundary onto control-plane.merge-readiness",
+      "ControlledMergeEvidenceStore.record(payload)/getCurrent(lineageId) boundary onto control-plane.evidence-store",
+      "ControlledMergeLockStore.get(taskId)/release(request) boundary onto control-plane.assignment-lock",
+      "ControlledMergePullRequestPort.findPullRequestByHead(head): Promise<ControlledMergePullRequestRecord | null>, any pull-request state, most recent by creation date",
+      "ControlledMergePullRequestPort.mergePullRequest({ number, expectedHeadSha }): Promise<ControlledMergeProviderResult>",
+      "ControlledMergePullRequestRecord { number, headSha, baseRef, state, merged, mergeCommitSha }",
+      "ControlledMergeProviderResult { merged, sha, message }",
+      "FileControlledMergeStateStore(root) concrete ControlledMergeStateStore over .agent/state/lifecycle/<taskId>.lifecycle.json",
+      "GitHubControlledMergePullRequestOperations(options) concrete ControlledMergePullRequestPort adapter over the GitHub REST pulls/merge endpoints",
+      "createLocalControlledMergeController(repositoryRoot, options) local composition root"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "sole-supported-merge-and-completion-transition-path",
+      "immediate-pre-merge-readiness-recheck",
+      "immediate-pre-merge-remote-head-recheck",
+      "server-side-atomic-head-verification-on-the-merge-call-itself",
+      "confirmed-merge-result-verification-before-any-lifecycle-write",
+      "revision-bound-merge-audit-evidence",
+      "idempotent-resume-after-interrupted-post-merge-bookkeeping",
+      "idempotent-return-for-an-already-done-task",
+      "best-effort-idempotent-assignment-lock-release",
+      "no-duplicate-merge-call-across-a-crash-and-resume"
+    ],
+    "behavioralConstraints": [
+      "merge() only ever acts on a task whose persisted lifecycle currentState is MERGE_READY, MERGED, or DONE; any other state is rejected as TASK_STATE_NOT_MERGEABLE before any branch, readiness, or provider call",
+      "a task already DONE returns its persisted ipt.merge-evidence record (read through control-plane.evidence-store's mergeEvidenceLineageId(taskId)) unchanged, with no branch, readiness, provider, lock, or lifecycle-state write of any kind",
+      "a task already MERGED (a prior call wrote merge evidence and the MERGED lifecycle transition but was interrupted before lock release/DONE) resumes purely from its persisted merge evidence: no branch check, no merge-readiness evaluation, and no pull-request provider call of any kind runs on this path",
+      "for a task in MERGE_READY, the canonical branch and exact current revision are resolved strictly through the unmodified control-plane.git-branch-lifecycle adapter; a Git branch mismatch or Git failure is normalized to BRANCH_REJECTED before any other check",
+      "before evaluating merge readiness, the canonical branch's pull request (any state, not only open) is looked up once; if that pull request already reports merged=true (this controller's own earlier, interrupted attempt, or an out-of-band merge), no merge-readiness evaluation and no mergePullRequest call are made — the confirmed result is verified against the task's approved revision and used to finalize directly",
+      "when the pull request is not already merged, control-plane.merge-readiness's evaluate() is invoked for the exact task; its own resolved revision is compared against the revision this controller already resolved, and any mismatch is rejected as HEAD_CHANGED before ready is even inspected",
+      "a ready=false merge-readiness result is rejected as NOT_MERGE_READY, carrying every reason's message; mergePullRequest is never called in this case",
+      "immediately before calling mergePullRequest, the pull request is looked up one more time; any change in its number, head SHA, or merged status relative to the merge-readiness result already evaluated is rejected as HEAD_CHANGED without calling the merge provider",
+      "mergePullRequest is called with the exact expected head SHA; a real GitHub adapter passes it as the merge endpoint's own sha parameter, so a head that moved between this controller's last local check and GitHub's own processing of the request is rejected server-side (HTTP 409) and mapped to HEAD_CHANGED here, never silently merging a different commit",
+      "a mergePullRequest response reporting merged=false is rejected as MERGE_NOT_CONFIRMED; no evidence is recorded and no lifecycle transition occurs, leaving the task MERGE_READY and safe to retry",
+      "a provider failure (network, HTTP, or malformed response) while finding or merging a pull request is normalized to MERGE_PROVIDER_FAILED (or, for GitHub's own 409 head-mismatch response, to HEAD_CHANGED) and leaves the task's persisted lifecycle state and evidence completely unchanged",
+      "only once a merge is confirmed (either freshly, or already-merged and read back) is exactly one ipt.merge-evidence record written, naming the task, the merged source revision, the pull-request number, the merge commit SHA, and a policyDecisionReference string; this record is written before the MERGE_READY -> MERGED lifecycle transition, so that transition's own evidenceRef always names an already-persisted record",
+      "the assignment lock is released only as a best-effort, idempotent step after the MERGED transition persists: a missing lock (LOCK_NOT_FOUND) or a lock some other actor now legitimately owns (LOCK_ID_MISMATCH) is treated as already-handled and does not fail the call; any other rejection is surfaced as LOCK_RELEASE_FAILED, which blocks the MERGED -> DONE transition but leaves the already-persisted MERGED state and evidence fully resumable on a later call",
+      "the MERGED -> DONE transition is attempted only after lock release succeeds or is treated as already-handled; a rejected DONE transition is surfaced as LIFECYCLE_REJECTED",
+      "DONE is reachable through this module only by way of a confirmed merge result feeding a persisted merge-evidence record feeding the MERGE_READY -> MERGED -> DONE lifecycle transitions; there is no path that reaches DONE from any other evidence or from a caller-supplied override"
+    ],
+    "invariants": [
+      "this is the only module the bootstrap defines that transitions a task through MERGED or to DONE; no other module writes either state",
+      "merge() never calls the merge provider more than once for the same confirmed merge: a resume after any interruption point either finds the pull request already merged (via findPullRequestByHead) or reads back already-persisted merge evidence, never re-invoking mergePullRequest",
+      "merge() never records merge evidence or writes a lifecycle transition for a merge that failed, was rejected, or was not confirmed by the provider",
+      "task-domain logic (ControlledMergeController) depends only on its typed dependency-port interfaces; it never inspects GitHub-specific response shapes or another module's internal storage layout directly",
+      "a branch, evidence, lifecycle, lock, or provider failure that occurs before a merge is confirmed always leaves the task's persisted lifecycle state exactly as it was found, so every such failure is safely retryable"
+    ],
+    "examples": [
+      "a MERGE_READY task whose merge-readiness evaluate() reports ready=true, whose pull request is still open and unmerged at the approved revision on both the initial and immediate pre-merge checks, and whose merge provider confirms merged=true transitions MERGE_READY -> MERGED -> DONE, with one ipt.merge-evidence record naming the merge commit SHA",
+      "a MERGE_READY task whose merge-readiness evaluate() reports ready=false is rejected as NOT_MERGE_READY without ever calling the merge provider, and the task remains MERGE_READY",
+      "a MERGE_READY task whose pull request's head changes between the merge-readiness evaluation and the immediate pre-merge recheck is rejected as HEAD_CHANGED without calling the merge provider",
+      "a MERGE_READY task whose pull request is discovered already merged=true (a previous call's merge provider call succeeded but this controller crashed before recording evidence) is finalized directly from that confirmed result — no merge-readiness evaluation and no second mergePullRequest call occur",
+      "a MERGED task (evidence and the MERGED transition already persisted, but lock release/DONE was interrupted) resumes purely from its persisted evidence with zero pull-request provider calls",
+      "a DONE task returns its persisted evidence unchanged on every subsequent call, with zero branch, provider, lock, or state-store writes",
+      "a merge provider call that fails outright (network error, non-2xx response) leaves the task MERGE_READY with no evidence recorded, safely retryable",
+      "an assignment lock already released by an earlier, successful completion attempt does not cause a later idempotent DONE-path call to fail"
+    ],
+    "edgeCases": [
+      "an unregistered taskId is rejected as TASK_NOT_FOUND",
+      "a non-schema-valid taskId, or an empty/untrimmed actorId, runId, or occurredAt, is rejected as INVALID_REQUEST before any dependency is touched",
+      "a task in any lifecycle state other than MERGE_READY, MERGED, or DONE (for example IN_DEVELOPMENT or QA_REVIEW) is rejected as TASK_STATE_NOT_MERGEABLE",
+      "a Git branch mismatch reported by the branch adapter is normalized to BRANCH_REJECTED rather than propagating a raw BranchLifecycleError",
+      "a merge-readiness evaluate() call that itself throws is normalized to MERGE_PROVIDER_FAILED",
+      "a merge-readiness result whose own resolved revision differs from the revision this controller already resolved is rejected as HEAD_CHANGED before ready is inspected",
+      "a confirmed already-merged pull request whose head SHA does not match the approved revision is rejected as HEAD_CHANGED rather than finalized against an unapproved commit",
+      "a confirmed already-merged pull request reporting merged=true with no merge commit SHA is rejected as MERGE_NOT_CONFIRMED",
+      "a MERGED task with no persisted merge evidence at all (a state this module's own writes never produce, since evidence is always recorded before the MERGED transition persists) is rejected as EVIDENCE_REJECTED rather than silently completing without an audit trail",
+      "rejected merge evidence (a schema-validation failure) is surfaced as EVIDENCE_REJECTED and blocks the lifecycle transition entirely",
+      "a lock-release rejection other than LOCK_NOT_FOUND/LOCK_ID_MISMATCH is surfaced as LOCK_RELEASE_FAILED, which still leaves the already-persisted MERGED state and evidence resumable"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.task-registry",
+    "control-plane.git-branch-lifecycle",
+    "control-plane.lifecycle-state-machine",
+    "control-plane.evidence-store",
+    "control-plane.assignment-lock",
+    "control-plane.merge-readiness",
+    "control-plane.pr-lifecycle (PullRequestProviderError type reuse only)",
+    "global fetch"
+  ],
+  "forbiddenDependencies": [
+    "agent-provider/*",
+    "fantasy-product/*",
+    "ci-enforcement/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-agent-runner-and-orchestration",
+      "expectations": [
+        "BOOT-026+ can drive a MERGE_READY task to DONE by calling merge() once per attempt, trusting NOT_MERGE_READY/HEAD_CHANGED/MERGE_PROVIDER_FAILED/MERGE_NOT_CONFIRMED as exact, safely-retryable reasons a call did not reach DONE, without the orchestrator itself needing to re-derive merge readiness, re-check the pull request head, or track whether a prior attempt already merged"
+      ],
+      "requiredCapabilities": [
+        "sole-supported-merge-and-completion-transition-path",
+        "idempotent-resume-after-interrupted-post-merge-bookkeeping",
+        "no-duplicate-merge-call-across-a-crash-and-resume"
+      ],
+      "acceptedRanges": [
+        "a ControlledMergeResult with lifecycleState 'DONE' for a task that was MERGE_READY, MERGED, or DONE on entry",
+        "a thrown ControlledMergeError whose code and recoverable flag say whether retrying merge() unchanged can succeed"
+      ],
+      "requiredReachableRanges": [
+        "DONE is reachable for a task whose merge-readiness genuinely holds and whose pull request genuinely merges",
+        "every non-DONE outcome leaves the task's persisted lifecycle state unchanged from what merge() observed on entry, except a lock-release failure, which leaves it at MERGED with evidence already persisted"
+      ]
+    }
+  ]
+}
