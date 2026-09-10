@@ -22,11 +22,14 @@ Implemented foundation through the task-start boundary:
 - BOOT-017 — Generic review framework and structured findings
 - BOOT-018 — QA review workflow
 - BOOT-019 — Architecture / semantic dependency review
-- **Current implementation task: BOOT-020 — UAT / product-intent review / issue #22**
-- Canonical BOOT-020 branch: `bootstrap/boot-020-uat-review`
+- BOOT-020 — UAT / product-intent review
+- **Current implementation task: BOOT-021 — Review rework and approval invalidation loop / issue #23**
+- Canonical BOOT-021 branch: `bootstrap/boot-021-review-rework`
 - Bootstrap marker: see [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION)
 
 The repository-native control plane can now load and order tasks, evaluate next-task eligibility, enforce lifecycle transition prerequisites, acquire assignment locks, ensure canonical local branches, resolve exact source revision, compile bounded Developer context, and compose those capabilities through `agent start <owner-id> <run-id>`. It can also deterministically gate `IN_DEVELOPMENT -> DEV_VALIDATED`/`DEV_VALIDATION_FAILED` through `agent validate <task-id> <actor-id> <run-id>`, bind/persist an already-decided role judgment through the generic review framework, and drive the full independent review pipeline: `QaReviewGate.review()` advances `DEV_VALIDATED -> QA_REVIEW -> {ARCHITECTURE_REVIEW | UAT_REVIEW | MERGE_READY}` on QA `PASS` or `-> QA_FAILED` otherwise; `ArchitectureReviewGate.review()` advances `ARCHITECTURE_REVIEW -> {UAT_REVIEW | MERGE_READY}` on Architecture `PASS` or `-> ARCHITECTURE_FAILED` otherwise; and `UatReviewGate.review()` advances `UAT_REVIEW -> MERGE_READY` on UAT `PASS` (UAT/Product is always the last review stage) or `-> UAT_FAILED` otherwise.
+
+BOOT-021 closes the loop those gates leave open: `ReviewReworkGate.enterRework()` drives the BOOT-009-declared-but-previously-undriven `QA_FAILED`/`ARCHITECTURE_FAILED`/`UAT_FAILED -> REWORK_REQUIRED` transition, binding it to the exact failed review-result evidence rather than copying its findings; `ReviewReworkGate.resumeDevelopment()` drives `REWORK_REQUIRED -> IN_DEVELOPMENT` so the developer-validation and review gates can run again for the next revision; and the read-only `ReviewReworkGate.getApprovalStatus()` reports, per role, whether its current evidence is `NONE`, `STALE` (bound to a revision that is not the task's exact current revision — including after a metadata-only commit, since the policy is deliberately coarse and whole-revision rather than diff-aware), or `CURRENT`, making the revision-bound invalidation policy every earlier gate already enforces lazily into a single documented, queryable, and tested answer.
 
 BOOT-013 is a start-only workflow. It does not run deterministic developer validation, invoke an AI provider, execute independent reviews, create/manage pull requests, merge, or establish completion. Those remain later BOOT responsibilities.
 
