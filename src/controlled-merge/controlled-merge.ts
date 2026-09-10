@@ -12,6 +12,7 @@ import {
 import {
   createLifecycleRecord,
   transitionLifecycle,
+  type LifecycleHistoryEvent,
   type LifecycleRecord,
   type ReviewRole,
 } from "../lifecycle/index.js";
@@ -30,7 +31,7 @@ import {
 } from "../task-registry/index.js";
 
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
-const RFC3339_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i;
+const RFC3339_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/i;
 const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
 const DEFAULT_INTEGRATION_TARGET = "main";
@@ -86,7 +87,7 @@ export class ControlledMergeController {
     // before the lock is ever acquired.
     const precheck = this.dependencies.stateStore.get(task.taskId);
     if (precheck !== null && precheck.currentState === "DONE") {
-      return this.finishedResult(task.taskId);
+      return this.finishedResult(precheck);
     }
 
     // Holds the lock across the entire read-decide-write critical section,
@@ -103,17 +104,29 @@ export class ControlledMergeController {
     const record = this.dependencies.stateStore.get(task.taskId) ?? createLifecycleRecord(task.taskId);
 
     if (record.currentState === "DONE") {
-      return this.finishedResult(task.taskId);
+      return this.finishedResult(record);
     }
 
     // Captured once, before any provider call, so completion only ever
-    // releases the exact lock identity this call observed at entry — never
-    // a lock some other actor has since legitimately reacquired.
+    // releases the exact assignment identity this call observed at entry —
+    // never a lock some other actor has since legitimately reacquired. The
+    // assignment-lock contract does not guarantee lockId is never reused
+    // across acquisitions, so the full identity (lockId, ownerId, runId,
+    // canonicalBranch) is captured and later compared in full, not lockId
+    // alone.
     const lockSnapshot = this.dependencies.lockStore.get(task.taskId);
-    const lockIdToRelease = lockSnapshot !== null && lockSnapshot.status === "ACTIVE" ? lockSnapshot.lockId : null;
+    const lockIdentityToRelease: LockIdentity | null =
+      lockSnapshot !== null && lockSnapshot.status === "ACTIVE"
+        ? {
+            lockId: lockSnapshot.lockId,
+            ownerId: lockSnapshot.ownerId,
+            runId: lockSnapshot.runId,
+            canonicalBranch: lockSnapshot.canonicalBranch,
+          }
+        : null;
 
     if (record.currentState === "MERGED") {
-      return this.resumeBookkeeping(task, record, request, lockIdToRelease);
+      return this.resumeBookkeeping(task, record, request, lockIdentityToRelease);
     }
 
     if (record.currentState !== "MERGE_READY") {
@@ -133,7 +146,16 @@ export class ControlledMergeController {
     const head = this.dependencies.branchLifecycle.canonicalBranch(task);
     const integrationTarget = this.dependencies.integrationTarget ?? DEFAULT_INTEGRATION_TARGET;
 
-    const existing = await this.findPullRequest(task.taskId, head);
+    // Searches every pull request for this branch, in any state — not only
+    // the single most-recent one — so a stray, unrelated PR (for example a
+    // closed one against a different base, created more recently than the
+    // genuinely approved one) can never hide the actual merged PR this task
+    // approved: if this exact process's own prior attempt already merged
+    // it and then crashed before recording evidence, that merged PR must
+    // still be found here even when it is no longer the most-recent PR for
+    // the branch.
+    const candidates = await this.findPullRequests(task.taskId, head);
+    const existing = candidates.find((pr) => pr.merged && pr.headSha === revision) ?? null;
     // Trust an already-merged pull request as a confirmed prior result only
     // when this task's own lifecycle history still binds its MERGE_READY
     // transition to the exact current revision and the merged PR's base
@@ -143,17 +165,13 @@ export class ControlledMergeController {
     // reports PULL_REQUEST_NOT_FOUND) rather than trusting a stale binding or
     // a PR merged into the wrong base.
     const mergeReadyForRevision = hasHistoryEventBoundToRevision(record, "MERGE_READY", revision);
-    if (existing !== null && existing.merged && mergeReadyForRevision && existing.baseRef === integrationTarget) {
+    if (existing !== null && mergeReadyForRevision && existing.baseRef === integrationTarget) {
       // A prior attempt's merge provider call already succeeded (this exact
       // process crashed before recording evidence/transitioning, or the PR
       // was merged out of band); never call the merge endpoint again for a
       // revision this task's own MERGE_READY-for-revision approval covers.
-      if (existing.headSha !== revision) {
-        throw new ControlledMergeError(
-          "HEAD_CHANGED",
-          `Task '${task.taskId}' pull request #${existing.number} was merged at head '${existing.headSha}', not the approved revision '${revision}'.`,
-        );
-      }
+      // (existing.merged and existing.headSha === revision are already
+      // guaranteed by the find() predicate above.)
       if (existing.mergeCommitSha === null) {
         throw new ControlledMergeError(
           "MERGE_NOT_CONFIRMED",
@@ -166,7 +184,7 @@ export class ControlledMergeController {
         mergeCommitSha: existing.mergeCommitSha,
         policyDecisionReference: `control-plane.merge-readiness:${task.taskId}@${revision}:previously-confirmed`,
         request,
-        lockIdToRelease,
+        lockIdentityToRelease,
       });
     }
 
@@ -205,7 +223,7 @@ export class ControlledMergeController {
     // landing in the gap between the readiness evaluation above and this
     // call must be detected locally even before the provider's own atomic
     // head check. Fetching by number (rather than re-running the
-    // any-state/most-recent-by-head lookup findPullRequestByHead uses) is
+    // any-state/most-recent-by-head lookup findPullRequestsByHead uses) is
     // deliberate: a branch can legitimately have more than one pull request
     // across its history (for example a stray closed PR against a
     // different base, created more recently than the genuinely open,
@@ -252,13 +270,13 @@ export class ControlledMergeController {
       mergeCommitSha: mergeResult.sha,
       policyDecisionReference: `control-plane.merge-readiness:${task.taskId}@${revision}:ready`,
       request,
-      lockIdToRelease,
+      lockIdentityToRelease,
     });
   }
 
-  private async findPullRequest(taskId: string, head: string): Promise<ControlledMergePullRequestRecord | null> {
+  private async findPullRequests(taskId: string, head: string): Promise<readonly ControlledMergePullRequestRecord[]> {
     try {
-      return await this.dependencies.pullRequests.findPullRequestByHead(head);
+      return await this.dependencies.pullRequests.findPullRequestsByHead(head);
     } catch (error: unknown) {
       throw normalizeProviderError(taskId, error);
     }
@@ -273,10 +291,10 @@ export class ControlledMergeController {
       readonly mergeCommitSha: string;
       readonly policyDecisionReference: string;
       readonly request: ControlledMergeRequest;
-      readonly lockIdToRelease: string | null;
+      readonly lockIdentityToRelease: LockIdentity | null;
     },
   ): ControlledMergeResult {
-    const { revision, pullRequestNumber, mergeCommitSha, policyDecisionReference, request, lockIdToRelease } = params;
+    const { revision, pullRequestNumber, mergeCommitSha, policyDecisionReference, request, lockIdentityToRelease } = params;
 
     // A prior attempt may have already recorded evidence for this exact
     // confirmed merge and then crashed before persisting the MERGE_READY ->
@@ -286,7 +304,7 @@ export class ControlledMergeController {
     // one — keeps the "exactly one ipt.merge-evidence record per confirmed
     // merge" invariant true even across that crash window.
     const lineageId = mergeEvidenceLineageId(task.taskId);
-    const existingEvidence = this.dependencies.evidenceStore.getCurrent(lineageId);
+    const existingEvidence = this.getCurrentEvidence(task.taskId, lineageId);
     const reusable =
       existingEvidence !== null &&
       existingEvidence.payload.revisionIdentity === revision &&
@@ -310,7 +328,24 @@ export class ControlledMergeController {
         policyDecisionReference,
         recordedAt: request.occurredAt,
       };
-      const recorded = this.dependencies.evidenceStore.record(evidencePayload);
+      // The provider has already, irreversibly, merged the pull request by
+      // this point; a filesystem failure here (a full disk, an unwritable
+      // evidence directory) must never propagate as a raw, uncaught
+      // exception — it is normalized to EVIDENCE_REJECTED like every other
+      // rejection this method can produce, and (unlike a genuine
+      // schema-validation rejection) marked recoverable, since the
+      // already-confirmed merge remains safely resumable once the
+      // underlying I/O problem clears.
+      let recorded: RecordResult;
+      try {
+        recorded = this.dependencies.evidenceStore.record(evidencePayload);
+      } catch (error: unknown) {
+        throw new ControlledMergeError(
+          "EVIDENCE_REJECTED",
+          `Task '${task.taskId}' merge evidence could not be persisted after a confirmed merge: ${detail(error)}`,
+          true,
+        );
+      }
       if (!recorded.ok) {
         throw new ControlledMergeError(
           "EVIDENCE_REJECTED",
@@ -352,7 +387,7 @@ export class ControlledMergeController {
       revision,
       evidenceLineageId,
       evidenceSequence,
-      lockIdToRelease,
+      lockIdentityToRelease,
     });
   }
 
@@ -360,17 +395,9 @@ export class ControlledMergeController {
     task: RegisteredTask,
     record: LifecycleRecord,
     request: ControlledMergeRequest,
-    lockIdToRelease: string | null,
+    lockIdentityToRelease: LockIdentity | null,
   ): ControlledMergeResult {
-    const lineageId = mergeEvidenceLineageId(task.taskId);
-    const evidence = this.dependencies.evidenceStore.getCurrent(lineageId);
-    if (evidence === null) {
-      throw new ControlledMergeError(
-        "EVIDENCE_REJECTED",
-        `Task '${task.taskId}' is MERGED but has no persisted merge evidence to resume completion from.`,
-        false,
-      );
-    }
+    const evidence = this.resolvePinnedEvidence(task.taskId, record, "MERGED");
     const payload = evidence.payload as {
       readonly pullRequestNumber: number;
       readonly mergeCommitSha: string;
@@ -382,7 +409,7 @@ export class ControlledMergeController {
       revision: payload.revisionIdentity,
       evidenceLineageId: evidence.lineageId,
       evidenceSequence: evidence.sequence,
-      lockIdToRelease,
+      lockIdentityToRelease,
     });
   }
 
@@ -396,10 +423,10 @@ export class ControlledMergeController {
       readonly revision: string;
       readonly evidenceLineageId: string;
       readonly evidenceSequence: number;
-      readonly lockIdToRelease: string | null;
+      readonly lockIdentityToRelease: LockIdentity | null;
     },
   ): ControlledMergeResult {
-    this.releaseLockIfPresent(task.taskId, request, details.lockIdToRelease);
+    this.releaseLockIfPresent(task.taskId, request, details.lockIdentityToRelease);
 
     const doneTransition = transitionLifecycle(record, {
       taskId: task.taskId,
@@ -434,23 +461,15 @@ export class ControlledMergeController {
     });
   }
 
-  private finishedResult(taskId: string): ControlledMergeResult {
-    const lineageId = mergeEvidenceLineageId(taskId);
-    const evidence = this.dependencies.evidenceStore.getCurrent(lineageId);
-    if (evidence === null) {
-      throw new ControlledMergeError(
-        "EVIDENCE_REJECTED",
-        `Task '${taskId}' is DONE but has no persisted merge evidence.`,
-        false,
-      );
-    }
+  private finishedResult(record: LifecycleRecord): ControlledMergeResult {
+    const evidence = this.resolvePinnedEvidence(record.taskId, record, "DONE");
     const payload = evidence.payload as {
       readonly pullRequestNumber: number;
       readonly mergeCommitSha: string;
       readonly revisionIdentity: string;
     };
     return Object.freeze({
-      taskId,
+      taskId: record.taskId,
       lifecycleState: "DONE",
       pullRequestNumber: payload.pullRequestNumber,
       sourceRevision: payload.revisionIdentity,
@@ -460,25 +479,98 @@ export class ControlledMergeController {
     });
   }
 
+  // Reads the exact evidence record the task's own lifecycle history names
+  // for the given transition (`${lineageId}@${sequence}` parsed from that
+  // history event's evidenceRef) rather than whatever getCurrent() reports
+  // as the lineage's current record right now — see parseEvidenceRef's doc
+  // comment for why that distinction matters. Used to resume a MERGED task's
+  // bookkeeping and to answer an already-DONE task's idempotent read.
+  private resolvePinnedEvidence(taskId: string, record: LifecycleRecord, toState: "MERGED" | "DONE"): StoredEvidenceRecord {
+    const event = latestHistoryEventToState(record, toState);
+    if (event === null) {
+      throw new ControlledMergeError(
+        "EVIDENCE_REJECTED",
+        `Task '${taskId}' is ${toState} but has no ${toState} lifecycle-history event to resolve evidence from.`,
+        false,
+      );
+    }
+    const parsed = parseEvidenceRef(event.evidenceRef);
+    if (parsed === null) {
+      throw new ControlledMergeError(
+        "EVIDENCE_REJECTED",
+        `Task '${taskId}' ${toState} lifecycle-history event has a malformed evidenceRef '${event.evidenceRef}'.`,
+        false,
+      );
+    }
+    let history: readonly StoredEvidenceRecord[];
+    try {
+      history = this.dependencies.evidenceStore.getHistory(parsed.lineageId);
+    } catch (error: unknown) {
+      throw new ControlledMergeError(
+        "EVIDENCE_REJECTED",
+        `Task '${taskId}' merge evidence history could not be read: ${detail(error)}`,
+        true,
+      );
+    }
+    const exact = history.find((entry) => entry.sequence === parsed.sequence);
+    if (exact === undefined) {
+      throw new ControlledMergeError(
+        "EVIDENCE_REJECTED",
+        `Task '${taskId}' evidence record '${event.evidenceRef}' named by its ${toState} lifecycle-history event no longer exists.`,
+        false,
+      );
+    }
+    return exact;
+  }
+
+  // Normalizes a raw filesystem/I/O throw from the evidence store's
+  // getCurrent() (used only by finalize()'s reuse check, which has no
+  // lifecycle history to pin to yet) into a ControlledMergeError, matching
+  // resolvePinnedEvidence's own normalization for the resume/idempotent
+  // read paths.
+  private getCurrentEvidence(taskId: string, lineageId: string): StoredEvidenceRecord | null {
+    try {
+      return this.dependencies.evidenceStore.getCurrent(lineageId);
+    } catch (error: unknown) {
+      throw new ControlledMergeError(
+        "EVIDENCE_REJECTED",
+        `Task '${taskId}' merge evidence could not be read: ${detail(error)}`,
+        true,
+      );
+    }
+  }
+
   // Lock release is best-effort and idempotent, but only ever touches the
-  // exact lock identity `lockIdToRelease` this call itself captured at entry
-  // (before any provider call) — never whatever lock happens to be active
-  // *now*. If that lock is already gone, or a different lock is now active
-  // (reassigned by an explicit stale-recovery operation, or claimed by a
-  // fresh assignment, while this call was in flight), that lock belongs to
-  // someone else's legitimate assignment and is left untouched rather than
-  // released.
-  private releaseLockIfPresent(taskId: string, request: ControlledMergeRequest, lockIdToRelease: string | null): void {
-    if (lockIdToRelease === null) {
+  // exact assignment identity `lockIdentityToRelease` this call itself
+  // captured at entry (before any provider call) — never whatever lock
+  // happens to be active *now*. Comparing lockId alone would not be enough:
+  // the assignment-lock contract does not guarantee a lockId is never reused
+  // by a later acquisition once released, so the full identity (lockId,
+  // ownerId, runId, canonicalBranch) must match before this call trusts that
+  // the currently active lock is still the same one it observed. If that
+  // lock is already gone, or a different — or merely differently-owned —
+  // lock is now active (reassigned by an explicit stale-recovery operation,
+  // or claimed by a fresh assignment, while this call was in flight), that
+  // lock belongs to someone else's legitimate assignment and is left
+  // untouched rather than released.
+  private releaseLockIfPresent(taskId: string, request: ControlledMergeRequest, lockIdentityToRelease: LockIdentity | null): void {
+    if (lockIdentityToRelease === null) {
       return;
     }
     const current = this.dependencies.lockStore.get(taskId);
-    if (current === null || current.status !== "ACTIVE" || current.lockId !== lockIdToRelease) {
+    if (
+      current === null ||
+      current.status !== "ACTIVE" ||
+      current.lockId !== lockIdentityToRelease.lockId ||
+      current.ownerId !== lockIdentityToRelease.ownerId ||
+      current.runId !== lockIdentityToRelease.runId ||
+      current.canonicalBranch !== lockIdentityToRelease.canonicalBranch
+    ) {
       return;
     }
     const result: LockResult = this.dependencies.lockStore.release({
       taskId,
-      lockId: lockIdToRelease,
+      lockId: lockIdentityToRelease.lockId,
       actorId: request.actorId,
       runId: request.runId,
       occurredAt: request.occurredAt,
@@ -555,6 +647,17 @@ export interface ControlledMergeReadinessPort {
 export interface ControlledMergeEvidenceStore {
   record(payload: unknown): RecordResult;
   getCurrent(lineageId: string): StoredEvidenceRecord | null;
+  getHistory(lineageId: string): readonly StoredEvidenceRecord[];
+}
+
+// Captured once at merge() entry and compared in full (never lockId alone)
+// before completion releases an assignment lock — see releaseLockIfPresent's
+// doc comment for why lockId alone is not a safe-enough identity check.
+export interface LockIdentity {
+  readonly lockId: string;
+  readonly ownerId: string;
+  readonly runId: string;
+  readonly canonicalBranch: string;
 }
 
 export interface ControlledMergeLockStore {
@@ -590,7 +693,7 @@ export interface ControlledMergeProviderResult {
 }
 
 export interface ControlledMergePullRequestPort {
-  findPullRequestByHead(head: string): Promise<ControlledMergePullRequestRecord | null>;
+  findPullRequestsByHead(head: string): Promise<readonly ControlledMergePullRequestRecord[]>;
   getPullRequest(number: number): Promise<ControlledMergePullRequestRecord | null>;
   mergePullRequest(params: MergePullRequestParams): Promise<ControlledMergeProviderResult>;
 }
@@ -731,27 +834,76 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
 
   // Rewrites the lock file with a fresh timestamp (same random suffix, so
   // the token this holder tracks stays recognizably its own) only while it
-  // still actually owns the file; if the file no longer holds the token
-  // this holder last wrote, another process has already reclaimed it as
-  // stale (a heartbeat interval longer than staleLockMs, or a very slow
-  // process pause, could still race this) and there is nothing left to
-  // refresh.
+  // still actually owns the file. This must be ownership-atomic, not a bare
+  // read-then-write: a plain overwrite could otherwise land in the gap
+  // between another process's stale-reclaim rename (which momentarily
+  // removes the file) and that process's own fresh tryCreate, silently
+  // clobbering the new holder's token — after which both processes believe
+  // they alone hold the lock. Renaming the lock path away first (an atomic
+  // "claim," identical in spirit to reclaimIfStale's own technique) makes
+  // this holder's continued ownership provable: the rename only succeeds if
+  // the file still exists at that path, and only this refresh (or a
+  // concurrent reclaim) ever touches it. If the file no longer holds the
+  // token this holder last wrote — another process has already reclaimed it
+  // as stale (a heartbeat interval longer than staleLockMs, or a very slow
+  // process pause, could still race this) — there is nothing left to
+  // refresh, and this holder must stop touching the lock file entirely; the
+  // eventual release() call then correctly no-ops, since its own content
+  // check will not match this holder's last-known token.
   private refresh(lockPath: string, currentToken: string): string {
-    let observed: string | null;
+    const claimPath = `${lockPath}.heartbeat-${randomLockToken()}`;
     try {
-      observed = readFileSync(lockPath, "utf8");
-    } catch {
-      observed = null;
-    }
-    if (observed !== currentToken) return currentToken;
-    const randomPart = currentToken.slice(currentToken.indexOf(":") + 1);
-    const refreshed = `${Date.now()}:${randomPart}`;
-    try {
-      writeFileSync(lockPath, refreshed, { encoding: "utf8" });
-      return refreshed;
+      renameSync(lockPath, claimPath);
     } catch {
       return currentToken;
     }
+
+    let observed: string | null;
+    try {
+      observed = readFileSync(claimPath, "utf8");
+    } catch {
+      observed = null;
+    }
+    if (observed !== currentToken) {
+      // Should not normally happen (this holder's own rename just captured
+      // whatever was at lockPath), but if it does, restore that content
+      // rather than discarding someone else's lock state.
+      if (observed !== null) {
+        try {
+          writeFileSync(lockPath, observed, { encoding: "utf8", flag: "wx" });
+        } catch {
+          // A fresh lock now exists at lockPath; nothing to restore onto.
+        }
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return currentToken;
+    }
+
+    const randomPart = currentToken.slice(currentToken.indexOf(":") + 1);
+    const refreshed = `${Date.now()}:${randomPart}`;
+    try {
+      writeFileSync(lockPath, refreshed, { encoding: "utf8", flag: "wx" });
+    } catch {
+      // Another process created its own fresh lock at lockPath in the gap
+      // this rename opened; this holder has lost ownership and must not
+      // restore its own (now-stale) content over it.
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return currentToken;
+    }
+    try {
+      unlinkSync(claimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    return refreshed;
   }
 
   private release(lockPath: string, token: string): void {
@@ -845,6 +997,10 @@ function randomLockToken(): string {
   return Math.random().toString(36).slice(2);
 }
 
+function detail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
     ? String((error as { code?: unknown }).code)
@@ -865,13 +1021,15 @@ export interface GitHubControlledMergePullRequestOperationsOptions {
 
 /**
  * Concrete `ControlledMergePullRequestPort` implementation over the GitHub
- * REST API. `findPullRequestByHead` searches all pull-request states (not
- * only `open`) so a pull request that was already merged — by this
- * controller's own prior, interrupted attempt or out of band — is still
- * discovered and its `merged`/`merge_commit_sha` fields trusted, rather than
- * only ever seeing a merged PR as "not found". `mergePullRequest` passes the
- * expected head SHA to GitHub's own merge endpoint, which atomically rejects
- * the request server-side (HTTP 409) if the pull request's head has moved —
+ * REST API. `findPullRequestsByHead` searches all pull-request states (not
+ * only `open`) and returns every match (not only the most recent) so a
+ * pull request that was already merged — by this controller's own prior,
+ * interrupted attempt or out of band — is still discovered and its
+ * `merged`/`merge_commit_sha` fields trusted even when an unrelated, more
+ * recently created PR (for example a stray closed one against a different
+ * base) shares the same head branch. `mergePullRequest` passes the expected
+ * head SHA to GitHub's own merge endpoint, which atomically rejects the
+ * request server-side (HTTP 409) if the pull request's head has moved —
  * mapped to `HEAD_CHANGED` here rather than a generic provider failure.
  */
 export class GitHubControlledMergePullRequestOperations implements ControlledMergePullRequestPort {
@@ -892,14 +1050,21 @@ export class GitHubControlledMergePullRequestOperations implements ControlledMer
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async findPullRequestByHead(head: string): Promise<ControlledMergePullRequestRecord | null> {
-    const query = `state=all&head=${encodeURIComponent(`${this.owner}:${head}`)}&sort=created&direction=desc&per_page=1`;
+  // Returns every pull request matching this head branch, in any state, in
+  // descending creation order — never only the single most recent one — so
+  // a caller scanning for a specific already-merged candidate (see
+  // ControlledMergeController's own use) can never have that candidate
+  // hidden behind an unrelated, more-recently-created PR sharing the same
+  // branch. Capped at 100 per page (GitHub's own maximum): a single branch
+  // realistically never accumulates more pull requests across its history
+  // than that.
+  async findPullRequestsByHead(head: string): Promise<readonly ControlledMergePullRequestRecord[]> {
+    const query = `state=all&head=${encodeURIComponent(`${this.owner}:${head}`)}&sort=created&direction=desc&per_page=100`;
     const data = await this.request("GET", `/repos/${this.owner}/${this.repo}/pulls?${query}`);
     if (!Array.isArray(data)) {
       throw new PullRequestProviderError("PROVIDER_ERROR", "GitHub pulls list response was not an array.");
     }
-    if (data.length === 0) return null;
-    return toRecord(data[0]);
+    return Object.freeze(data.map((entry) => toRecord(entry)));
   }
 
   // Fetches the single pull request identified by number, unambiguously —
@@ -926,7 +1091,7 @@ export class GitHubControlledMergePullRequestOperations implements ControlledMer
       throw new PullRequestProviderError("PROVIDER_ERROR", "GitHub pull-request merge response is missing required fields.");
     }
     const sha = data.sha;
-    if (data.merged && typeof sha !== "string") {
+    if (data.merged && (typeof sha !== "string" || sha.length === 0)) {
       throw new PullRequestProviderError("PROVIDER_ERROR", "GitHub pull-request merge response reported merged=true with no sha.");
     }
     return Object.freeze({ merged: data.merged, sha: typeof sha === "string" ? sha : "", message: data.message });
@@ -999,7 +1164,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// GitHub's "List pull requests" response (used by findPullRequestByHead, so
+// GitHub's "List pull requests" response (used by findPullRequestsByHead, so
 // that an already-merged PR is discoverable at all via state=all) exposes
 // `merged_at`, not the `merged` boolean field — that field is only present
 // on the "Get a pull request" single-resource response. Deriving `merged`
@@ -1140,10 +1305,13 @@ function validateRequest(request: ControlledMergeRequest): void {
   }
 }
 
-// Mirrors control-plane.evidence-store's own isValidRfc3339DateTime exactly:
-// the regex plus Date.parse() alone cannot reject an out-of-range calendar
-// date (Date.parse silently rolls Feb 30 forward into March), so component
-// ranges are checked explicitly.
+// Mirrors control-plane.evidence-store's own isValidRfc3339DateTime exactly
+// (including the timezone-offset-range check, since both share this exact
+// gap otherwise): the regex plus Date.parse() alone cannot reject an
+// out-of-range calendar date (Date.parse silently rolls Feb 30 forward into
+// March) or an out-of-range numeric offset like "+24:00"/"+01:60", so
+// component ranges are checked explicitly for the date, local time, and any
+// numeric offset alike.
 function isValidRfc3339DateTime(value: string): boolean {
   const match = RFC3339_PATTERN.exec(value);
   if (!match) return false;
@@ -1160,6 +1328,14 @@ function isValidRfc3339DateTime(value: string): boolean {
   if (hour > 23) return false;
   if (minute > 59) return false;
   if (second > 59) return false;
+
+  if (match[7] !== undefined) {
+    const offsetHour = Number(match[8]);
+    const offsetMinute = Number(match[9]);
+    if (offsetHour > 23) return false;
+    if (offsetMinute > 59) return false;
+  }
+
   return true;
 }
 
@@ -1168,13 +1344,34 @@ function isLeapYear(year: number): boolean {
 }
 
 function hasHistoryEventBoundToRevision(record: LifecycleRecord, toState: TaskLifecycleState, revision: string): boolean {
+  return latestHistoryEventToState(record, toState)?.revisionIdentity === revision;
+}
+
+function latestHistoryEventToState(record: LifecycleRecord, toState: TaskLifecycleState): LifecycleHistoryEvent | null {
   for (let index = record.history.length - 1; index >= 0; index -= 1) {
     const event = record.history[index];
-    if (event !== undefined && event.toState === toState && event.revisionIdentity === revision) {
-      return true;
+    if (event !== undefined && event.toState === toState) {
+      return event;
     }
   }
-  return false;
+  return null;
+}
+
+// The lifecycle history event that recorded a MERGED/DONE transition carries
+// an evidenceRef of the exact form `${lineageId}@${sequence}` (see
+// finalize()'s own transitionLifecycle() calls). Parsing it back and pinning
+// resume/idempotent-read logic to that *exact* sequence — rather than
+// whatever getCurrent() reports as the lineage's current record right now —
+// mirrors BOOT-021's own parseFailureEvidenceRef/rework-binding pattern: a
+// hypothetical later write to the same lineage (an administrative repair, a
+// future bug) must never silently change what an already-persisted MERGED
+// or DONE transition is understood to describe.
+function parseEvidenceRef(ref: string): { readonly lineageId: string; readonly sequence: number } | null {
+  const at = ref.lastIndexOf("@");
+  if (at <= 0) return null;
+  const sequence = Number(ref.slice(at + 1));
+  if (!Number.isInteger(sequence) || sequence <= 0) return null;
+  return { lineageId: ref.slice(0, at), sequence };
 }
 
 function isLifecycleState(value: unknown): value is TaskLifecycleState {

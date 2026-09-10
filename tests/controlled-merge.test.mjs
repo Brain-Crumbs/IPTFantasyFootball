@@ -39,6 +39,20 @@ const task = Object.freeze({
 
 const registry = new Map([[task.taskId, task]]);
 
+function historyEventFor(toState, evidenceRecord, overrides = {}) {
+  return {
+    eventId: `e-${toState}`,
+    taskId: task.taskId,
+    fromState: toState === "MERGED" ? "MERGE_READY" : "MERGED",
+    toState,
+    occurredAt,
+    reason: "r",
+    evidenceRef: `${evidenceRecord.lineageId}@${evidenceRecord.sequence}`,
+    revisionIdentity: revision,
+    ...overrides,
+  };
+}
+
 function lifecycleRecord(taskId, currentState, history = []) {
   return Object.freeze({
     schemaId: "ipt.lifecycle-state",
@@ -194,11 +208,16 @@ class FakePullRequestPort {
     this.mergeCalls = 0;
   }
 
-  async findPullRequestByHead() {
+  // Returns the full configured candidate set every call (matching the real
+  // adapter's "every matching PR, in any state" contract) rather than
+  // indexing by call count — findPullRequestsByHead is now called at most
+  // once per merge() attempt (the recheck uses getPullRequest by number
+  // instead), so there is no "second call sees a different result" case to
+  // simulate here.
+  async findPullRequestsByHead() {
     this.findCalls += 1;
     if (this.findError) throw this.findError;
-    const index = Math.min(this.findCalls - 1, this.existing.length - 1);
-    return this.existing[index] ?? null;
+    return this.existing;
   }
 
   // Defaults to the last configured `existing` entry (unchanged since the
@@ -354,7 +373,7 @@ test("merge succeeds but bookkeeping is interrupted before evidence is written; 
 
 test("resuming from an already-persisted MERGED state finishes bookkeeping with no provider calls at all", async () => {
   const { store: evidence } = makeEvidenceStore();
-  evidence.record({
+  const recorded = evidence.record({
     schemaId: "ipt.merge-evidence",
     schemaVersion: "1.0.0",
     evidenceId: `${task.taskId}:merge:${revision}:${occurredAt}`,
@@ -365,8 +384,11 @@ test("resuming from an already-persisted MERGED state finishes bookkeeping with 
     policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
     recordedAt: occurredAt,
   });
+  assert.equal(recorded.ok, true);
 
-  const stateStore = new MemoryStateStore([[task.taskId, lifecycleRecord(task.taskId, "MERGED")]]);
+  const stateStore = new MemoryStateStore([
+    [task.taskId, lifecycleRecord(task.taskId, "MERGED", [historyEventFor("MERGED", recorded.record)])],
+  ]);
   const pullRequests = new FakePullRequestPort({});
   const readiness = new FakeMergeReadinessPort(readyResult());
   const { controller, state, lock } = makeController({ stateStore, evidenceStore: evidence, pullRequests, readiness });
@@ -384,7 +406,7 @@ test("resuming from an already-persisted MERGED state finishes bookkeeping with 
 
 test("a task already DONE returns its persisted evidence idempotently with no further writes", async () => {
   const { store: evidence } = makeEvidenceStore();
-  evidence.record({
+  const recorded = evidence.record({
     schemaId: "ipt.merge-evidence",
     schemaVersion: "1.0.0",
     evidenceId: `${task.taskId}:merge:${revision}:${occurredAt}`,
@@ -395,7 +417,10 @@ test("a task already DONE returns its persisted evidence idempotently with no fu
     policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
     recordedAt: occurredAt,
   });
-  const stateStore = new MemoryStateStore([[task.taskId, lifecycleRecord(task.taskId, "DONE")]]);
+  assert.equal(recorded.ok, true);
+  const stateStore = new MemoryStateStore([
+    [task.taskId, lifecycleRecord(task.taskId, "DONE", [historyEventFor("DONE", recorded.record)])],
+  ]);
   const pullRequests = new FakePullRequestPort({});
   const { controller, state, lock } = makeController({ stateStore, evidenceStore: evidence, pullRequests });
 
@@ -563,9 +588,10 @@ test("GitHubControlledMergePullRequestOperations finds a merged pull request via
     fetchImpl,
   });
 
-  const record = await adapter.findPullRequestByHead(canonicalBranch);
-  assert.equal(record.merged, true);
-  assert.equal(record.mergeCommitSha, "merged-abc");
+  const records = await adapter.findPullRequestsByHead(canonicalBranch);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].merged, true);
+  assert.equal(records[0].mergeCommitSha, "merged-abc");
   assert.match(capturedUrl, /state=all/);
 });
 
@@ -720,7 +746,7 @@ test("FileControlledMergeTaskLock's heartbeat keeps a long-running holder from b
 
 test("a DONE task never touches the task lock", async () => {
   const { store: evidence } = makeEvidenceStore();
-  evidence.record({
+  const recorded = evidence.record({
     schemaId: "ipt.merge-evidence",
     schemaVersion: "1.0.0",
     evidenceId: `${task.taskId}:merge:${revision}:${occurredAt}`,
@@ -731,7 +757,10 @@ test("a DONE task never touches the task lock", async () => {
     policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
     recordedAt: occurredAt,
   });
-  const stateStore = new MemoryStateStore([[task.taskId, lifecycleRecord(task.taskId, "DONE")]]);
+  assert.equal(recorded.ok, true);
+  const stateStore = new MemoryStateStore([
+    [task.taskId, lifecycleRecord(task.taskId, "DONE", [historyEventFor("DONE", recorded.record)])],
+  ]);
   const taskLock = new FakeTaskLock();
   const { controller } = makeController({ stateStore, evidenceStore: evidence, taskLock });
 
@@ -829,4 +858,159 @@ test("an invalid calendar date in occurredAt is rejected before any provider cal
 
   assert.equal(readiness.calls, 0);
   assert.equal(pullRequests.findCalls, 0);
+});
+
+test("an out-of-range timezone offset in occurredAt is rejected before any provider call", async () => {
+  const { controller, pullRequests } = makeController();
+
+  await assert.rejects(
+    () => controller.merge(request({ occurredAt: "2026-09-10T12:00:00+24:00" })),
+    (error) => error.code === "INVALID_REQUEST",
+  );
+  await assert.rejects(
+    () => controller.merge(request({ occurredAt: "2026-09-10T12:00:00+01:60" })),
+    (error) => error.code === "INVALID_REQUEST",
+  );
+
+  assert.equal(pullRequests.findCalls, 0);
+});
+
+test("crash recovery finds the confirmed merge even when a stray unrelated PR is now the most recent for the branch", async () => {
+  // The genuinely approved PR (already merged, by this exact controller's
+  // own earlier, interrupted attempt) plus a stray closed PR against a
+  // different base, created more recently — findPullRequestsByHead's
+  // any-state lookup would surface the stray one first if the controller
+  // only inspected the most-recent result, but it must scan every
+  // candidate for one that is merged and matches the approved revision.
+  const merged = prRecord({ number: 63, merged: true, mergeCommitSha: "recovered-sha" });
+  const stray = prRecord({ number: 70, merged: false, headSha: "1111111111111111111111111111111111111111", baseRef: "develop" });
+  const pullRequests = new FakePullRequestPort({ existing: [stray, merged] });
+  const { controller, state } = makeController({ pullRequests });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(result.mergeCommitSha, "recovered-sha");
+  assert.equal(result.pullRequestNumber, 63);
+  assert.equal(pullRequests.mergeCalls, 0);
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("resume pins evidence to the exact record the lifecycle history names, not whatever is merely current", async () => {
+  const { store: evidence } = makeEvidenceStore();
+  const originalPayload = {
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:${revision}:${occurredAt}`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "original-merge-sha",
+    policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
+    recordedAt: occurredAt,
+  };
+  const original = evidence.record(originalPayload);
+  assert.equal(original.ok, true);
+
+  // A later, unrelated write to the same lineage (an administrative repair,
+  // or a hypothetical future bug) supersedes the original as far as
+  // getCurrent() is concerned, but the MERGED transition below was recorded
+  // against the *original* record specifically.
+  const superseding = evidence.record({ ...originalPayload, mergeCommitSha: "unrelated-later-sha" });
+  assert.equal(superseding.ok, true);
+  assert.notEqual(superseding.record.sequence, original.record.sequence);
+
+  const stateStore = new MemoryStateStore([
+    [task.taskId, lifecycleRecord(task.taskId, "MERGED", [historyEventFor("MERGED", original.record)])],
+  ]);
+  const pullRequests = new FakePullRequestPort({});
+  const { controller } = makeController({ stateStore, evidenceStore: evidence, pullRequests });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.mergeCommitSha, "original-merge-sha", "pinned to the record the MERGED history event actually names");
+});
+
+test("an evidence-store I/O failure after a confirmed merge is normalized to a recoverable EVIDENCE_REJECTED", async () => {
+  class ThrowingEvidenceStore {
+    getCurrent() {
+      return null;
+    }
+
+    getHistory() {
+      return [];
+    }
+
+    record() {
+      throw new Error("ENOSPC: no space left on device");
+    }
+  }
+
+  const { controller, state } = makeController({ evidenceStore: new ThrowingEvidenceStore() });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "EVIDENCE_REJECTED");
+    assert.equal(error.recoverable, true);
+    return true;
+  });
+
+  assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
+});
+
+test("GitHubControlledMergePullRequestOperations rejects a confirmed merge response with an empty sha", async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ merged: true, sha: "", message: "merged" }),
+  });
+  const adapter = new GitHubControlledMergePullRequestOperations({
+    owner: "Brain-Crumbs",
+    repo: "IPTFantasyFootball",
+    token: "fixture-token",
+    fetchImpl,
+  });
+
+  await assert.rejects(
+    () => adapter.mergePullRequest({ number: 63, expectedHeadSha: revision }),
+    (error) => {
+      assert.ok(error instanceof PullRequestProviderError);
+      assert.equal(error.code, "PROVIDER_ERROR");
+      return true;
+    },
+  );
+});
+
+test("lock release requires the full assignment identity to match, not lockId alone", async () => {
+  // A later assignment happens to reuse the same lockId (the assignment-lock
+  // contract does not forbid this) but with a different owner/run/branch —
+  // this must never be mistaken for the original lock this call captured.
+  const originalLock = lockRecord({ lockId: "lock-1", ownerId: "agent-1", runId: "run-1" });
+  const reusedLockId = lockRecord({ lockId: "lock-1", ownerId: "agent-2", runId: "run-2" });
+
+  class ReusedLockIdStore {
+    constructor() {
+      this.getCalls = 0;
+      this.releaseCalls = [];
+    }
+
+    get() {
+      this.getCalls += 1;
+      return this.getCalls === 1 ? originalLock : reusedLockId;
+    }
+
+    release(request) {
+      this.releaseCalls.push(request);
+      return Object.freeze({ ok: true, lock: originalLock, idempotent: false });
+    }
+  }
+
+  const lock = new ReusedLockIdStore();
+  const { controller, state } = makeController({ lock });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(lock.releaseCalls.length, 0, "lockId alone matching a differently-owned assignment must not trigger a release");
+  assert.equal(state.get(task.taskId).currentState, "DONE");
 });

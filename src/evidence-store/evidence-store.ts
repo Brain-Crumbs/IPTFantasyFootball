@@ -22,7 +22,7 @@ const DEFAULT_SCHEMA_RELATIVE_PATHS: Readonly<Record<SupportedEvidenceSchemaId, 
 
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
 const RFC3339_DATE_TIME_PATTERN =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/i;
 const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const SEQUENCE_WIDTH = 7;
 
@@ -468,9 +468,11 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
 }
 
 // The regex alone (and Date.parse, which silently rolls an invalid calendar
-// date like Feb 30 forward into March) is not enough to reject an
-// out-of-range date-time: component ranges are checked explicitly so a
-// schema-invalid recordedAt is never accepted as a valid audit timestamp.
+// date like Feb 30 forward into March, or an out-of-range offset like
+// "+24:00" into an adjacent day) is not enough to reject an out-of-range
+// date-time: component ranges are checked explicitly — for the date, local
+// time, and any numeric timezone offset alike — so a schema-invalid
+// recordedAt is never accepted as a valid audit timestamp.
 function isValidRfc3339DateTime(value: string): boolean {
   const match = RFC3339_DATE_TIME_PATTERN.exec(value);
   if (!match) return false;
@@ -487,6 +489,14 @@ function isValidRfc3339DateTime(value: string): boolean {
   if (hour > 23) return false;
   if (minute > 59) return false;
   if (second > 59) return false;
+
+  if (match[7] !== undefined) {
+    const offsetHour = Number(match[8]);
+    const offsetMinute = Number(match[9]);
+    if (offsetHour > 23) return false;
+    if (offsetMinute > 59) return false;
+  }
+
   return true;
 }
 
