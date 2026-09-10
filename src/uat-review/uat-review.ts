@@ -254,7 +254,13 @@ function parseEvidenceRefEntries(taskId: string, evidenceRef: string): readonly 
  * delivered behavior actually achieves the intended user/system outcome
  * remains the reviewer's, per `docs/ROLE_MODEL.md` section 6 and issue #1
  * section 4: "UAT validates original user/system intent"), no QA or
- * Architecture judgment, and invokes no agent provider.
+ * Architecture judgment, and invokes no agent provider. A PASS submission
+ * must still name at least one exercised `intendedOutcomesScenarios` entry
+ * and one `observedBehavior` entry: an empty array would let the reviewer's
+ * outcome type-check as authoritative PASS evidence without ever recording
+ * that any scenario was actually exercised, defeating the review's own
+ * claim to have judged the intended outcome (`validateRequest` rejects such
+ * a submission as `INVALID_REQUEST` before any dependency is touched).
  */
 export class UatReviewGate {
   constructor(private readonly dependencies: UatReviewDependencies) {}
@@ -860,25 +866,40 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
 
   /**
    * Reclaims a lock file whose recorded age exceeds `STALE_LOCK_MS`, using
-   * `renameSync` as an atomic compare-and-take primitive: at most one
-   * concurrent caller can successfully rename a given path away (a second
-   * caller's rename of an already-moved path fails with `ENOENT`), so at
-   * most one caller ever "wins" reclaiming any single stale lock instance
-   * — two callers that both observe the same stale lock can no longer both
-   * proceed. This also protects a still-legitimate holder that merely ran
-   * past `STALE_LOCK_MS`: because `release()` only unlinks the lock file
-   * when it still holds its own token, a reclaim that replaces the file
-   * with a new token leaves that original holder's eventual `release()` a
-   * harmless no-op instead of deleting the reclaiming holder's lock.
+   * `renameSync` as an atomic take-by-path primitive: at most one concurrent
+   * caller can successfully rename a given path away (a second caller's
+   * rename of an already-moved path fails with `ENOENT`). That alone only
+   * proves no other caller renamed the *same path* away first — it does not
+   * prove the file the rename actually moved is still the stale instance
+   * this method read and judged stale: between the read above and the
+   * rename, the original holder can legitimately finish and `release()`
+   * (unlinking the file), and a completely different caller can then
+   * acquire a brand-new, non-stale lock at the same path via `tryCreate`.
+   * A bare rename would silently carry that fresh lock away and delete it
+   * as if it were the stale one. To close this, the content actually
+   * captured by the rename is re-read and compared against what was
+   * observed as stale before it is discarded: a mismatch means a fresh
+   * lock was captured instead, so it is restored to `lockPath` (or, if
+   * another fresh lock has since been created there, silently dropped —
+   * its holder's own `release()` already tolerates finding a token that
+   * is not its own, per this lock's ownership-safe release design) and
+   * this call reports that it did not win a reclaim.
+   *
+   * This still protects a still-legitimate holder that merely ran past
+   * `STALE_LOCK_MS` without crashing: because `release()` only unlinks the
+   * lock file when it still holds its own token, a reclaim that replaces
+   * the file with a new token leaves that original holder's eventual
+   * `release()` a harmless no-op instead of deleting the reclaiming
+   * holder's lock.
    */
   private reclaimIfStale(lockPath: string): boolean {
-    let content: string;
+    let observed: string;
     try {
-      content = readFileSync(lockPath, "utf8");
+      observed = readFileSync(lockPath, "utf8");
     } catch {
       return false;
     }
-    const heldSince = Number(content.split(":")[0]);
+    const heldSince = Number(observed.split(":")[0]);
     if (!Number.isFinite(heldSince) || Date.now() - heldSince <= STALE_LOCK_MS) return false;
 
     const claimPath = `${lockPath}.reclaim-${randomLockToken()}`;
@@ -889,6 +910,37 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
       // released it; either way this caller did not win the reclaim.
       return false;
     }
+
+    let claimed: string | null;
+    try {
+      claimed = readFileSync(claimPath, "utf8");
+    } catch {
+      claimed = null;
+    }
+    if (claimed !== observed) {
+      // The rename above captured a different lock instance than the one
+      // judged stale (the original stale holder released normally and a
+      // new caller acquired a fresh lock in between). Put it back rather
+      // than discarding another holder's active lock.
+      if (claimed !== null) {
+        try {
+          writeFileSync(lockPath, claimed, { encoding: "utf8", flag: "wx" });
+        } catch {
+          // A third caller has since created its own fresh lock at
+          // lockPath; there is nothing to restore onto. The holder whose
+          // token we captured will find on release() that the current
+          // content is not its own token and no-op, exactly like the
+          // already-tolerated "reclaimed by another process" case.
+        }
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return false;
+    }
+
     try {
       unlinkSync(claimPath);
     } catch {
@@ -1036,4 +1088,18 @@ function validateRequest(request: UatReviewRequest): void {
   if (typeof request.context !== "object" || request.context === null) {
     throw new UatReviewError("INVALID_REQUEST", "UAT review context must be a prepared ContextPackage.", false);
   }
+  if (request.outcome === "PASS") {
+    const details = request.details as { intendedOutcomesScenarios?: unknown; observedBehavior?: unknown };
+    if (!isNonEmptyStringArray(details.intendedOutcomesScenarios) || !isNonEmptyStringArray(details.observedBehavior)) {
+      throw new UatReviewError(
+        "INVALID_REQUEST",
+        "UAT review PASS requires at least one exercised intendedOutcomesScenarios entry and at least one observedBehavior entry; an empty array cannot establish that the intended outcome was actually exercised.",
+        false,
+      );
+    }
+  }
+}
+
+function isNonEmptyStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((entry) => typeof entry === "string" && entry.trim().length > 0);
 }

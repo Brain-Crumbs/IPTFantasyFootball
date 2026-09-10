@@ -563,6 +563,45 @@ test("a UAT reviewerId matching the bridged Developer actor is rejected as self-
   }
 });
 
+test("review() rejects a PASS whose details carry no exercised intendedOutcomesScenarios or observedBehavior entries", () => {
+  const value = fixture();
+  try {
+    assert.throws(
+      () =>
+        value.gate.review(
+          reviewRequest(value, { details: { intendedOutcomesScenarios: [], observedBehavior: [] } }),
+        ),
+      (error) => error instanceof UatReviewError && error.code === "INVALID_REQUEST",
+    );
+    assert.equal(
+      value.evidenceStore.getCurrent(reviewResultLineageId(value.task.taskId, "UAT/Product")),
+      null,
+      "no UAT evidence should be persisted for a PASS with no exercised scenario/observation",
+    );
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("review() rejects an empty-scenario PASS before touching branch identity or context", () => {
+  const value = fixture();
+  try {
+    assert.throws(
+      () =>
+        value.gate.review({
+          ...reviewRequestShape(value),
+          details: { intendedOutcomesScenarios: [], observedBehavior: [] },
+          context: dummyContext(value.task),
+        }),
+      (error) => error instanceof UatReviewError && error.code === "INVALID_REQUEST",
+    );
+    assert.equal(value.branchLifecycle.assertions, 0);
+    assert.equal(value.contextSource.calls, 0);
+  } finally {
+    cleanup(value);
+  }
+});
+
 test("review() rejects a supplied context that does not match a freshly recompiled UAT/Product package for the exact catalog", () => {
   const value = fixture();
   try {
@@ -740,9 +779,13 @@ function reviewRequestShape(value) {
     occurredAt,
     outcome: "PASS",
     findings: [],
+    // Non-empty by default so these shapes probe their own intended
+    // rejection path rather than tripping the PASS-requires-exercised-
+    // evidence check `validateRequest` runs first; tests targeting that
+    // check override `details` explicitly with empty arrays.
     details: {
-      intendedOutcomesScenarios: [],
-      observedBehavior: [],
+      intendedOutcomesScenarios: ["n/a"],
+      observedBehavior: ["n/a"],
     },
   };
 }
