@@ -300,10 +300,25 @@ export class ControlledMergeController {
       );
     }
 
-    if (readiness.pullRequestNumber === null) {
+    // ControlledMergeReadinessPort is a public port any caller may satisfy
+    // with a different implementation, so a merely null-checked
+    // pullRequestNumber is not enough: a non-positive or fractional value
+    // (0, -5, 1.5) would still pass a null check, be fetched and merged
+    // through the provider, and only be caught afterward when the merge
+    // evidence schema rejects it as not a well-formed integer >= 1 —
+    // stranding an already-irreversible provider merge in MERGE_READY.
+    // Rejecting the same range here, before the PR recheck or merge call,
+    // matches the boundary this controller already independently enforces
+    // for an empty merge-commit SHA (never relying solely on a downstream
+    // schema to catch what an upstream port could get wrong).
+    if (
+      readiness.pullRequestNumber === null ||
+      !Number.isInteger(readiness.pullRequestNumber) ||
+      readiness.pullRequestNumber < 1
+    ) {
       throw new ControlledMergeError(
         "NOT_MERGE_READY",
-        `Task '${task.taskId}' merge-readiness reported ready=true with no pull request number.`,
+        `Task '${task.taskId}' merge-readiness reported ready=true with an invalid pull request number '${String(readiness.pullRequestNumber)}'.`,
       );
     }
 
@@ -446,11 +461,27 @@ export class ControlledMergeController {
     // that fails this check is never reused — finalize() falls through to
     // writing a fresh, valid record instead, self-healing past the
     // malformed one rather than trusting it or hard-failing on it.
-    const reusable =
+    // isMergeEvidencePayloadFor only validates the *payload*; the record's
+    // own wrapper fields (lineageId, sequence) are what evidenceRef below
+    // is actually built from once reused, and are read directly off the
+    // stored file's own JSON content without any cross-check against the
+    // directory it was actually found in (see FileEvidenceStore.getHistory).
+    // A corrupted wrapper — sequence rewritten to a number no file at this
+    // lineage actually uses, or a lineageId that silently drifted from the
+    // directory it lives in — would otherwise still be reused to build a
+    // MERGED/DONE evidenceRef that resolvePinnedEvidence can never resolve
+    // back on a later idempotent read, even though the payload itself was
+    // perfectly valid.
+    const wrapperIsTrustworthy =
       existingEvidence !== null &&
-      this.isMergeEvidencePayloadFor(existingEvidence.payload, task.taskId, revision) &&
-      existingEvidence.payload.pullRequestNumber === pullRequestNumber &&
-      existingEvidence.payload.mergeCommitSha === mergeCommitSha;
+      existingEvidence.lineageId === lineageId &&
+      Number.isInteger(existingEvidence.sequence) &&
+      existingEvidence.sequence >= 1;
+    const reusable =
+      wrapperIsTrustworthy &&
+      this.isMergeEvidencePayloadFor((existingEvidence as StoredEvidenceRecord).payload, task.taskId, revision) &&
+      (existingEvidence as StoredEvidenceRecord).payload.pullRequestNumber === pullRequestNumber &&
+      (existingEvidence as StoredEvidenceRecord).payload.mergeCommitSha === mergeCommitSha;
 
     // When reusing a record a prior, crashed attempt already wrote, the
     // lock identity to release is *that* record's own assignmentLockAtMerge
@@ -1415,15 +1446,52 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       return;
     }
 
+    // Restoring via a plain renameSync onto lockPath would not be safe
+    // here: POSIX rename() silently *replaces* an existing destination
+    // file rather than failing, unlike release()'s/reclaimIfStale()'s own
+    // claim-verify steps (which all use an exclusive-create writeFileSync
+    // for exactly this reason). Reading the orphaned content and writing it
+    // back with flag:"wx" instead means a concurrent, legitimate tryCreate()
+    // that already created a fresh lock at lockPath — possible during the
+    // narrow window between claiming this stale reservation above and this
+    // restore, since tryCreate() also recognizes the ".reclaim" marker
+    // below precisely to keep that window as narrow as an ordinary
+    // tryCreate()'s own single ownership check — is never silently
+    // clobbered.
     for (const claimPath of [this.releaseClaimedPath(lockPath), this.reclaimClaimedPath(lockPath)]) {
+      let orphaned: string;
+      let orphanedMtime: Date;
       try {
-        renameSync(claimPath, lockPath);
-        break;
+        orphaned = readFileSync(claimPath, "utf8");
+        orphanedMtime = new Date(statSync(claimPath).mtimeMs);
       } catch {
-        // Not present at this candidate location, or lockPath already
-        // holds a fresh record; try the other one (harmless if it also
-        // fails — there is nothing further to restore either way).
+        continue; // Not present at this candidate location; try the other one.
       }
+      try {
+        writeFileSync(lockPath, orphaned, { encoding: "utf8", flag: "wx" });
+        // writeFileSync stamps a brand-new mtime (now), which would make
+        // this restored, genuinely abandoned lock read as freshly held —
+        // wedging it behind a full extra staleLockMs wait before
+        // reclaimIfStale() would consider it stale again. Restoring the
+        // orphan's own original mtime keeps its staleness signal intact,
+        // so it re-enters the normal stale-lock lifecycle immediately
+        // rather than needing to age out a second time.
+        try {
+          utimesSync(lockPath, orphanedMtime, orphanedMtime);
+        } catch {
+          // Lost ownership of the just-written file in an extremely
+          // narrow window; the lock will simply need to age out again.
+        }
+      } catch {
+        // lockPath already holds a fresh record — a concurrent, legitimate
+        // tryCreate() won the race; leave it untouched.
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      break;
     }
     try {
       unlinkSync(reclaimMarkerPath);
@@ -1442,7 +1510,16 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     // forever.
     this.reclaimAbandonedReservation(lockPath);
     const reservationPath = this.releaseReservationPath(lockPath);
-    if (existsSync(reservationPath)) return null;
+    // Also recognizes reclaimAbandonedReservation's own temporary claim on
+    // the reservation marker (".reclaim"): that claim briefly removes the
+    // marker from its normal path while deciding whether it is genuinely
+    // stale, and ordinary creation must stay blocked for that entire window
+    // too, not just observe the marker as momentarily absent — otherwise a
+    // fresh tryCreate() could win a race the restore step then has to defer
+    // to anyway, needlessly losing the orphaned lock it was trying to
+    // recover instead of simply waiting the reclaim out.
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+    if (existsSync(reservationPath) || existsSync(reclaimMarkerPath)) return null;
     // The token is just a random identity, not a timestamp: staleness is
     // now determined from the lock file's own filesystem mtime (see
     // reclaimIfStale/refresh), not from anything embedded in its content.
@@ -1454,12 +1531,12 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       const detail = error instanceof Error ? error.message : String(error);
       throw new ControlledMergeError("STATE_IO_FAILED", `Cannot create controlled-merge task lock at '${lockPath}': ${detail}`);
     }
-    if (existsSync(reservationPath)) {
-      // A release() call reserved this exact lock path in the narrow gap
-      // between this call's own pre-write check and its write landing;
-      // back off rather than let this freshly created lock stand in for
-      // real ownership while release() is still deciding what to do with
-      // the content it claimed.
+    if (existsSync(reservationPath) || existsSync(reclaimMarkerPath)) {
+      // A release()/reclaimIfStale() call reserved this exact lock path in
+      // the narrow gap between this call's own pre-write check and its
+      // write landing; back off rather than let this freshly created lock
+      // stand in for real ownership while that call is still deciding what
+      // to do with the content it claimed.
       try {
         unlinkSync(lockPath);
       } catch {

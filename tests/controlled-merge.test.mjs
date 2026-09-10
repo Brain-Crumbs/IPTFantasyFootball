@@ -366,6 +366,27 @@ test("readiness=false blocks the merge call entirely", async () => {
   assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
 });
 
+test("readiness reporting a non-integer or non-positive pull request number is rejected before the pre-merge recheck or merge call", async () => {
+  // ControlledMergeReadinessPort is a public port any caller may satisfy
+  // with a different implementation, so a merely null-checked
+  // pullRequestNumber is not enough: a fractional or non-positive value
+  // would otherwise be fetched and merged through the provider, only
+  // caught afterward when the merge-evidence schema rejects it — stranding
+  // an already-irreversible provider merge in MERGE_READY.
+  for (const invalidNumber of [1.5, 0, -5]) {
+    const readiness = new FakeMergeReadinessPort(readyResult({ pullRequestNumber: invalidNumber }));
+    const { controller, pullRequests } = makeController({ readiness });
+
+    await assert.rejects(() => controller.merge(request()), (error) => {
+      assert.ok(error instanceof ControlledMergeError);
+      assert.equal(error.code, "NOT_MERGE_READY");
+      return true;
+    });
+    assert.equal(pullRequests.getCalls, 0);
+    assert.equal(pullRequests.mergeCalls, 0);
+  }
+});
+
 test("a head change between readiness evaluation and merge is rejected", async () => {
   const pullRequests = new FakePullRequestPort({
     existing: [prRecord()],
@@ -1418,6 +1439,65 @@ test("finalize() never reuses a stored evidence record that fails full schema va
   const history = evidence.getHistory(lineageId);
   assert.equal(history.length, 2, "the schema-invalid record was not reused; a fresh valid one was appended instead");
   assert.equal(history[1].payload.evidenceId !== undefined, true);
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("finalize() never reuses a stored evidence record whose own wrapper lineageId/sequence has been corrupted, even when its payload is fully valid", async () => {
+  // getCurrent()'s wrapper fields (lineageId, sequence) are read directly
+  // off the stored file's own JSON content, with no cross-check against
+  // the directory it was actually found in — and are exactly what a reused
+  // record's evidenceRef gets built from. A corrupted wrapper would
+  // otherwise still be reused to persist a MERGED/DONE evidenceRef that a
+  // later idempotent read can never resolve back, even though the payload
+  // itself is perfectly valid.
+  const { store: evidence, dir: evidenceDir } = makeEvidenceStore();
+  const lineageId = mergeEvidenceLineageId(task.taskId);
+  const seeded = evidence.record({
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:seed`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "merged-sha-1",
+    policyDecisionReference: "placeholder",
+    recordedAt: occurredAt,
+  });
+  assert.equal(seeded.ok, true);
+
+  const { readdirSync, writeFileSync: write } = await import("node:fs");
+  const lineageDirName = readdirSync(evidenceDir)[0];
+  const lineageDir = join(evidenceDir, lineageDirName);
+  const fileName = readdirSync(lineageDir).find((name) => /^\d+\.json$/.test(name));
+  const validPayload = {
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:seed`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "merged-sha-1",
+    policyDecisionReference: "placeholder",
+    recordedAt: occurredAt,
+  };
+  write(
+    join(lineageDir, fileName),
+    `${JSON.stringify({ lineageId: "some-other-lineage::merge", sequence: 999, storedAt: occurredAt, payload: validPayload })}\n`,
+    { encoding: "utf8" },
+  );
+
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord({ merged: true, mergeCommitSha: "merged-sha-1" })],
+  });
+  const { controller, state } = makeController({ pullRequests, evidenceStore: evidence });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(result.evidenceLineageId, lineageId);
+  assert.notEqual(result.evidenceSequence, 999);
+  const history = evidence.getHistory(lineageId);
+  assert.equal(history.length, 2, "the corrupted-wrapper record was not reused; a fresh valid one was appended instead");
   assert.equal(state.get(task.taskId).currentState, "DONE");
 });
 

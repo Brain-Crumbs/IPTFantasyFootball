@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   ContextCompilationError,
@@ -806,41 +815,218 @@ export class FileArchitectureReviewTaskLock implements ArchitectureReviewTaskLoc
   }
 
   /**
-   * Only removes the lock file when it still holds exactly the token this
+   * Only discards the lock file when it still holds exactly the token this
    * holder created. A `reclaimIfStale` by another caller may have already
    * replaced this holder's own lock file with a different holder's token
    * (see `reclaimIfStale`'s doc comment); unconditionally unlinking here
    * would delete that other caller's active lock out from under it.
+   *
+   * All five lifecycle task locks (QA, Architecture, UAT, rework, controlled
+   * merge) manage this exact same lock path for a given task, so that
+   * ownership check has to be atomic against those other classes too, not
+   * only against other instances of this one. Mirrors
+   * control-plane.controlled-merge's own hardened
+   * `FileControlledMergeTaskLock` hardening: a plain read-then-unlink leaves
+   * a gap in which a stale reclaimer can rename the old lock away and write
+   * a fresh replacement, so the unlink below would delete the *replacement's*
+   * lock while its critical section is still running. The path is instead
+   * claimed by an atomic rename and the captured content verified; the
+   * reservation marker keeps ordinary creation blocked for the whole window
+   * in which lockPath is claimed away and therefore transiently absent.
    */
   private release(lockPath: string, token: string): void {
-    let current: string | null;
+    this.reclaimAbandonedReservation(lockPath);
+
+    const reservationPath = this.releaseReservationPath(lockPath);
     try {
-      current = readFileSync(lockPath, "utf8");
+      writeFileSync(reservationPath, "", { encoding: "utf8", flag: "wx" });
     } catch {
-      current = null;
+      // A release() or reclaimIfStale() for this exact lock path is already
+      // in flight; back off silently — a release racing a reclaim is not a
+      // caller-visible error.
+      return;
     }
-    if (current !== token) return;
     try {
-      unlinkSync(lockPath);
+      this.releaseClaimed(lockPath, token);
+    } finally {
+      try {
+        unlinkSync(reservationPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+    }
+  }
+
+  private releaseClaimed(lockPath: string, token: string): void {
+    // Fixed, not randomized: the reservation above already guarantees only
+    // one release()/reclaimIfStale() attempt is in flight for this path, and
+    // a fixed, well-known name is what makes an orphaned claim (left by a
+    // process killed mid-release) recoverable by reclaimAbandonedReservation.
+    const claimPath = this.releaseClaimedPath(lockPath);
+    try {
+      renameSync(lockPath, claimPath);
     } catch {
-      // Already gone, or reclaimed by another process as stale; either
-      // way there is nothing left for this holder to clean up.
+      return; // Already gone; nothing left to release.
+    }
+
+    let observed: string | null;
+    try {
+      observed = readFileSync(claimPath, "utf8");
+    } catch {
+      observed = null;
+    }
+    if (observed !== token) {
+      // Not this holder's own lock (a reclaimer's fresh replacement, most
+      // likely) — restore it rather than discarding it, via an exclusive
+      // create and never `renameSync`: POSIX rename silently replaces an
+      // existing destination, which would clobber a third caller's own fresh
+      // lock, whereas flag:"wx" correctly fails instead.
+      if (observed !== null) {
+        try {
+          writeFileSync(lockPath, observed, { encoding: "utf8", flag: "wx" });
+        } catch {
+          // A fresh lock now exists at lockPath; nothing to restore onto.
+        }
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return;
+    }
+    try {
+      unlinkSync(claimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+  }
+
+  private releaseReservationPath(lockPath: string): string {
+    return `${lockPath}.release-reservation`;
+  }
+
+  private releaseClaimedPath(lockPath: string): string {
+    return `${lockPath}.release-claim`;
+  }
+
+  private reclaimClaimedPath(lockPath: string): string {
+    return `${lockPath}.reclaim-claim`;
+  }
+
+  /**
+   * Recovers a reservation marker (and whichever claim file it was guarding)
+   * abandoned by a process killed mid-release or mid-reclaim: without this,
+   * the marker would block every future `tryCreate` forever and the claimed
+   * content would sit orphaned at a path nothing else revisits. Mirrors
+   * control-plane.controlled-merge's own
+   * `FileControlledMergeTaskLock.reclaimAbandonedReservation`, including its
+   * two-level "claim the marker before trusting its own staleness" step: a
+   * plain stat-then-unlink could strip a freshly recreated, genuinely live
+   * reservation of its protection mid-flight, so the marker is itself claimed
+   * by rename and the captured file's own age re-checked (rename preserves
+   * mtime). The marker carries no content, so its staleness is judged from
+   * mtime even though this class judges the lock file's own staleness from
+   * the timestamp embedded in its content.
+   */
+  private reclaimAbandonedReservation(lockPath: string): void {
+    const reservationPath = this.releaseReservationPath(lockPath);
+    let stats: { readonly mtimeMs: number };
+    try {
+      stats = statSync(reservationPath);
+    } catch {
+      return;
+    }
+    if (Date.now() - stats.mtimeMs <= STALE_LOCK_MS) return;
+
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+    try {
+      renameSync(reservationPath, reclaimMarkerPath);
+    } catch {
+      return; // Already gone; another caller reclaimed or cleared it.
+    }
+
+    let claimedStats: { readonly mtimeMs: number } | null;
+    try {
+      claimedStats = statSync(reclaimMarkerPath);
+    } catch {
+      claimedStats = null;
+    }
+    if (claimedStats === null) return;
+    if (Date.now() - claimedStats.mtimeMs <= STALE_LOCK_MS) {
+      // Not actually stale: a live call created a fresh marker here after the
+      // check above but before this claim landed. Restore it untouched.
+      try {
+        renameSync(reclaimMarkerPath, reservationPath);
+      } catch {
+        // A third operation has since created its own fresh marker; there is
+        // nothing further to restore onto.
+      }
+      return;
+    }
+
+    for (const claimPath of [this.releaseClaimedPath(lockPath), this.reclaimClaimedPath(lockPath)]) {
+      let orphaned: string;
+      let orphanedMtime: Date;
+      try {
+        orphaned = readFileSync(claimPath, "utf8");
+        orphanedMtime = new Date(statSync(claimPath).mtimeMs);
+      } catch {
+        continue; // Not present here; try the other candidate location.
+      }
+      try {
+        writeFileSync(lockPath, orphaned, { encoding: "utf8", flag: "wx" });
+        // Staleness here is read from the restored content's own embedded
+        // timestamp, so the orphan re-enters the stale-lock lifecycle
+        // regardless; restoring its original mtime as well keeps this method
+        // identical to the controlled-merge original it mirrors.
+        try {
+          utimesSync(lockPath, orphanedMtime, orphanedMtime);
+        } catch {
+          // Lost ownership in an extremely narrow window; harmless.
+        }
+      } catch {
+        // lockPath already holds a fresh lock — a concurrent, legitimate
+        // tryCreate() won the race; leave it untouched.
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      break;
+    }
+    try {
+      unlinkSync(reclaimMarkerPath);
+    } catch {
+      // Already gone; nothing left to clean up.
     }
   }
 
   /**
    * Creates the lock file exclusively and returns the unique token this
    * holder wrote, or `null` when the file already exists (ordinary
-   * contention). Any other failure (permission error, read-only state
+   * contention) or a release()/reclaimIfStale() call currently holds this
+   * path reserved. Any other failure (permission error, read-only state
    * directory, exhausted disk, ...) is a real storage problem, not
    * contention, and is surfaced as `STATE_IO_FAILED` rather than being
    * misreported as another reviewer holding the task.
    */
   private tryCreate(lockPath: string): string | null {
+    // A release()/reclaimIfStale() in flight for this exact lock path has
+    // claimed it away for inspection: ordinary creation must stay blocked for
+    // that entire window rather than merely observing the path as transiently
+    // vacant, or a still-live replacement lock would appear unlocked. The
+    // ".reclaim" marker is recognized too, since reclaimAbandonedReservation
+    // briefly moves the reservation aside while judging it.
+    this.reclaimAbandonedReservation(lockPath);
+    const reservationPath = this.releaseReservationPath(lockPath);
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+    if (existsSync(reservationPath) || existsSync(reclaimMarkerPath)) return null;
+
     const token = `${Date.now()}:${randomLockToken()}`;
     try {
       writeFileSync(lockPath, token, { encoding: "utf8", flag: "wx" });
-      return token;
     } catch (error: unknown) {
       if (errorCode(error) === "EEXIST") return null;
       const detail = error instanceof Error ? error.message : String(error);
@@ -849,6 +1035,19 @@ export class FileArchitectureReviewTaskLock implements ArchitectureReviewTaskLoc
         `Cannot create Architecture review task lock at '${lockPath}': ${detail}`,
       );
     }
+    if (existsSync(reservationPath) || existsSync(reclaimMarkerPath)) {
+      // A release()/reclaimIfStale() reserved this path in the narrow gap
+      // between the pre-write check above and this write landing; roll back
+      // rather than let this freshly created lock stand in for real ownership
+      // while that call is still deciding what to do with what it claimed.
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Already reclaimed or removed by someone else; nothing to roll back.
+      }
+      return null;
+    }
+    return token;
   }
 
   /**
@@ -859,12 +1058,25 @@ export class FileArchitectureReviewTaskLock implements ArchitectureReviewTaskLoc
    * most one caller ever "wins" reclaiming any single stale lock instance
    * — two callers that both observe the same stale lock can no longer both
    * proceed. This also protects a still-legitimate holder that merely ran
-   * past `STALE_LOCK_MS`: because `release()` only unlinks the lock file
+   * past `STALE_LOCK_MS`: because `release()` only discards the lock file
    * when it still holds its own token, a reclaim that replaces the file
    * with a new token leaves that original holder's eventual `release()` a
    * harmless no-op instead of deleting the reclaiming holder's lock.
+   *
+   * Staleness itself is judged exactly as before, from the timestamp this
+   * class embeds in the lock file's content. What is new (mirroring
+   * control-plane.controlled-merge's own `FileControlledMergeTaskLock`) is
+   * that the claim is verified before it is discarded: a bare rename cannot
+   * distinguish "I captured the stale lock" from "the stale holder released
+   * normally and I captured a different caller's brand-new lock," so the
+   * content the rename actually captured is re-read and compared against
+   * what was observed as stale, and a mismatch is restored rather than
+   * discarded. The reservation marker (the same one `release()` takes) keeps
+   * ordinary creation blocked while lockPath is claimed away.
    */
   private reclaimIfStale(lockPath: string): boolean {
+    this.reclaimAbandonedReservation(lockPath);
+
     let content: string;
     try {
       content = readFileSync(lockPath, "utf8");
@@ -874,7 +1086,35 @@ export class FileArchitectureReviewTaskLock implements ArchitectureReviewTaskLoc
     const heldSince = Number(content.split(":")[0]);
     if (!Number.isFinite(heldSince) || Date.now() - heldSince <= STALE_LOCK_MS) return false;
 
-    const claimPath = `${lockPath}.reclaim-${randomLockToken()}`;
+    const reservationPath = this.releaseReservationPath(lockPath);
+    try {
+      writeFileSync(reservationPath, "", { encoding: "utf8", flag: "wx" });
+    } catch {
+      // A release() or another reclaimIfStale() is already in flight for this
+      // exact lock path; back off rather than race it.
+      return false;
+    }
+    try {
+      return this.reclaimClaimed(lockPath);
+    } finally {
+      try {
+        unlinkSync(reservationPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+    }
+  }
+
+  private reclaimClaimed(lockPath: string): boolean {
+    let observed: string;
+    try {
+      observed = readFileSync(lockPath, "utf8");
+    } catch {
+      return false;
+    }
+
+    // Fixed, not randomized: see releaseClaimed's own comment.
+    const claimPath = this.reclaimClaimedPath(lockPath);
     try {
       renameSync(lockPath, claimPath);
     } catch {
@@ -882,6 +1122,32 @@ export class FileArchitectureReviewTaskLock implements ArchitectureReviewTaskLoc
       // released it; either way this caller did not win the reclaim.
       return false;
     }
+
+    let claimed: string | null;
+    try {
+      claimed = readFileSync(claimPath, "utf8");
+    } catch {
+      claimed = null;
+    }
+    if (claimed !== observed) {
+      // A live holder's fresh replacement raced in; restore it (flag:"wx",
+      // never renameSync — see releaseClaimed) and report no reclaim.
+      if (claimed !== null) {
+        try {
+          writeFileSync(lockPath, claimed, { encoding: "utf8", flag: "wx" });
+        } catch {
+          // A third caller has since created its own fresh lock at lockPath;
+          // there is nothing to restore onto.
+        }
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return false;
+    }
+
     try {
       unlinkSync(claimPath);
     } catch {

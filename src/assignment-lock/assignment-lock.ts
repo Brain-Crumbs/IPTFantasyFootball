@@ -508,7 +508,15 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
   }
 
   #hasReleaseClaim(taskId: string): boolean {
-    return existsSync(this.#releaseClaimPath(taskId));
+    // Also recognizes #reclaimAbandonedRelease's own temporary claim on the
+    // reservation marker (".reclaim"): that claim briefly removes the
+    // marker from its normal path while deciding whether it is genuinely
+    // stale, and an ordinary acquire() must stay blocked for that entire
+    // window too, not just observe the marker as momentarily absent —
+    // otherwise a fresh acquire() could win a race the restore step below
+    // then has to defer to anyway, needlessly losing the orphaned record it
+    // was trying to recover instead of simply waiting the reclaim out.
+    return existsSync(this.#releaseClaimPath(taskId)) || existsSync(`${this.#releaseClaimPath(taskId)}.reclaim`);
   }
 
   // A release() reservation marker (and the claimed record it may have
@@ -578,14 +586,36 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
       return;
     }
 
+    // Restoring via a plain renameSync onto activePath would not be safe
+    // here: POSIX rename() silently *replaces* an existing destination file
+    // rather than failing, unlike every other restore-on-mismatch path in
+    // this class (which all use an exclusive-create writeFileSync for
+    // exactly this reason). Reading the orphaned content and writing it
+    // back with flag:"wx" instead means a concurrent, legitimate acquire()
+    // that already created a fresh record at activePath — possible during
+    // the narrow window between claiming this stale marker above and this
+    // restore, since #hasReleaseClaim() also recognizes the ".reclaim"
+    // marker below precisely to keep that window as narrow as an ordinary
+    // acquire()'s own single ownership check — is never silently clobbered.
+    let orphaned: string | null;
     try {
-      renameSync(this.#releaseClaimedRecordPath(taskId), this.#activePath(taskId));
+      orphaned = readFileSync(this.#releaseClaimedRecordPath(taskId), "utf8");
     } catch {
-      // Either there was no orphaned claimed record (the crash happened
-      // before release() ever renamed the active path away, or after
-      // everything had already been written back/archived), or the active
-      // path already holds a fresh record; either way there is nothing
-      // further to restore.
+      orphaned = null;
+    }
+    if (orphaned !== null) {
+      try {
+        writeFileSync(this.#activePath(taskId), orphaned, { encoding: "utf8", flag: "wx" });
+      } catch {
+        // activePath already holds a fresh record — a concurrent,
+        // legitimate acquire() won the race for this task; leave it
+        // untouched rather than overwriting it with stale content.
+      }
+      try {
+        unlinkSync(this.#releaseClaimedRecordPath(taskId));
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
     }
     try {
       unlinkSync(reclaimMarkerPath);
@@ -675,17 +705,25 @@ function requireDate(name: string, value: string): string | null {
 // consider that lock expired, permanently blocking explicit recovery.
 function toComparableInstant(value: string): number {
   const isLeapSecond = value.length > 18 && value[17] === "6" && value[18] === "0";
-  const parseableForm = isLeapSecond ? `${value.slice(0, 17)}59${value.slice(19)}` : value;
-  const parsed = Date.parse(parseableForm);
-  // A leap second is a genuinely later instant than the :59 second right
-  // before it, not the same one — substituting the digit alone (needed
-  // only because Date.parse has no representation for :60) would otherwise
-  // collapse the two into the same millisecond value, making adjacent
-  // instants compare as equal (rejecting a perfectly valid "acquiredAt
-  // :59, expiresAt :60" ordering) and making a lock expiring at the leap
-  // second look already expired a full second early against a "now" of
-  // :59. Adding the elapsed second back restores strict, correct ordering.
-  return isLeapSecond && !Number.isNaN(parsed) ? parsed + 1000 : parsed;
+  if (!isLeapSecond) return Date.parse(value);
+  // Date.parse has no representation for a leap second (":60") at all, so
+  // some substitution is unavoidable — but neither "substitute the digit
+  // alone" (collapses ":59" and ":60" to the same millisecond) nor "also
+  // add back a flat +1000ms" (the leap second's own fractional part, if
+  // any, is added on top of that flat offset and can push the result past
+  // — not just up to — the following minute's own :00.000, comparing a
+  // late-fraction leap second as *later* than the next minute) places the
+  // instant correctly. This system has no need to distinguish between two
+  // different leap-second instants down to the millisecond — only to place
+  // *any* leap second, regardless of its own fraction, strictly between the
+  // ":59" second before it and the next minute — so every leap-second
+  // value maps to exactly 1ms before that next-minute boundary, computed
+  // from the whole-second ":59" form with any fraction discarded.
+  const suffixMatch = /(?:\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.exec(value);
+  if (suffixMatch === null) return NaN;
+  const wholeSecond59Form = `${value.slice(0, 17)}59${suffixMatch[1]}`;
+  const base59 = Date.parse(wholeSecond59Form);
+  return Number.isNaN(base59) ? base59 : base59 + 999;
 }
 
 function freezeLock(lock: AssignmentLockRecord): AssignmentLockRecord {

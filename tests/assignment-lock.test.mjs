@@ -319,6 +319,70 @@ test("a leap-second timestamp compares as strictly later than the :59 second rig
   assert.equal(stillActive.rejection.code, "LOCK_CONFLICT");
 }));
 
+test("a leap second, with or without a fraction, always compares strictly before the following minute, never equal to or past it", () => withStore((store) => {
+  // A flat +1000ms alone collides exactly with the next minute's own
+  // :00.000 — this must be a strictly valid, later expiry, not rejected as
+  // "not later than acquiredAt".
+  const wholeSecondLeap = store.acquire(acquire({
+    acquiredAt: "1990-12-31T23:59:60Z",
+    expiresAt: "1991-01-01T00:00:00Z",
+  }));
+  assert.equal(wholeSecondLeap.ok, true, wholeSecondLeap.ok ? undefined : wholeSecondLeap.rejection.reason);
+  assert.equal(release(store, { occurredAt: "1991-01-01T00:00:01Z" }).ok, true);
+
+  // A leap second's own fraction must not be added on top of a flat offset
+  // and overtake the next minute: 23:59:60.500Z must still compare
+  // strictly before 00:00:00.001Z, not 500ms "after" it.
+  const fractionalLeap = store.acquire(acquire({
+    acquiredAt: "1990-12-31T23:59:60.500Z",
+    expiresAt: "1991-01-01T00:00:00.001Z",
+  }));
+  assert.equal(fractionalLeap.ok, true, fractionalLeap.ok ? undefined : fractionalLeap.rejection.reason);
+}));
+
+test("an abandoned release reclaim never clobbers a fresh, concurrently-created assignment (a plain renameSync would silently overwrite it)", () => withStore((store, root) => {
+  const acquired = store.acquire(acquire());
+  assert.equal(acquired.ok, true);
+
+  const activePath = join(root, "BOOT-010.lock.json");
+  const claimedRecordPath = `${activePath}.release-claim`;
+  const reservationPath = join(root, ".claims", "BOOT-010.release.json");
+
+  // Simulate a crash immediately after release() claimed the active record
+  // away, but before it restored or finished it.
+  renameSync(activePath, claimedRecordPath);
+  writeFileSync(reservationPath, `${JSON.stringify({ lockId: "lock-a" })}\n`, { encoding: "utf8", flag: "wx" });
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(reservationPath, old, old);
+  utimesSync(claimedRecordPath, old, old);
+
+  // A different, legitimate assignment now occupies the active path —
+  // representing a concurrent acquire() that already won a race during
+  // this exact reclaim window.
+  const freshRecord = {
+    schemaId: "ipt.assignment-lock",
+    schemaVersion: "1.1.0",
+    lockId: "lock-fresh",
+    taskId: "BOOT-010",
+    canonicalBranch: "bootstrap/boot-010-assignment-locks",
+    ownerId: "agent-fresh",
+    runId: "run-fresh",
+    status: "ACTIVE",
+    acquiredAt: "2026-09-03T23:15:00Z",
+  };
+  writeFileSync(activePath, `${JSON.stringify(freshRecord, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+
+  // A fresh acquire() attempt reclaims the abandoned reservation as part of
+  // its own attempt; the orphaned content must never overwrite the record
+  // that legitimately occupies the active path now.
+  const attempted = store.acquire(acquire({ ownerId: "agent-d", runId: "run-d", lockId: "lock-d" }));
+  assert.equal(attempted.ok, false);
+
+  const current = store.get("BOOT-010");
+  assert.equal(current.lockId, "lock-fresh");
+  assert.equal(current.ownerId, "agent-fresh");
+}));
+
 test("a leap-second expiresAt is compared correctly against acquiredAt/now instead of as NaN", () => withStore((store) => {
   // expiresAt no later than acquiredAt must still be rejected even when
   // acquiredAt itself is a leap second (Date.parse(':60') is NaN, so a raw
