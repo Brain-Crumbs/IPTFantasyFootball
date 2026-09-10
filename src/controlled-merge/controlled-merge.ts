@@ -324,6 +324,19 @@ export class ControlledMergeController {
         `Task '${task.taskId}' merge provider did not confirm pull request #${readiness.pullRequestNumber} was merged: ${mergeResult.message}`,
       );
     }
+    // Enforced at this provider-neutral boundary, not only inside the
+    // concrete GitHub adapter: a `ControlledMergePullRequestPort` is a
+    // public port any caller may satisfy with their own implementation, and
+    // this module's own confirmed-merge semantics (a real, usable commit
+    // SHA) must hold regardless of which adapter is behind it, rather than
+    // relying on every possible adapter to have independently reproduced
+    // the GitHub adapter's own empty-sha rejection.
+    if (mergeResult.sha.length === 0) {
+      throw new ControlledMergeError(
+        "MERGE_NOT_CONFIRMED",
+        `Task '${task.taskId}' merge provider confirmed pull request #${readiness.pullRequestNumber} as merged but reported an empty merge commit SHA.`,
+      );
+    }
 
     // Re-checked here too: the merge provider call itself just spanned
     // another await boundary, during which this holder could have lost the
@@ -436,6 +449,15 @@ export class ControlledMergeController {
       // schema-validation rejection) marked recoverable, since the
       // already-confirmed merge remains safely resumable once the
       // underlying I/O problem clears.
+      //
+      // Fenced immediately before this specific write: the top-of-method
+      // check above only proves ownership at that instant, and the
+      // getCurrentEvidence() read (and reusable computation) just before
+      // this branch, though itself no slower than any other fs read, is
+      // still enough real wall-clock time for a concurrent reclaim to land
+      // in between — leaving this exact record() call as the next
+      // unguarded write otherwise.
+      assertHeld();
       let recorded: RecordResult;
       try {
         recorded = this.dependencies.evidenceStore.record(evidencePayload);
@@ -781,6 +803,17 @@ export class ControlledMergeController {
         runId: request.runId,
         occurredAt: request.occurredAt,
         reason: "Controlled merge completed; releasing assignment lock.",
+        // Re-verified atomically, against the exact same read release()
+        // itself performs, not only by the check above: the check above and
+        // this call are two separate operations with a gap between them,
+        // during which a stale-recovery replacing the assignment with a new
+        // acquisition that happens to reuse this same lockId (a lockId reuse
+        // the assignment-lock contract explicitly permits) would otherwise
+        // still pass lockId-only matching inside release() and release that
+        // new, differently-owned assignment.
+        expectedOwnerId: lockIdentityToRelease.ownerId,
+        expectedRunId: lockIdentityToRelease.runId,
+        expectedCanonicalBranch: lockIdentityToRelease.canonicalBranch,
       });
     } catch (error: unknown) {
       throw new ControlledMergeError(
@@ -882,6 +915,17 @@ export interface ControlledMergeLockStore {
     readonly runId: string;
     readonly occurredAt: string;
     readonly reason: string;
+    // Optional compare-and-swap guard: when provided, an implementation
+    // rejects the release (LOCK_ID_MISMATCH) unless the currently active
+    // record's ownerId/runId/canonicalBranch also match, atomically against
+    // the same read it uses to decide whether to mutate anything —
+    // narrowing the gap between this controller's own full-identity check
+    // and the actual release call, during which a stale-recovery reusing
+    // this exact lockId (permitted by the assignment-lock contract) could
+    // otherwise still pass a lockId-only match.
+    readonly expectedOwnerId?: string;
+    readonly expectedRunId?: string;
+    readonly expectedCanonicalBranch?: string;
   }): LockResult;
 }
 

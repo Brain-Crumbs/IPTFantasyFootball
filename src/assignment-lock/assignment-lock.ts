@@ -48,6 +48,20 @@ export interface ReleaseAssignmentRequest {
   readonly runId: string;
   readonly occurredAt: string;
   readonly reason: string;
+  // Optional compare-and-swap guard, checked atomically against the same
+  // read release() itself uses to decide whether to mutate anything: when
+  // provided, the release is rejected as LOCK_ID_MISMATCH unless the
+  // currently active record's ownerId/runId/canonicalBranch also match.
+  // lockId alone is not always enough to prove this is still the exact
+  // assignment a caller observed earlier — the contract does not guarantee
+  // a lockId is never reused by a later, differently-owned acquisition —
+  // and actorId/runId above are pass-through audit fields, not
+  // necessarily the lock's own owner/run (a caller other than the
+  // assignee, such as an orchestrator, may legitimately release on the
+  // assignee's behalf), so they cannot double as this identity check.
+  readonly expectedOwnerId?: string;
+  readonly expectedRunId?: string;
+  readonly expectedCanonicalBranch?: string;
 }
 
 export interface RecoverStaleAssignmentRequest extends AcquireAssignmentRequest {
@@ -191,7 +205,12 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     if (invalid) return reject("INVALID_REQUEST", invalid);
     const current = this.get(request.taskId);
     if (!current) return reject("LOCK_NOT_FOUND", `Task '${request.taskId}' has no active assignment lock.`);
-    if (current.lockId !== request.lockId) {
+    if (
+      current.lockId !== request.lockId ||
+      (request.expectedOwnerId !== undefined && current.ownerId !== request.expectedOwnerId) ||
+      (request.expectedRunId !== undefined && current.runId !== request.expectedRunId) ||
+      (request.expectedCanonicalBranch !== undefined && current.canonicalBranch !== request.expectedCanonicalBranch)
+    ) {
       return reject("LOCK_ID_MISMATCH", `Lock '${request.lockId}' does not own task '${request.taskId}'.`, current);
     }
 

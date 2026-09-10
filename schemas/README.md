@@ -12,6 +12,7 @@ BOOT-003 defines the first versioned machine-readable contracts for the reposito
 | Assignment/lock | `ipt.assignment-lock` | `v1/assignment-lock.schema.json` |
 | Validation evidence | `ipt.validation-evidence` | `v1/validation-evidence.schema.json` |
 | Review result/finding | `ipt.review-result` | `v1/review-result.schema.json` |
+| Merge evidence | `ipt.merge-evidence` | `v1/merge-evidence.schema.json` |
 | Module/consumer contract metadata | `ipt.module-contract` | `v1/module-contract.schema.json` |
 
 Every record requires `schemaId` and `schemaVersion`. The v1 definitions accept record version `1.0.0`; readers must reject unsupported major versions rather than guessing compatibility.

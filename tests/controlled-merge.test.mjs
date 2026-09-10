@@ -1294,12 +1294,43 @@ test("the async task lock's fencing check aborts a fresh merge before the provid
 
 test("the fencing check is re-verified before each individual post-merge write, not only once at finalize()'s entry", async () => {
   const { store: evidence } = makeEvidenceStore();
+  // Allows the checks before mergePullRequest, after it confirms, at
+  // finalize()'s own entry, and immediately before the evidence write to
+  // all succeed (4 calls), then fails the very next one — the check
+  // immediately before the MERGE_READY -> MERGED lifecycle-state save. A
+  // single check-at-entry implementation would have let every remaining
+  // write (that save, the lock release, and the DONE save) proceed
+  // regardless.
+  const taskLock = new FakeTaskLock({ loseAfterAssertHeldCalls: 4 });
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord()],
+    mergeResult: { merged: true, sha: "merged-sha-1", message: "merged" },
+  });
+  const { controller, state } = makeController({ taskLock, pullRequests, evidenceStore: evidence });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "STATE_CONFLICT");
+    return true;
+  });
+
+  const history = evidence.getHistory(mergeEvidenceLineageId(task.taskId));
+  assert.equal(history.length, 1, "the evidence write itself already succeeded before this checkpoint");
+  assert.equal(
+    state.get(task.taskId).currentState,
+    "MERGE_READY",
+    "the MERGED transition itself must never be saved once the lock is detected lost before that specific write",
+  );
+});
+
+test("the fencing check also guards the evidence write itself, not only the lifecycle-state save that follows it", async () => {
+  const { store: evidence } = makeEvidenceStore();
   // Allows the checks before mergePullRequest, after it confirms, and at
   // finalize()'s own entry to all succeed (3 calls), then fails the very
-  // next one — the check this round's fix added immediately before the
-  // MERGE_READY -> MERGED lifecycle-state save. A single check-at-entry
-  // implementation would have let every remaining write (that save, the
-  // lock release, and the DONE save) proceed regardless.
+  // next one — the check this round's fix added immediately before
+  // evidenceStore.record() itself, closing the gap where losing the lock
+  // during getCurrentEvidence()'s own read (or the reusable computation)
+  // would otherwise leave record() as the next entirely unguarded write.
   const taskLock = new FakeTaskLock({ loseAfterAssertHeldCalls: 3 });
   const pullRequests = new FakePullRequestPort({
     existing: [prRecord()],
@@ -1313,11 +1344,9 @@ test("the fencing check is re-verified before each individual post-merge write, 
     return true;
   });
 
-  assert.equal(
-    state.get(task.taskId).currentState,
-    "MERGE_READY",
-    "the MERGED transition itself must never be saved once the lock is detected lost before that specific write",
-  );
+  const history = evidence.getHistory(mergeEvidenceLineageId(task.taskId));
+  assert.equal(history.length, 0, "no evidence record is written once the lock is detected lost before that specific write");
+  assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
 });
 
 test("resume rejects a lifecycle-history evidenceRef naming another task's merge-evidence lineage", async () => {
@@ -1449,6 +1478,27 @@ test("an evidence-store I/O failure after a confirmed merge is normalized to a r
   });
 
   assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
+});
+
+test("the controller itself rejects a merged=true result with an empty sha, not only the GitHub adapter", async () => {
+  // A ControlledMergePullRequestPort is a public port any caller may
+  // satisfy with a different adapter; this fake models one that never
+  // performs the GitHub adapter's own empty-sha check, to prove the
+  // controller enforces it independently at its own provider-neutral
+  // boundary.
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord()],
+    mergeResult: { merged: true, sha: "", message: "merged" },
+  });
+  const { controller, state } = makeController({ pullRequests });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "MERGE_NOT_CONFIRMED");
+    return true;
+  });
+
+  assert.equal(state.get(task.taskId).currentState, "MERGE_READY", "no evidence or lifecycle write happens for an unconfirmed merge");
 });
 
 test("GitHubControlledMergePullRequestOperations rejects a confirmed merge response with an empty sha", async () => {

@@ -94,6 +94,36 @@ test("release permits a new identity and keeps audit history", () => withStore((
   assert.equal(audit[1].reason, "Handing task back for reassignment.");
 }));
 
+test("release rejects when an explicit expectedOwnerId/expectedRunId/expectedCanonicalBranch guard no longer matches, even with the correct lockId", () => withStore((store) => {
+  assert.equal(store.acquire(acquire()).ok, true);
+
+  const wrongOwner = release(store, { expectedOwnerId: "someone-else" });
+  assert.equal(wrongOwner.ok, false);
+  assert.equal(wrongOwner.rejection.code, "LOCK_ID_MISMATCH");
+
+  const wrongRun = release(store, { expectedRunId: "someone-elses-run" });
+  assert.equal(wrongRun.ok, false);
+  assert.equal(wrongRun.rejection.code, "LOCK_ID_MISMATCH");
+
+  const wrongBranch = release(store, { expectedCanonicalBranch: "some/other/branch" });
+  assert.equal(wrongBranch.ok, false);
+  assert.equal(wrongBranch.rejection.code, "LOCK_ID_MISMATCH");
+
+  // The lock is still active and releasable once the guards match reality.
+  const matching = release(store, {
+    expectedOwnerId: "agent-a",
+    expectedRunId: "run-a",
+    expectedCanonicalBranch: "bootstrap/boot-010-assignment-locks",
+  });
+  assert.equal(matching.ok, true);
+}));
+
+test("release's expected* guards are optional and omitting them preserves the original lockId-only behavior", () => withStore((store) => {
+  assert.equal(store.acquire(acquire()).ok, true);
+  const released = release(store);
+  assert.equal(released.ok, true);
+}));
+
 test("reused lock IDs archive without destination collision", () => withStore((store) => {
   assert.equal(store.acquire(acquire()).ok, true);
   assert.equal(release(store).ok, true);

@@ -7,7 +7,7 @@
     "interfaces": [
       "FileAssignmentLockStore(root)",
       "AssignmentLockStore.acquire(request): LockResult",
-      "AssignmentLockStore.release(request): LockResult",
+      "AssignmentLockStore.release(request): LockResult, request accepts optional expectedOwnerId/expectedRunId/expectedCanonicalBranch compare-and-swap guards (BOOT-025) checked atomically against the same read that decides whether to mutate anything",
       "AssignmentLockStore.recoverStale(request): LockResult",
       "AssignmentLockStore.get(taskId): AssignmentLockRecord | null",
       "AssignmentLockStore.getAudit(taskId): readonly LockAuditEvent[]",
@@ -23,9 +23,11 @@
       "explicit-stale-recovery",
       "atomic-stale-recovery-claim",
       "auditable-release-recovery",
-      "collision-safe-lock-archive"
+      "collision-safe-lock-archive",
+      "optional-atomic-full-identity-compare-and-swap-on-release"
     ],
     "behavioralConstraints": [
+      "release()'s optional expectedOwnerId/expectedRunId/expectedCanonicalBranch guards, when any is supplied, are each checked against the currently active record read at the start of the same call; a mismatch on any one rejects the entire call as LOCK_ID_MISMATCH with no partial effect, and omitting all three preserves the original lockId-only match exactly",
       "at most one active task lock file is authoritative for a task",
       "canonicalBranch must exactly equal task metadata supplied by the caller",
       "all durable date-time values are RFC 3339 and schema-compatible",

@@ -12,7 +12,7 @@ BOOT-010 owns explicit assignment identity and lock semantics for repository tas
 
 - `FileAssignmentLockStore(root)`
 - `AssignmentLockStore.acquire(request): LockResult`
-- `AssignmentLockStore.release(request): LockResult`
+- `AssignmentLockStore.release(request): LockResult` — `request` accepts optional `expectedOwnerId`/`expectedRunId`/`expectedCanonicalBranch` compare-and-swap guards (BOOT-025): when supplied, `release()` rejects as `LOCK_ID_MISMATCH` unless the currently active record's `ownerId`/`runId`/`canonicalBranch` also match, checked atomically against the same read that decides whether to mutate anything. Omitting them preserves the original `lockId`-only match exactly.
 - `AssignmentLockStore.recoverStale(request): LockResult`
 - `AssignmentLockStore.get(taskId): AssignmentLockRecord | null`
 - `AssignmentLockStore.getAudit(taskId): readonly LockAuditEvent[]`
@@ -27,6 +27,7 @@ BOOT-010 owns explicit assignment identity and lock semantics for repository tas
 - Explicit stale-lock recovery protected by an atomic recovery claim.
 - Audited release and stale recovery.
 - Collision-safe archival of released/stale records and recovery claims.
+- Optional atomic full-identity compare-and-swap on release, closing the gap a `lockId`-only check leaves open when a caller's own separate, earlier full-identity check and the actual release call are not the same operation (a `lockId` reused by a later, differently-owned acquisition in between would otherwise still pass a `lockId`-only match).
 
 ## Behavioral constraints and ranges
 
@@ -39,6 +40,7 @@ BOOT-010 owns explicit assignment identity and lock semantics for repository tas
 - A stale recovery is bound to the exact stale lock ID and uses an exclusive recovery-claim file so two competing recovery attempts cannot both publish replacements.
 - A matching recovery identity may resume an interrupted recovery claim; a competing recovery identity receives `LOCK_CONFLICT`.
 - Archive destinations are generated collision-safely and may preserve repeated/reused lock IDs.
+- `release()`'s optional `expectedOwnerId`/`expectedRunId`/`expectedCanonicalBranch` guards are each checked independently when supplied; any one mismatching the currently active record rejects the entire call as `LOCK_ID_MISMATCH` before any write, with no partial effect.
 
 ## Invariants
 
