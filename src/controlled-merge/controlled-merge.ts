@@ -290,6 +290,7 @@ export class ControlledMergeController {
     if (
       recheck === null ||
       recheck.merged ||
+      recheck.state !== "open" ||
       recheck.headSha !== revision ||
       recheck.baseRef !== integrationTarget
     ) {
@@ -389,11 +390,24 @@ export class ControlledMergeController {
       existingEvidence.payload.pullRequestNumber === pullRequestNumber &&
       existingEvidence.payload.mergeCommitSha === mergeCommitSha;
 
+    // When reusing a record a prior, crashed attempt already wrote, the
+    // lock identity to release is *that* record's own assignmentLockAtMerge
+    // — never this retry's freshly captured lockIdentityToRelease. If the
+    // original assignment was recovered and reassigned in the interim (the
+    // exact reason this retry is even running with a different snapshot),
+    // trusting the retry's own snapshot here would release the replacement
+    // actor's active lock instead of correctly deferring to the identity
+    // the original, now-reused evidence already pinned.
+    let effectiveLockIdentityToRelease: LockIdentity | null;
+
     let evidenceLineageId: string;
     let evidenceSequence: number;
     if (reusable) {
       evidenceLineageId = (existingEvidence as StoredEvidenceRecord).lineageId;
       evidenceSequence = (existingEvidence as StoredEvidenceRecord).sequence;
+      effectiveLockIdentityToRelease = parsePersistedLockIdentity(
+        (existingEvidence as StoredEvidenceRecord).payload.assignmentLockAtMerge,
+      );
     } else {
       // The assignment-lock identity active at this exact moment is
       // persisted alongside the evidence itself — not just held in this
@@ -441,7 +455,17 @@ export class ControlledMergeController {
       }
       evidenceLineageId = recorded.record.lineageId;
       evidenceSequence = recorded.record.sequence;
+      effectiveLockIdentityToRelease = lockIdentityToRelease;
     }
+
+    // Re-checked immediately before this method's own next write: the
+    // evidence write (or the reuse-check's read) just above has no async
+    // gap of its own, but each fs operation still takes real wall-clock
+    // time, during which a genuinely stale holder's lock can be reclaimed
+    // by a concurrent process regardless of this process's own JS
+    // scheduling — narrowing the fencing window to "between individual
+    // writes," not just "once at the top of this whole call chain."
+    assertHeld();
 
     const evidenceRef = `${evidenceLineageId}@${evidenceSequence}`;
 
@@ -465,16 +489,25 @@ export class ControlledMergeController {
         `Lifecycle rejected '${task.taskId}' ${record.currentState} -> MERGED: ${mergedTransition.rejection.code}: ${mergedTransition.rejection.reason}`,
       );
     }
+    // Re-checked once more immediately before this write, for the same
+    // reason as above.
+    assertHeld();
     this.dependencies.stateStore.save(mergedTransition.record, record.currentState);
 
-    return this.completeFromMerged(task, mergedTransition.record, request, {
-      pullRequestNumber,
-      mergeCommitSha,
-      revision,
-      evidenceLineageId,
-      evidenceSequence,
-      lockIdentityToRelease,
-    });
+    return this.completeFromMerged(
+      task,
+      mergedTransition.record,
+      request,
+      {
+        pullRequestNumber,
+        mergeCommitSha,
+        revision,
+        evidenceLineageId,
+        evidenceSequence,
+        lockIdentityToRelease: effectiveLockIdentityToRelease,
+      },
+      assertHeld,
+    );
   }
 
   private resumeBookkeeping(
@@ -498,14 +531,20 @@ export class ControlledMergeController {
     // of this (possibly much later, possibly different-process) resume
     // call, which could easily belong to a completely different, legitimate
     // later assignment of the same task.
-    return this.completeFromMerged(task, record, request, {
-      pullRequestNumber: payload.pullRequestNumber,
-      mergeCommitSha: payload.mergeCommitSha,
-      revision: payload.revisionIdentity,
-      evidenceLineageId: evidence.lineageId,
-      evidenceSequence: evidence.sequence,
-      lockIdentityToRelease: parsePersistedLockIdentity(payload.assignmentLockAtMerge),
-    });
+    return this.completeFromMerged(
+      task,
+      record,
+      request,
+      {
+        pullRequestNumber: payload.pullRequestNumber,
+        mergeCommitSha: payload.mergeCommitSha,
+        revision: payload.revisionIdentity,
+        evidenceLineageId: evidence.lineageId,
+        evidenceSequence: evidence.sequence,
+        lockIdentityToRelease: parsePersistedLockIdentity(payload.assignmentLockAtMerge),
+      },
+      assertHeld,
+    );
   }
 
   private completeFromMerged(
@@ -520,7 +559,14 @@ export class ControlledMergeController {
       readonly evidenceSequence: number;
       readonly lockIdentityToRelease: LockIdentity | null;
     },
+    assertHeld: () => void,
   ): ControlledMergeResult {
+    // Fenced immediately before each of this method's two writes (the lock
+    // release, then the DONE save), not only once by a caller further up
+    // the chain — see finalize()'s own equivalent checks for why a single
+    // check does not cover a chain of multiple, individually time-taking
+    // fs operations.
+    assertHeld();
     this.releaseLockIfPresent(task.taskId, request, details.lockIdentityToRelease);
 
     const doneTransition = transitionLifecycle(record, {
@@ -543,6 +589,7 @@ export class ControlledMergeController {
         `Lifecycle rejected '${task.taskId}' MERGED -> DONE: ${doneTransition.rejection.code}: ${doneTransition.rejection.reason}`,
       );
     }
+    assertHeld();
     this.dependencies.stateStore.save(doneTransition.record, "MERGED");
 
     return Object.freeze({
@@ -689,16 +736,37 @@ export class ControlledMergeController {
         true,
       );
     }
+    if (current === null) {
+      // Fully gone (archived by a completed prior release, or never
+      // existed) — nothing left to touch.
+      return;
+    }
     if (
-      current === null ||
-      current.status !== "ACTIVE" ||
       current.lockId !== lockIdentityToRelease.lockId ||
       current.ownerId !== lockIdentityToRelease.ownerId ||
       current.runId !== lockIdentityToRelease.runId ||
       current.canonicalBranch !== lockIdentityToRelease.canonicalBranch
     ) {
+      // A different, legitimate assignment now holds this task's lock
+      // (reassigned while this call, or an earlier crashed attempt, was in
+      // flight) — left completely untouched regardless of its status.
       return;
     }
+    // The identity still matches — call release() even if current.status is
+    // already "RELEASED", rather than treating any non-ACTIVE status as
+    // proof the release fully completed. The concrete store's own release()
+    // writes the RELEASED status to the active record first, then appends
+    // an audit event, then archives that record as three separate steps;
+    // if either of the latter two throws, get() still observes status
+    // RELEASED (the first write already landed) at a record that was never
+    // actually archived and may have no audit entry. Treating that as
+    // "already handled" would advance to DONE while silently abandoning
+    // that unarchived record and its missing audit trail forever. Calling
+    // release() again — safe because it only checks lockId ownership, not
+    // status — either finishes that interrupted sequence (a harmless
+    // duplicate RELEASED audit entry alongside a completed archive) or, if
+    // the underlying failure persists, is caught below and normalized the
+    // same way any other release failure is.
     // release() itself, not only get(), can throw on the concrete lock
     // store's own write path (its active-record write, audit append, or
     // archive rename) — the same normalization boundary applies here as to

@@ -52,6 +52,7 @@
     },
     "assignmentLockAtMerge": {
       "description": "The assignment-lock identity active at the moment this confirmed merge was recorded, or null if none was active. Persisted so a later resume (a different call, possibly a different process) releases only the lock tied to *this* merge attempt, never whatever lock happens to be active at resume time.",
+      "type": ["object", "null"],
       "properties": {
         "lockId": { "type": "string", "minLength": 1 },
         "ownerId": { "type": "string", "minLength": 1 },

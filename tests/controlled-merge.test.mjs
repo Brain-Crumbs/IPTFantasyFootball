@@ -629,6 +629,47 @@ test("an already-released lock is treated as idempotent, not an error", async ()
   assert.equal(state.get(task.taskId).currentState, "DONE");
 });
 
+test("a partially-completed prior release (status already RELEASED but never archived) is retried rather than treated as already handled", async () => {
+  // Simulates a resume of a MERGED task whose *original* completion attempt
+  // called FileAssignmentLockStore.release(), which wrote the RELEASED
+  // status to the active record but then threw before appending its audit
+  // event or archiving that record — get() would observe exactly this on
+  // this retry: status RELEASED, at a record still carrying the exact
+  // identity the original evidence pinned as assignmentLockAtMerge.
+  const { store: evidence } = makeEvidenceStore();
+  const originalLockIdentity = { lockId: "lock-1", ownerId: "agent-1", runId: "run-1", canonicalBranch };
+  const recorded = evidence.record({
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:${revision}:${occurredAt}`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "prior-merge-sha",
+    policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
+    recordedAt: occurredAt,
+    assignmentLockAtMerge: originalLockIdentity,
+  });
+  assert.equal(recorded.ok, true);
+
+  const stateStore = new MemoryStateStore([
+    [task.taskId, lifecycleRecord(task.taskId, "MERGED", [historyEventFor("MERGED", recorded.record)])],
+  ]);
+  const lock = new FakeLockStore(lockRecord({ status: "RELEASED", releasedAt: occurredAt }));
+  const pullRequests = new FakePullRequestPort({});
+  const { controller, state } = makeController({ stateStore, evidenceStore: evidence, pullRequests, lock });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(
+    lock.releaseCalls.length,
+    1,
+    "release() is called again to finish the interrupted sequence, rather than skipped because status is no longer ACTIVE",
+  );
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
 test("a task not in MERGE_READY, MERGED, or DONE is rejected as not mergeable", async () => {
   const stateStore = new MemoryStateStore([[task.taskId, lifecycleRecord(task.taskId, "IN_DEVELOPMENT")]]);
   const { controller } = makeController({ stateStore });
@@ -977,6 +1018,24 @@ test("the pre-merge recheck rejects a pull request retargeted to a different bas
   assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
 });
 
+test("the pre-merge recheck rejects a pull request closed (without merging) after readiness evaluated it", async () => {
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord()],
+    // Head and base are unchanged from what readiness saw, and merged is
+    // still false (it was closed, not merged) — only state differs.
+    byNumber: [prRecord({ state: "closed" })],
+  });
+  const { controller, state } = makeController({ pullRequests });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.equal(error.code, "HEAD_CHANGED");
+    return true;
+  });
+
+  assert.equal(pullRequests.mergeCalls, 0, "a closed PR must never be passed to the merge provider");
+  assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
+});
+
 test("the pre-merge recheck fetches the exact PR readiness selected by number, ignoring an unrelated stray PR that would otherwise look more recent", async () => {
   // findPullRequestByHead (any state, most recent by creation) would return
   // this stray, unrelated closed PR if it were consulted for the recheck —
@@ -1025,6 +1084,45 @@ test("finalize reuses evidence already recorded for the exact confirmed merge ra
 
   const history = evidence.getHistory(mergeEvidenceLineageId(task.taskId));
   assert.equal(history.length, 1, "no duplicate evidence record was appended for the same confirmed merge");
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("finalize's reuse path releases the lock identity from the reused evidence, not this retry's own fresh snapshot", async () => {
+  const { store: evidence } = makeEvidenceStore();
+  const originalLockIdentity = { lockId: "original-lock", ownerId: "original-agent", runId: "original-run", canonicalBranch };
+  const firstRecord = evidence.record({
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:${revision}:${occurredAt}`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "merged-sha-1",
+    policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
+    recordedAt: occurredAt,
+    assignmentLockAtMerge: originalLockIdentity,
+  });
+  assert.equal(firstRecord.ok, true);
+
+  // Simulates a crash between record() and the MERGED lifecycle-state save,
+  // followed by the original assignment being recovered and reassigned to a
+  // different, legitimate actor before this retry runs.
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord({ merged: true, mergeCommitSha: "merged-sha-1" })],
+  });
+  const reassignedLock = lockRecord({ lockId: "replacement-lock", ownerId: "new-agent", runId: "new-run" });
+  const lock = new FakeLockStore(reassignedLock);
+  const { controller, state } = makeController({ pullRequests, evidenceStore: evidence, lock });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(
+    lock.releaseCalls.length,
+    0,
+    "the reassigned (replacement) lock never matches the reused evidence's own original identity, so release() is never called",
+  );
+  assert.equal(lock.lock.status, "ACTIVE", "the replacement assignment is left completely untouched");
   assert.equal(state.get(task.taskId).currentState, "DONE");
 });
 
@@ -1191,6 +1289,34 @@ test("the async task lock's fencing check aborts a fresh merge before the provid
     state.get(task.taskId).currentState,
     "MERGE_READY",
     "no evidence or lifecycle write happens once the lock is detected lost",
+  );
+});
+
+test("the fencing check is re-verified before each individual post-merge write, not only once at finalize()'s entry", async () => {
+  const { store: evidence } = makeEvidenceStore();
+  // Allows the checks before mergePullRequest, after it confirms, and at
+  // finalize()'s own entry to all succeed (3 calls), then fails the very
+  // next one — the check this round's fix added immediately before the
+  // MERGE_READY -> MERGED lifecycle-state save. A single check-at-entry
+  // implementation would have let every remaining write (that save, the
+  // lock release, and the DONE save) proceed regardless.
+  const taskLock = new FakeTaskLock({ loseAfterAssertHeldCalls: 3 });
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord()],
+    mergeResult: { merged: true, sha: "merged-sha-1", message: "merged" },
+  });
+  const { controller, state } = makeController({ taskLock, pullRequests, evidenceStore: evidence });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "STATE_CONFLICT");
+    return true;
+  });
+
+  assert.equal(
+    state.get(task.taskId).currentState,
+    "MERGE_READY",
+    "the MERGED transition itself must never be saved once the lock is detected lost before that specific write",
   );
 });
 

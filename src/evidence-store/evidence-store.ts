@@ -349,9 +349,11 @@ function matchesCondition(value: unknown, condition: JsonObject): boolean {
 // Minimal, self-contained validator for the JSON Schema subset used by
 // schemas/v1/validation-evidence.schema.json, schemas/v1/review-result.schema.json,
 // and schemas/v1/merge-evidence.schema.json:
-// type(including integer)/const/enum/minLength/pattern/format(date-time)/minimum/maximum/minItems/uniqueItems/items,
-// object properties/required/additionalProperties, $ref into local $defs, and
-// allOf entries expressed as { if, then } role/outcome-conditioned fragments.
+// type (a single string, or an array of alternatives such as ["object", "null"]
+// for a nullable field, including "integer")/const/enum/minLength/pattern/
+// format(date-time)/minimum/maximum/minItems/uniqueItems/items, object
+// properties/required/additionalProperties, $ref into local $defs, and allOf
+// entries expressed as { if, then } role/outcome-conditioned fragments.
 function validateValue(value: unknown, schema: JsonObject, root: JsonObject, instancePath = "$"): string[] {
   if (typeof schema.$ref === "string") {
     const resolved = resolveRef(schema.$ref, root);
@@ -370,18 +372,21 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
     if (!matches) reasons.push(`${instancePath}: value is not in the allowed enum`);
   }
 
-  const expectedType = typeof schema.type === "string" ? schema.type : null;
-  if (expectedType === "integer") {
-    if (jsonType(value) !== "number" || !Number.isInteger(value)) {
-      reasons.push(`${instancePath}: expected integer, received ${jsonType(value)}`);
-      return reasons;
-    }
-  } else if (expectedType !== null && jsonType(value) !== expectedType) {
-    reasons.push(`${instancePath}: expected ${expectedType}, received ${jsonType(value)}`);
+  const declaredTypes: readonly string[] | null = Array.isArray(schema.type)
+    ? schema.type.filter((entry): entry is string => typeof entry === "string")
+    : typeof schema.type === "string"
+      ? [schema.type]
+      : null;
+  const hasType = (type: string): boolean => declaredTypes !== null && declaredTypes.includes(type);
+  const matchesAnyDeclaredType =
+    declaredTypes === null ||
+    declaredTypes.some((type) => (type === "integer" ? jsonType(value) === "number" && Number.isInteger(value) : jsonType(value) === type));
+  if (!matchesAnyDeclaredType) {
+    reasons.push(`${instancePath}: expected ${(declaredTypes as readonly string[]).join(" or ")}, received ${jsonType(value)}`);
     return reasons;
   }
 
-  if ((expectedType === "number" || expectedType === "integer") && typeof value === "number") {
+  if ((hasType("number") || hasType("integer")) && typeof value === "number") {
     if (typeof schema.minimum === "number" && value < schema.minimum) {
       reasons.push(`${instancePath}: number must be >= ${schema.minimum}`);
     }
@@ -390,7 +395,7 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
     }
   }
 
-  if (expectedType === "string" && typeof value === "string") {
+  if (hasType("string") && typeof value === "string") {
     if (typeof schema.minLength === "number" && value.length < schema.minLength) {
       reasons.push(`${instancePath}: string length must be at least ${schema.minLength}`);
     }
@@ -402,7 +407,7 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
     }
   }
 
-  if (expectedType === "array" && Array.isArray(value)) {
+  if (hasType("array") && Array.isArray(value)) {
     if (typeof schema.minItems === "number" && value.length < schema.minItems) {
       reasons.push(`${instancePath}: array must contain at least ${schema.minItems} item(s)`);
     }
@@ -427,7 +432,7 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
   // Schema fragments used inside `then` (e.g. { required: ["nonPass"] }) omit an
   // explicit "type", so an object-shaped instance is still checked against any
   // properties/required/additionalProperties the fragment declares.
-  if (isObject(value) && (expectedType === "object" || expectedType === null)) {
+  if (isObject(value) && (declaredTypes === null || hasType("object"))) {
     const properties = isObject(schema.properties) ? (schema.properties as JsonObject) : {};
     const required = Array.isArray(schema.required)
       ? schema.required.filter((item): item is string => typeof item === "string").sort(compareText)

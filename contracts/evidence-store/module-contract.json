@@ -38,7 +38,8 @@
       "every accepted record is written to a new, never-reused sequence file within its lineage; no existing record file is ever overwritten or deleted",
       "getCurrent returns the highest-sequence record for a lineage; getHistory returns every record for a lineage in sequence order with status CURRENT on the last entry and SUPERSEDED on all earlier entries",
       "checkRevision distinguishes CURRENT (matches expectedRevisionIdentity), REVISION_MISMATCH (a current record exists but for a different revision), and NOT_FOUND (no record exists for the lineage) so a caller can never mistake evidence as applying to a revision it was not recorded against",
-      "the schema validator's supported JSON Schema subset includes the integer type and the minimum/maximum numeric keywords (BOOT-025), so a numeric field declared type: integer with a minimum rejects a fractional, zero, or out-of-range value at record() time, not only in the separate Python fixture validator"
+      "the schema validator's supported JSON Schema subset includes the integer type and the minimum/maximum numeric keywords (BOOT-025), so a numeric field declared type: integer with a minimum rejects a fractional, zero, or out-of-range value at record() time, not only in the separate Python fixture validator",
+      "the schema validator's type keyword accepts either a single type string or an array of alternative type strings (BOOT-025), so a field declared type: [\"object\", \"null\"] rejects any value that is neither a well-formed object nor a genuine null at record() time — every existing single-string type declaration continues to behave identically"
     ],
     "invariants": [
       "the store performs no lifecycle state transition",

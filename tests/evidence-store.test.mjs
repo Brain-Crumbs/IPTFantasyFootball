@@ -77,6 +77,53 @@ test("merge-evidence records derive a per-task merge lineage distinct from valid
   });
 });
 
+test("merge-evidence accepts a well-formed assignmentLockAtMerge object or an explicit null", () => {
+  withStore((store) => {
+    const base = {
+      schemaId: "ipt.merge-evidence",
+      schemaVersion: "1.0.0",
+      evidenceId: "evidence-merge-lock-1",
+      taskId: "BOOT-025",
+      revisionIdentity: "sha-aaa111",
+      pullRequestNumber: 63,
+      mergeCommitSha: "sha-merge-1",
+      policyDecisionReference: "control-plane.merge-readiness:BOOT-025@sha-aaa111:ready",
+      recordedAt: "2026-09-10T00:00:00Z",
+    };
+
+    const withLock = store.record({
+      ...base,
+      assignmentLockAtMerge: { lockId: "lock-1", ownerId: "agent-1", runId: "run-1", canonicalBranch: "claude/x" },
+    });
+    assert.equal(withLock.ok, true);
+
+    const withNull = store.record({ ...base, evidenceId: "evidence-merge-lock-2", assignmentLockAtMerge: null });
+    assert.equal(withNull.ok, true);
+  });
+});
+
+test("merge-evidence rejects an assignmentLockAtMerge value that is neither an object nor null", () => {
+  withStore((store) => {
+    const base = {
+      schemaId: "ipt.merge-evidence",
+      schemaVersion: "1.0.0",
+      evidenceId: "evidence-merge-lock-bad",
+      taskId: "BOOT-025",
+      revisionIdentity: "sha-aaa111",
+      pullRequestNumber: 63,
+      mergeCommitSha: "sha-merge-1",
+      policyDecisionReference: "control-plane.merge-readiness:BOOT-025@sha-aaa111:ready",
+      recordedAt: "2026-09-10T00:00:00Z",
+    };
+
+    for (const malformed of ["not-an-object", 42, ["array", "not", "object"], true]) {
+      const result = store.record({ ...base, assignmentLockAtMerge: malformed });
+      assert.equal(result.ok, false, `expected assignmentLockAtMerge=${JSON.stringify(malformed)} to be rejected`);
+      assert.equal(result.rejection.code, "SCHEMA_VALIDATION_FAILED");
+    }
+  });
+});
+
 test("write/read evidence for one revision", () => {
   withStore((store) => {
     const result = store.record(validationEvidence());
