@@ -218,10 +218,10 @@ export class ControlledMergeController {
       // revision this task's own MERGE_READY-for-revision approval covers.
       // (existing.merged and existing.headSha === approvedRevision are
       // already guaranteed by the find() predicate above.)
-      if (existing.mergeCommitSha === null) {
+      if (existing.mergeCommitSha === null || existing.mergeCommitSha.length === 0) {
         throw new ControlledMergeError(
           "MERGE_NOT_CONFIRMED",
-          `Task '${task.taskId}' pull request #${existing.number} reports merged=true with no merge commit SHA.`,
+          `Task '${task.taskId}' pull request #${existing.number} reports merged=true with no usable merge commit SHA.`,
         );
       }
       assertHeld();
@@ -1168,19 +1168,53 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     }
   }
 
+  // A plain read-then-unlink (the original implementation) is not actually
+  // atomic: if a stale reclaimer's own claim (reclaimIfStale) renames the
+  // old lock away, verifies it, and writes its own fresh replacement back
+  // to lockPath in the gap between this call's read and its unlinkSync,
+  // that unlinkSync would delete the *replacement's* lock file — not this
+  // (already-gone) holder's own — letting a third caller's tryCreate()
+  // succeed as if the task were unlocked, while the replacement's own
+  // callback is still actively running unaware it lost its lock. Claiming
+  // the path via an atomic rename first, then verifying the captured
+  // content is genuinely this holder's own token before discarding it (or
+  // restoring it untouched otherwise), closes that gap the same way
+  // reclaimIfStale's own claim already does.
   private release(lockPath: string, token: string): void {
-    let current: string | null;
+    const claimPath = `${lockPath}.release-claim-${randomLockToken()}`;
     try {
-      current = readFileSync(lockPath, "utf8");
+      renameSync(lockPath, claimPath);
     } catch {
-      current = null;
+      return; // Already gone; nothing left to release.
     }
-    if (current !== token) return;
+
+    let observed: string | null;
     try {
-      unlinkSync(lockPath);
+      observed = readFileSync(claimPath, "utf8");
     } catch {
-      // Already gone, or reclaimed by another process as stale; either way
-      // there is nothing left for this holder to clean up.
+      observed = null;
+    }
+    if (observed !== token) {
+      // Not this holder's own lock (a reclaimer's fresh replacement, most
+      // likely) — restore it untouched rather than discarding it.
+      if (observed !== null) {
+        try {
+          writeFileSync(lockPath, observed, { encoding: "utf8", flag: "wx" });
+        } catch {
+          // A fresh lock now exists at lockPath; nothing to restore onto.
+        }
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return;
+    }
+    try {
+      unlinkSync(claimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
     }
   }
 
@@ -1640,7 +1674,14 @@ function isValidRfc3339DateTime(value: string): boolean {
   if (day < 1 || day > maxDay) return false;
   if (hour > 23) return false;
   if (minute > 59) return false;
-  if (second > 59) return false;
+  // RFC 3339's grammar allows a seconds value of 60 for a leap second, but
+  // only ever at 23:59:60 — never any other minute/hour — so a bare
+  // `second > 59` upper bound would either reject every real leap-second
+  // timestamp (too strict) or, if simply raised to 60 everywhere, accept
+  // "12:00:60" as if any minute could run long (too loose). This checks
+  // both without needing an actual historical leap-second calendar.
+  if (second > 60) return false;
+  if (second === 60 && (hour !== 23 || minute !== 59)) return false;
 
   if (match[7] !== undefined) {
     const offsetHour = Number(match[8]);

@@ -118,6 +118,22 @@ test("release rejects when an explicit expectedOwnerId/expectedRunId/expectedCan
   assert.equal(matching.ok, true);
 }));
 
+test("a release() call that fails its identity check leaves the active record fully intact, not merely absent", () => withStore((store) => {
+  // release() now claims the active file via an atomic rename before
+  // verifying identity, rather than reading then blindly overwriting; a
+  // failed check must restore that claimed record byte-for-byte rather
+  // than leaving it lost or corrupted.
+  assert.equal(store.acquire(acquire()).ok, true);
+  const before = store.get("BOOT-010");
+
+  const mismatched = release(store, { lockId: "not-the-real-lock-id" });
+  assert.equal(mismatched.ok, false);
+  assert.equal(mismatched.rejection.code, "LOCK_ID_MISMATCH");
+
+  const after = store.get("BOOT-010");
+  assert.deepEqual(after, before);
+}));
+
 test("release's expected* guards are optional and omitting them preserves the original lockId-only behavior", () => withStore((store) => {
   assert.equal(store.acquire(acquire()).ok, true);
   const released = release(store);

@@ -291,7 +291,25 @@ function validateRequest(request: TransitionRequest): string | null {
     if (value !== undefined && value.trim().length === 0) return `Transition ${name}, when supplied, must be a non-empty string.`;
   }
 
-  if (!RFC3339_PATTERN.test(request.occurredAt) || Number.isNaN(Date.parse(request.occurredAt))) {
+  if (!RFC3339_PATTERN.test(request.occurredAt)) {
+    return "Transition occurredAt must be a valid RFC 3339 date-time.";
+  }
+  // Date.parse() has no concept of an RFC 3339 leap second (a seconds value
+  // of exactly 60, valid only at 23:59:60) and unconditionally returns NaN
+  // for one — a real concern here specifically because an upstream caller
+  // (control-plane.controlled-merge, control-plane.evidence-store) already
+  // accepts a leap-second occurredAt at its own entry validation, and by
+  // the time that same value reaches a lifecycle transition, an
+  // irreversible action (a confirmed merge, recorded evidence) has already
+  // happened; rejecting it only here, this late, would strand that
+  // otherwise-successful operation in a state whose own history event
+  // could never be recorded. The exact leap-second shape is substituted
+  // with :59 for Date.parse's own sanity check only (still catching a
+  // genuinely malformed date elsewhere in the string, like an out-of-range
+  // month), never persisted or reported back.
+  const leapSecondMatch = /^(\d{4}-\d{2}-\d{2}T23:59):60((?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))$/.exec(request.occurredAt);
+  const parseableForm = leapSecondMatch ? `${leapSecondMatch[1]}:59${leapSecondMatch[2]}` : request.occurredAt;
+  if (Number.isNaN(Date.parse(parseableForm))) {
     return "Transition occurredAt must be a valid RFC 3339 date-time.";
   }
 

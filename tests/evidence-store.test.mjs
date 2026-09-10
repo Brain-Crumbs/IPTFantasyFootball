@@ -394,6 +394,17 @@ test("rejects an out-of-range hour/month in recordedAt", () => {
   });
 });
 
+test("accepts a genuine RFC 3339 leap-second recordedAt (23:59:60) but rejects second 60 at any other time", () => {
+  withStore((store) => {
+    const leap = store.record(validationEvidence({ recordedAt: "2026-09-09T23:59:60Z" }));
+    assert.equal(leap.ok, true);
+
+    const notLeap = store.record(validationEvidence({ recordedAt: "2026-09-09T12:00:60Z" }));
+    assert.equal(notLeap.ok, false);
+    assert.equal(notLeap.rejection.code, "SCHEMA_VALIDATION_FAILED");
+  });
+});
+
 test("rejects an unexpected property nested inside a $ref-resolved review-result details shape", () => {
   withStore((store) => {
     const fixture = readFixture("review-result.valid.json");

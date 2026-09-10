@@ -493,7 +493,14 @@ function isValidRfc3339DateTime(value: string): boolean {
   if (day < 1 || day > maxDay) return false;
   if (hour > 23) return false;
   if (minute > 59) return false;
-  if (second > 59) return false;
+  // RFC 3339's grammar allows a seconds value of 60 for a leap second, but
+  // only ever at 23:59:60 — never any other minute/hour — so a bare
+  // `second > 59` upper bound would either reject every real leap-second
+  // timestamp (too strict) or, if simply raised to 60 everywhere, accept
+  // "12:00:60" as if any minute could run long (too loose). This checks
+  // both without needing an actual historical leap-second calendar.
+  if (second > 60) return false;
+  if (second === 60 && (hour !== 23 || minute !== 59)) return false;
 
   if (match[7] !== undefined) {
     const offsetHour = Number(match[8]);

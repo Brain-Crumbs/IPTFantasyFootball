@@ -12,7 +12,7 @@ BOOT-010 owns explicit assignment identity and lock semantics for repository tas
 
 - `FileAssignmentLockStore(root)`
 - `AssignmentLockStore.acquire(request): LockResult`
-- `AssignmentLockStore.release(request): LockResult` — `request` accepts optional `expectedOwnerId`/`expectedRunId`/`expectedCanonicalBranch` compare-and-swap guards (BOOT-025): when supplied, `release()` rejects as `LOCK_ID_MISMATCH` unless the currently active record's `ownerId`/`runId`/`canonicalBranch` also match, checked atomically against the same read that decides whether to mutate anything. Omitting them preserves the original `lockId`-only match exactly.
+- `AssignmentLockStore.release(request): LockResult` — `request` accepts optional `expectedOwnerId`/`expectedRunId`/`expectedCanonicalBranch` compare-and-swap guards (BOOT-025), checked against the exact same record `release()` atomically claims before ever mutating it (see "Behavioral constraints and ranges" below) — never a separate, earlier read a concurrent operation could invalidate before the actual mutation runs. Omitting the optional fields preserves the original `lockId`-only match exactly.
 - `AssignmentLockStore.recoverStale(request): LockResult`
 - `AssignmentLockStore.get(taskId): AssignmentLockRecord | null`
 - `AssignmentLockStore.getAudit(taskId): readonly LockAuditEvent[]`
@@ -28,6 +28,7 @@ BOOT-010 owns explicit assignment identity and lock semantics for repository tas
 - Audited release and stale recovery.
 - Collision-safe archival of released/stale records and recovery claims.
 - Optional atomic full-identity compare-and-swap on release, closing the gap a `lockId`-only check leaves open when a caller's own separate, earlier full-identity check and the actual release call are not the same operation (a `lockId` reused by a later, differently-owned acquisition in between would otherwise still pass a `lockId`-only match).
+- `release()` itself claims the active record via an atomic rename before ever inspecting or mutating it (mirroring `reclaimIfStale`'s own claim technique), rather than a plain read followed by a separate, later write: a bare read-then-write cannot rule out a concurrent `recoverStale()` replacing the assignment in between, which would otherwise let `release()` blindly overwrite (and then archive) that replacement — even a differently-owned one — using only the stale data its earlier read observed.
 
 ## Behavioral constraints and ranges
 
@@ -41,6 +42,7 @@ BOOT-010 owns explicit assignment identity and lock semantics for repository tas
 - A matching recovery identity may resume an interrupted recovery claim; a competing recovery identity receives `LOCK_CONFLICT`.
 - Archive destinations are generated collision-safely and may preserve repeated/reused lock IDs.
 - `release()`'s optional `expectedOwnerId`/`expectedRunId`/`expectedCanonicalBranch` guards are each checked independently when supplied; any one mismatching the currently active record rejects the entire call as `LOCK_ID_MISMATCH` before any write, with no partial effect.
+- A `release()` call whose identity check fails restores the claimed record to the active path exactly as observed, byte-for-byte, rather than leaving it lost, corrupted, or merely absent; if a third operation has since created its own fresh record at that path, the restore is skipped entirely (that operation's data is left untouched) rather than clobbering it.
 
 ## Invariants
 

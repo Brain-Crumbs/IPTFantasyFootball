@@ -139,6 +139,20 @@ test("schema-invalid transition metadata is rejected without mutation", () => {
   }
 });
 
+test("a genuine RFC 3339 leap-second occurredAt (23:59:60) is accepted despite Date.parse's own inability to represent one", () => {
+  const record = createLifecycleRecord("BOOT-009");
+  const result = transitionLifecycle(record, request(record, "READY", "leap-second", { occurredAt: "2026-09-03T23:59:60Z" }));
+  assert.equal(result.ok, true, result.ok ? undefined : result.rejection.reason);
+  assert.equal(result.record.history[0].occurredAt, "2026-09-03T23:59:60Z");
+});
+
+test("second 60 outside the leap-second position (23:59:60) is still rejected", () => {
+  const record = createLifecycleRecord("BOOT-009");
+  const result = transitionLifecycle(record, request(record, "READY", "not-leap-second", { occurredAt: "2026-09-03T12:00:60Z" }));
+  assert.equal(result.ok, false);
+  assert.equal(result.rejection.code, "INVALID_REQUEST");
+});
+
 test("transition table explicitly declares prerequisites", () => {
   assert.ok(TRANSITION_RULES.length > 0);
   assert.ok(TRANSITION_RULES.every((rule) => Array.isArray(rule.prerequisites)));

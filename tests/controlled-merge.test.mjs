@@ -814,6 +814,22 @@ test("an already-merged PR is trusted only when the lifecycle history is bound t
   assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
 });
 
+test("an already-merged PR reporting an empty-string merge commit SHA is rejected as MERGE_NOT_CONFIRMED, not just a null one", async () => {
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord({ merged: true, mergeCommitSha: "" })],
+  });
+  const { controller, state } = makeController({ pullRequests });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "MERGE_NOT_CONFIRMED");
+    return true;
+  });
+
+  assert.equal(pullRequests.mergeCalls, 0);
+  assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
+});
+
 test("an already-merged PR into the wrong base is not trusted even when the lifecycle history is bound to the revision", async () => {
   const pullRequests = new FakePullRequestPort({
     existing: [prRecord({ merged: true, mergeCommitSha: "should-not-be-trusted", baseRef: "develop" })],
@@ -1162,6 +1178,22 @@ test("an out-of-range timezone offset in occurredAt is rejected before any provi
   );
 
   assert.equal(pullRequests.findCalls, 0);
+});
+
+test("a genuine RFC 3339 leap-second occurredAt (23:59:60) is accepted, but second 60 at any other time is not", async () => {
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord()],
+    mergeResult: { merged: true, sha: "merged-sha-1", message: "merged" },
+  });
+  const { controller: leapController } = makeController({ pullRequests });
+  const leapResult = await leapController.merge(request({ occurredAt: "2026-09-10T23:59:60Z" }));
+  assert.equal(leapResult.lifecycleState, "DONE");
+
+  const { controller: rejectController } = makeController();
+  await assert.rejects(
+    () => rejectController.merge(request({ occurredAt: "2026-09-10T12:00:60Z" })), // not 23:59
+    (error) => error.code === "INVALID_REQUEST",
+  );
 });
 
 test("crash recovery finds the confirmed merge even when a stray unrelated PR is now the most recent for the branch", async () => {

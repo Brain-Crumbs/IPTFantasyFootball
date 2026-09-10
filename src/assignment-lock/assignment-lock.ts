@@ -200,31 +200,86 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     return Object.freeze({ ok: true, lock, idempotent: false });
   }
 
+  // A plain read-then-write (the original implementation) is not actually
+  // atomic: another operation — most notably recoverStale() replacing this
+  // exact assignment with a new, legitimately-owned one — can complete in
+  // the gap between this call's own read and its later writeFileSync, which
+  // would otherwise unconditionally overwrite (and then archive) that
+  // replacement with this call's stale, pre-read data, destroying a
+  // legitimate assignee's active work. This claims the active file via an
+  // atomic rename first (the same technique reclaimIfStale/recoverStale's
+  // own claim mechanism use elsewhere in this module), so whichever
+  // operation's rename actually lands first captures the genuinely current
+  // content; this call then verifies that captured content still matches
+  // the identity it expects before ever mutating it, restoring it
+  // untouched (or, if a third party has since claimed the path again,
+  // simply leaving it be) rather than proceeding on stale assumptions.
   release(request: ReleaseAssignmentRequest): LockResult {
     const invalid = validateRelease(request);
     if (invalid) return reject("INVALID_REQUEST", invalid);
-    const current = this.get(request.taskId);
-    if (!current) return reject("LOCK_NOT_FOUND", `Task '${request.taskId}' has no active assignment lock.`);
-    if (
-      current.lockId !== request.lockId ||
-      (request.expectedOwnerId !== undefined && current.ownerId !== request.expectedOwnerId) ||
-      (request.expectedRunId !== undefined && current.runId !== request.expectedRunId) ||
-      (request.expectedCanonicalBranch !== undefined && current.canonicalBranch !== request.expectedCanonicalBranch)
-    ) {
-      return reject("LOCK_ID_MISMATCH", `Lock '${request.lockId}' does not own task '${request.taskId}'.`, current);
+
+    const activePath = this.#activePath(request.taskId);
+    const claimPath = `${activePath}.release-claim-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    try {
+      renameSync(activePath, claimPath);
+    } catch {
+      return reject("LOCK_NOT_FOUND", `Task '${request.taskId}' has no active assignment lock.`);
     }
 
-    const released = freezeLock({ ...current, status: "RELEASED", releasedAt: request.occurredAt });
-    writeFileSync(this.#activePath(request.taskId), `${JSON.stringify(released, null, 2)}\n`, { encoding: "utf8" });
+    const observed = freezeLock(JSON.parse(readFileSync(claimPath, "utf8")) as AssignmentLockRecord);
+    if (
+      observed.lockId !== request.lockId ||
+      (request.expectedOwnerId !== undefined && observed.ownerId !== request.expectedOwnerId) ||
+      (request.expectedRunId !== undefined && observed.runId !== request.expectedRunId) ||
+      (request.expectedCanonicalBranch !== undefined && observed.canonicalBranch !== request.expectedCanonicalBranch)
+    ) {
+      // Not this call's assignment to release (either it never was, or a
+      // concurrent operation already replaced it before this claim landed).
+      // Restore the claimed record exactly as observed, untouched, rather
+      // than discarding someone else's active assignment.
+      try {
+        writeFileSync(activePath, `${JSON.stringify(observed, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+      } catch {
+        // A third operation has since created its own fresh record at
+        // activePath; there is nothing to restore onto.
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return reject("LOCK_ID_MISMATCH", `Lock '${request.lockId}' does not own task '${request.taskId}'.`, observed);
+    }
+
+    const released = freezeLock({ ...observed, status: "RELEASED", releasedAt: request.occurredAt });
+    try {
+      writeFileSync(activePath, `${JSON.stringify(released, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    } catch {
+      // A concurrent operation has already created its own fresh record at
+      // activePath in the gap this claim opened; that record belongs to
+      // whoever legitimately claimed it, so this call backs off entirely
+      // rather than resurrecting the stale content it holds.
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return reject("LOCK_ID_MISMATCH", `Lock '${request.lockId}' does not own task '${request.taskId}'.`, observed);
+    }
+    try {
+      unlinkSync(claimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
     this.#appendAudit(request.taskId, {
       action: "RELEASED",
       occurredAt: request.occurredAt,
       actorId: request.actorId,
       runId: request.runId,
       reason: request.reason,
-      priorLockId: current.lockId,
+      priorLockId: observed.lockId,
     });
-    renameSync(this.#activePath(request.taskId), this.#uniqueArchivePath(request.taskId, current.lockId, "released", request.occurredAt));
+    renameSync(activePath, this.#uniqueArchivePath(request.taskId, observed.lockId, "released", request.occurredAt));
     return Object.freeze({ ok: true, lock: released, idempotent: false });
   }
 

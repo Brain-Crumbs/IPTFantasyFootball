@@ -27,7 +27,7 @@
       "optional-atomic-full-identity-compare-and-swap-on-release"
     ],
     "behavioralConstraints": [
-      "release()'s optional expectedOwnerId/expectedRunId/expectedCanonicalBranch guards, when any is supplied, are each checked against the currently active record read at the start of the same call; a mismatch on any one rejects the entire call as LOCK_ID_MISMATCH with no partial effect, and omitting all three preserves the original lockId-only match exactly",
+      "release() claims the active record via an atomic rename before inspecting or mutating it, then checks lockId plus any supplied expectedOwnerId/expectedRunId/expectedCanonicalBranch guards against that exact claimed content — never a separate, earlier read a concurrent recoverStale() could invalidate before the actual mutation runs; a mismatch on any one rejects the entire call as LOCK_ID_MISMATCH with no partial effect and restores the claimed record to the active path byte-for-byte (or, if a third operation has since created its own fresh record there, leaves that record untouched instead of overwriting it), and omitting all three optional guards preserves the original lockId-only match exactly",
       "at most one active task lock file is authoritative for a task",
       "canonicalBranch must exactly equal task metadata supplied by the caller",
       "all durable date-time values are RFC 3339 and schema-compatible",

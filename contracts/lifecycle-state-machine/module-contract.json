@@ -50,7 +50,7 @@
     ],
     "edgeCases": [
       "empty reason evidenceRef or eventId is rejected",
-      "invalid occurredAt date-time is rejected",
+      "invalid occurredAt date-time is rejected, except a genuine RFC 3339 leap second (23:59:60, in any offset), which is accepted despite Date.parse() being unable to represent one (BOOT-025) — a seconds value of 60 anywhere other than 23:59:60 is still rejected",
       "duplicate required review roles are rejected",
       "attempting PLANNED READY or ASSIGNED to BLOCKED is rejected",
       "review target inconsistent with requiredReviewRoles is rejected"
