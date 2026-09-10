@@ -347,8 +347,9 @@ function matchesCondition(value: unknown, condition: JsonObject): boolean {
 }
 
 // Minimal, self-contained validator for the JSON Schema subset used by
-// schemas/v1/validation-evidence.schema.json and schemas/v1/review-result.schema.json:
-// type/const/enum/minLength/pattern/format(date-time)/minItems/uniqueItems/items,
+// schemas/v1/validation-evidence.schema.json, schemas/v1/review-result.schema.json,
+// and schemas/v1/merge-evidence.schema.json:
+// type(including integer)/const/enum/minLength/pattern/format(date-time)/minimum/maximum/minItems/uniqueItems/items,
 // object properties/required/additionalProperties, $ref into local $defs, and
 // allOf entries expressed as { if, then } role/outcome-conditioned fragments.
 function validateValue(value: unknown, schema: JsonObject, root: JsonObject, instancePath = "$"): string[] {
@@ -370,9 +371,23 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
   }
 
   const expectedType = typeof schema.type === "string" ? schema.type : null;
-  if (expectedType !== null && jsonType(value) !== expectedType) {
+  if (expectedType === "integer") {
+    if (jsonType(value) !== "number" || !Number.isInteger(value)) {
+      reasons.push(`${instancePath}: expected integer, received ${jsonType(value)}`);
+      return reasons;
+    }
+  } else if (expectedType !== null && jsonType(value) !== expectedType) {
     reasons.push(`${instancePath}: expected ${expectedType}, received ${jsonType(value)}`);
     return reasons;
+  }
+
+  if ((expectedType === "number" || expectedType === "integer") && typeof value === "number") {
+    if (typeof schema.minimum === "number" && value < schema.minimum) {
+      reasons.push(`${instancePath}: number must be >= ${schema.minimum}`);
+    }
+    if (typeof schema.maximum === "number" && value > schema.maximum) {
+      reasons.push(`${instancePath}: number must be <= ${schema.maximum}`);
+    }
   }
 
   if (expectedType === "string" && typeof value === "string") {

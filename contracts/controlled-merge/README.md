@@ -22,11 +22,15 @@
 
 No step ever overrides a failed check with a caller-supplied flag.
 
+## Exclusive per-task locking
+
+`merge()` acquires an exclusive `ControlledMergeTaskLock` around its entire read-decide-write critical section — the existing-merge check, readiness re-evaluation, pre-merge re-check, the merge provider call itself, the evidence write, and both lifecycle writes — before doing anything else. This mirrors BOOT-018's/BOOT-019's/BOOT-020's/BOOT-021's own file-based task locks exactly (per-acquisition token, atomic-rename stale reclaim, ownership-safe release), extended to an async `withLock<T>(taskId, fn: () => Promise<T>): Promise<T>` signature since this module's critical section spans awaited provider calls those synchronous locks never needed to. A second `merge()` call for the same task while the first is still in flight is rejected as `STATE_CONFLICT` rather than interleaving reads and writes with the first.
+
 ## Resumability: the central design constraint
 
 Issue #27's validation scenarios require: "merge succeeds but bookkeeping is interrupted, then resume without duplicate merge." This module's control flow is organized entirely around that requirement, using the task's own persisted lifecycle state as the resume dispatch key:
 
-- **`MERGE_READY`** — the normal entry point. Before evaluating readiness at all, the canonical branch's pull request is looked up in *any* state (not only `open`). If it is already `merged: true` — because this exact controller's own earlier call already confirmed the merge but crashed before persisting evidence, or because the PR was merged out of band — the confirmed result is verified against the task's approved revision and used to finalize directly, with **no** merge-readiness evaluation and **no** second `mergePullRequest` call. Only when the pull request is not yet merged does the full readiness-evaluate → re-check → merge sequence run.
+- **`MERGE_READY`** — the normal entry point. Before evaluating readiness at all, the canonical branch's pull request is looked up in *any* state (not only `open`). It is trusted as a confirmed prior result — skipping merge-readiness evaluation and the `mergePullRequest` call entirely — only when it already reports `merged: true` **and** the task's own lifecycle history still binds its `MERGE_READY` transition to the exact current revision **and** its base matches the configured `integrationTarget` (default `main`). This three-part gate matters: `merged: true` alone is not enough to trust a shortcut that skips every other BOOT-024 check, since a stale lifecycle binding (a later commit landed without a new review cycle) or a PR merged into the wrong base could otherwise slip through. When the gate fails, control simply falls through to the normal readiness-evaluate path below — which safely rejects, since the merged/closed PR is invisible to `findOpenPullRequests` and `evaluate()` reports `PULL_REQUEST_NOT_FOUND` — rather than trusting a claim it cannot verify. Only when the pull request is not yet merged (or the gate fails) does the full readiness-evaluate → re-check → merge sequence run.
 - **`MERGED`** — evidence and the `MERGED` transition already persisted; only lock release and the `MERGED -> DONE` transition were interrupted. Resuming here reads the already-persisted `ipt.merge-evidence` record and finishes bookkeeping with **zero** pull-request provider calls and **zero** merge-readiness calls.
 - **`DONE`** — fully complete. Returns the persisted evidence unchanged, with no writes of any kind.
 
@@ -51,10 +55,12 @@ Dependency-port boundaries (satisfied structurally by existing modules):
 - `ControlledMergeEvidenceStore.record(payload)/getCurrent(lineageId)` — satisfied by the unmodified `control-plane.evidence-store`'s `FileEvidenceStore`, now also serving the new `ipt.merge-evidence` schema (see below)
 - `ControlledMergeLockStore.get(taskId)/release(request)` — satisfied by the unmodified `control-plane.assignment-lock`'s `FileAssignmentLockStore`
 - `ControlledMergePullRequestPort.findPullRequestByHead(head)/mergePullRequest({ number, expectedHeadSha })` — satisfied by this module's own `GitHubControlledMergePullRequestOperations`
+- `ControlledMergeTaskLock.withLock<T>(taskId, fn: () => Promise<T>): Promise<T>` — satisfied by this module's own `FileControlledMergeTaskLock`
 
 Concrete provider adapter:
 
-- `new GitHubControlledMergePullRequestOperations({ owner, repo, token, apiBaseUrl?, fetchImpl? })` — `findPullRequestByHead` queries `state=all` (never `state=open`) so an already-merged pull request is still discovered and its `merged`/`merge_commit_sha` fields trusted; `mergePullRequest` calls GitHub's `PUT .../merge` with `sha: expectedHeadSha`, mapping a `409` response to `ControlledMergeError("HEAD_CHANGED", ...)` directly (rather than a generic provider error) and every other non-2xx/transport failure into BOOT-022's own `PullRequestProviderError`.
+- `new GitHubControlledMergePullRequestOperations({ owner, repo, token, apiBaseUrl?, fetchImpl? })` — `findPullRequestByHead` queries `state=all` (never `state=open`) so an already-merged pull request is still discovered; it derives `merged` from the list endpoint's own `merged_at` field (`merged_at !== null`), never from a `merged` boolean — GitHub's "List pull requests" response does not expose that boolean at all (only the single-resource "Get a pull request" endpoint does), so requiring it would reject every real list result as malformed. `mergePullRequest` calls GitHub's `PUT .../merge` with `sha: expectedHeadSha`, mapping a `409` response to `ControlledMergeError("HEAD_CHANGED", ...)` directly (rather than a generic provider error) and every other non-2xx/transport failure into BOOT-022's own `PullRequestProviderError`.
+- `new FileControlledMergeTaskLock(root)` — concrete `ControlledMergeTaskLock` over `.agent/state/lifecycle/<taskId>.lifecycle.lock`, sharing the same root `FileControlledMergeStateStore` uses. Async-capable exclusive-create-file mutual exclusion with atomic-rename stale-lock reclaim, mirroring BOOT-021's own `FileReviewReworkTaskLock` exactly.
 - `createLocalControlledMergeController(repositoryRoot, options)` — local composition root sharing the same `.agent/state/lifecycle`, `.agent/state/evidence`, and `.agent/state/assignments` stores every earlier gate uses, and BOOT-024's own `createLocalMergeReadinessPolicyEngine`.
 
 ## A new, purely additive evidence schema
@@ -68,8 +74,9 @@ Concrete provider adapter:
 - Detect a server-side head mismatch on the merge call itself via GitHub's `sha` parameter and HTTP 409 response.
 - Record one revision-bound `ipt.merge-evidence` record naming the task, source revision, pull-request number, merge commit SHA, and policy decision reference, before ever writing the `MERGED` lifecycle transition.
 - Resume cleanly from any interruption point without ever calling the merge provider a second time for an already-confirmed merge.
-- Release the assignment lock as a best-effort, idempotent step, tolerating a lock already released or reassigned.
+- Release the assignment lock as a best-effort, idempotent step that only ever targets the exact lock identity observed at the start of the call — never a lock some other actor has since legitimately reacquired.
 - Return an idempotent result for a task already `DONE`, with no further writes.
+- Serialize every controlled-merge attempt for the same task through an exclusive, async-aware task lock, so two concurrent calls can never interleave their reads and writes.
 
 ## Invariants
 
@@ -77,6 +84,7 @@ Concrete provider adapter:
 - `merge()` never invokes the merge provider more than once for the same confirmed merge.
 - `merge()` never records merge evidence or writes a lifecycle transition for a merge that was not confirmed by the provider.
 - Every failure that occurs before a merge is confirmed leaves the task's persisted lifecycle state exactly as it was found, so it is always safely retryable.
+- Completion never releases an assignment lock other than the exact `lockId` observed at the start of the same `merge()` call; a lock reassigned to a different actor while a call is in flight is never released by that call.
 
 ## Dependencies
 

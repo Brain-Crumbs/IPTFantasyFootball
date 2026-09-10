@@ -7,6 +7,7 @@ import { BranchLifecycleError } from "../dist/git-branch-lifecycle/index.js";
 import {
   ControlledMergeController,
   ControlledMergeError,
+  FileControlledMergeTaskLock,
   GitHubControlledMergePullRequestOperations,
 } from "../dist/controlled-merge/index.js";
 import { FileEvidenceStore, mergeEvidenceLineageId } from "../dist/evidence-store/index.js";
@@ -100,6 +101,17 @@ function notReadyResult(overrides = {}) {
     reasons: Object.freeze([{ code: "CI_CHECK_NOT_SUCCESSFUL", message: "CI check failed" }]),
     ...overrides,
   });
+}
+
+class FakeTaskLock {
+  constructor() {
+    this.calls = 0;
+  }
+
+  async withLock(_taskId, fn) {
+    this.calls += 1;
+    return fn();
+  }
 }
 
 class FakeMergeReadinessPort {
@@ -207,6 +219,7 @@ function makeController({
   readiness = new FakeMergeReadinessPort(readyResult()),
   lock = new FakeLockStore(),
   pullRequests = new FakePullRequestPort({ existing: [prRecord()], mergeResult: { merged: true, sha: "merged-sha-1", message: "merged" } }),
+  taskLock = new FakeTaskLock(),
   evidenceStore,
   stateStore,
 } = {}) {
@@ -215,13 +228,14 @@ function makeController({
   const controller = new ControlledMergeController({
     registry,
     stateStore: state,
+    taskLock,
     branchLifecycle: branch,
     mergeReadiness: readiness,
     evidenceStore: evidence,
     lockStore: lock,
     pullRequests,
   });
-  return { controller, state, evidence, branch, readiness, lock, pullRequests };
+  return { controller, state, evidence, branch, readiness, lock, pullRequests, taskLock };
 }
 
 function request(overrides = {}) {
@@ -426,6 +440,7 @@ test("a lock-release failure other than not-found/mismatch blocks the DONE trans
   const resumedController = new ControlledMergeController({
     registry,
     stateStore: state,
+    taskLock: new FakeTaskLock(),
     branchLifecycle: new FakeBranchAdapter(),
     mergeReadiness: new FakeMergeReadinessPort(readyResult()),
     evidenceStore: evidence,
@@ -518,7 +533,7 @@ test("GitHubControlledMergePullRequestOperations finds a merged pull request via
       ok: true,
       status: 200,
       json: async () => [
-        { number: 63, head: { sha: revision }, base: { ref: "main" }, state: "closed", merged: true, merge_commit_sha: "merged-abc" },
+        { number: 63, head: { sha: revision }, base: { ref: "main" }, state: "closed", merged_at: "2026-09-10T12:00:00Z", merge_commit_sha: "merged-abc" },
       ],
     };
   };
@@ -539,4 +554,110 @@ test("GitHubControlledMergePullRequestOperations rejects empty owner/repo/token 
   assert.throws(() => new GitHubControlledMergePullRequestOperations({ owner: "", repo: "r", token: "t" }), RangeError);
   assert.throws(() => new GitHubControlledMergePullRequestOperations({ owner: "o", repo: "", token: "t" }), RangeError);
   assert.throws(() => new GitHubControlledMergePullRequestOperations({ owner: "o", repo: "r", token: "" }), RangeError);
+});
+
+test("an already-merged PR is trusted only when the lifecycle history is bound to the exact current revision", async () => {
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord({ merged: true, mergeCommitSha: "should-not-be-trusted" })],
+  });
+  const readiness = new FakeMergeReadinessPort(notReadyResult());
+  // No history entry at all binds MERGE_READY to `revision` for this task.
+  const { controller, state } = makeController({ pullRequests, readiness, history: [] });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.equal(error.code, "NOT_MERGE_READY");
+    return true;
+  });
+
+  assert.equal(readiness.calls, 1, "the already-merged shortcut is not taken; readiness is evaluated normally instead");
+  assert.equal(pullRequests.mergeCalls, 0);
+  assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
+});
+
+test("an already-merged PR into the wrong base is not trusted even when the lifecycle history is bound to the revision", async () => {
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord({ merged: true, mergeCommitSha: "should-not-be-trusted", baseRef: "develop" })],
+  });
+  const readiness = new FakeMergeReadinessPort(notReadyResult());
+  const { controller, state } = makeController({ pullRequests, readiness });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.equal(error.code, "NOT_MERGE_READY");
+    return true;
+  });
+
+  assert.equal(readiness.calls, 1, "the already-merged shortcut is not taken; readiness is evaluated normally instead");
+  assert.equal(pullRequests.mergeCalls, 0);
+  assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
+});
+
+test("lock release only ever touches the exact lock identity observed at entry, never a lock reassigned since", async () => {
+  const originalLock = lockRecord({ lockId: "lock-original", ownerId: "agent-1" });
+  const reassignedLock = lockRecord({ lockId: "lock-reassigned", ownerId: "agent-2" });
+
+  class ReassigningLockStore {
+    constructor() {
+      this.getCalls = 0;
+      this.releaseCalls = [];
+    }
+
+    get() {
+      this.getCalls += 1;
+      // The first get() (captured at merge() entry) sees the original lock;
+      // every later get() (at release time) sees a different lock some
+      // other actor has since legitimately reacquired.
+      return this.getCalls === 1 ? originalLock : reassignedLock;
+    }
+
+    release(request) {
+      this.releaseCalls.push(request);
+      return Object.freeze({ ok: true, lock: originalLock, idempotent: false });
+    }
+  }
+
+  const lock = new ReassigningLockStore();
+  const { controller, state } = makeController({ lock });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(lock.releaseCalls.length, 0, "the reassigned lock's identity never matches the captured snapshot, so release() is never called");
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("FileControlledMergeTaskLock rejects a concurrent withLock call for the same task while the first is in flight", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-"));
+  try {
+    const taskLock = new FileControlledMergeTaskLock(dir);
+    let releaseFirst;
+    const first = taskLock.withLock("BOOT-025", () => new Promise((resolve) => { releaseFirst = resolve; }));
+
+    await assert.rejects(
+      () => taskLock.withLock("BOOT-025", async () => "second"),
+      (error) => {
+        assert.ok(error instanceof ControlledMergeError);
+        assert.equal(error.code, "STATE_CONFLICT");
+        return true;
+      },
+    );
+
+    releaseFirst("first");
+    assert.equal(await first, "first");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("FileControlledMergeTaskLock reclaims a stale lock file rather than wedging the task forever", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-stale-"));
+  try {
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(join(dir, "BOOT-025.lifecycle.lock"), `${Date.now() - 10 * 60 * 1000}:stale-token`, { encoding: "utf8" });
+
+    const taskLock = new FileControlledMergeTaskLock(dir);
+    const result = await taskLock.withLock("BOOT-025", async () => "resumed");
+    assert.equal(result, "resumed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

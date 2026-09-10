@@ -30,7 +30,15 @@ import {
 } from "../task-registry/index.js";
 
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
+const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
+const DEFAULT_INTEGRATION_TARGET = "main";
+
+// A lock file older than this is treated as abandoned (its holder crashed or
+// was killed mid-merge) and is reclaimed by the next caller rather than
+// wedging the task indefinitely. Matches BOOT-018's/BOOT-019's/BOOT-020's/
+// BOOT-021's own task-lock thresholds.
+const STALE_LOCK_MS = 5 * 60 * 1000;
 
 /**
  * BOOT-025 controlled merge and completion transition — the only supported
@@ -64,14 +72,28 @@ export class ControlledMergeController {
       throw new ControlledMergeError("TASK_NOT_FOUND", `Task '${request.taskId}' is not registered.`, false);
     }
 
+    // Holds the lock across the entire read-decide-write critical section,
+    // including the async provider calls below, so two concurrent merge()
+    // calls for the same task can never interleave their reads and writes
+    // (mirrors BOOT-018's/BOOT-019's/BOOT-020's/BOOT-021's own task locks).
+    return this.dependencies.taskLock.withLock(task.taskId, () => this.mergeLocked(task, request));
+  }
+
+  private async mergeLocked(task: RegisteredTask, request: ControlledMergeRequest): Promise<ControlledMergeResult> {
     const record = this.dependencies.stateStore.get(task.taskId) ?? createLifecycleRecord(task.taskId);
 
     if (record.currentState === "DONE") {
       return this.finishedResult(task.taskId);
     }
 
+    // Captured once, before any provider call, so completion only ever
+    // releases the exact lock identity this call observed at entry — never
+    // a lock some other actor has since legitimately reacquired.
+    const lockSnapshot = this.dependencies.lockStore.get(task.taskId);
+    const lockIdToRelease = lockSnapshot !== null && lockSnapshot.status === "ACTIVE" ? lockSnapshot.lockId : null;
+
     if (record.currentState === "MERGED") {
-      return this.resumeBookkeeping(task, record, request);
+      return this.resumeBookkeeping(task, record, request, lockIdToRelease);
     }
 
     if (record.currentState !== "MERGE_READY") {
@@ -81,17 +103,27 @@ export class ControlledMergeController {
       );
     }
 
+    let revision: string;
     try {
       this.dependencies.branchLifecycle.assertCurrentTaskBranch(task);
+      revision = this.dependencies.branchLifecycle.currentRevision();
     } catch (error: unknown) {
       throw normalizeBranchError(task.taskId, error);
     }
-
-    const revision = this.dependencies.branchLifecycle.currentRevision();
     const head = this.dependencies.branchLifecycle.canonicalBranch(task);
+    const integrationTarget = this.dependencies.integrationTarget ?? DEFAULT_INTEGRATION_TARGET;
 
     const existing = await this.findPullRequest(task.taskId, head);
-    if (existing !== null && existing.merged) {
+    // Trust an already-merged pull request as a confirmed prior result only
+    // when this task's own lifecycle history still binds its MERGE_READY
+    // transition to the exact current revision and the merged PR's base
+    // matches the configured integration target — otherwise fall through to
+    // the normal readiness-evaluate path below, which safely rejects (the
+    // merged/closed PR is invisible to findOpenPullRequests, so evaluate()
+    // reports PULL_REQUEST_NOT_FOUND) rather than trusting a stale binding or
+    // a PR merged into the wrong base.
+    const mergeReadyForRevision = hasHistoryEventBoundToRevision(record, "MERGE_READY", revision);
+    if (existing !== null && existing.merged && mergeReadyForRevision && existing.baseRef === integrationTarget) {
       // A prior attempt's merge provider call already succeeded (this exact
       // process crashed before recording evidence/transitioning, or the PR
       // was merged out of band); never call the merge endpoint again for a
@@ -114,6 +146,7 @@ export class ControlledMergeController {
         mergeCommitSha: existing.mergeCommitSha,
         policyDecisionReference: `control-plane.merge-readiness:${task.taskId}@${revision}:previously-confirmed`,
         request,
+        lockIdToRelease,
       });
     }
 
@@ -182,6 +215,7 @@ export class ControlledMergeController {
       mergeCommitSha: mergeResult.sha,
       policyDecisionReference: `control-plane.merge-readiness:${task.taskId}@${revision}:ready`,
       request,
+      lockIdToRelease,
     });
   }
 
@@ -202,9 +236,10 @@ export class ControlledMergeController {
       readonly mergeCommitSha: string;
       readonly policyDecisionReference: string;
       readonly request: ControlledMergeRequest;
+      readonly lockIdToRelease: string | null;
     },
   ): ControlledMergeResult {
-    const { revision, pullRequestNumber, mergeCommitSha, policyDecisionReference, request } = params;
+    const { revision, pullRequestNumber, mergeCommitSha, policyDecisionReference, request, lockIdToRelease } = params;
 
     const evidencePayload = {
       schemaId: "ipt.merge-evidence",
@@ -257,6 +292,7 @@ export class ControlledMergeController {
       revision,
       evidenceLineageId: recorded.record.lineageId,
       evidenceSequence: recorded.record.sequence,
+      lockIdToRelease,
     });
   }
 
@@ -264,6 +300,7 @@ export class ControlledMergeController {
     task: RegisteredTask,
     record: LifecycleRecord,
     request: ControlledMergeRequest,
+    lockIdToRelease: string | null,
   ): ControlledMergeResult {
     const lineageId = mergeEvidenceLineageId(task.taskId);
     const evidence = this.dependencies.evidenceStore.getCurrent(lineageId);
@@ -285,6 +322,7 @@ export class ControlledMergeController {
       revision: payload.revisionIdentity,
       evidenceLineageId: evidence.lineageId,
       evidenceSequence: evidence.sequence,
+      lockIdToRelease,
     });
   }
 
@@ -298,9 +336,10 @@ export class ControlledMergeController {
       readonly revision: string;
       readonly evidenceLineageId: string;
       readonly evidenceSequence: number;
+      readonly lockIdToRelease: string | null;
     },
   ): ControlledMergeResult {
-    this.releaseLockIfPresent(task.taskId, request);
+    this.releaseLockIfPresent(task.taskId, request, details.lockIdToRelease);
 
     const doneTransition = transitionLifecycle(record, {
       taskId: task.taskId,
@@ -361,18 +400,25 @@ export class ControlledMergeController {
     });
   }
 
-  // Lock release is best-effort and idempotent: a lock already released (or
-  // reassigned by an explicit stale-recovery operation while this call was
-  // interrupted) is not this controller's problem to re-litigate — only an
-  // actively conflicting outcome propagates.
-  private releaseLockIfPresent(taskId: string, request: ControlledMergeRequest): void {
-    const lock = this.dependencies.lockStore.get(taskId);
-    if (lock === null || lock.status !== "ACTIVE") {
+  // Lock release is best-effort and idempotent, but only ever touches the
+  // exact lock identity `lockIdToRelease` this call itself captured at entry
+  // (before any provider call) — never whatever lock happens to be active
+  // *now*. If that lock is already gone, or a different lock is now active
+  // (reassigned by an explicit stale-recovery operation, or claimed by a
+  // fresh assignment, while this call was in flight), that lock belongs to
+  // someone else's legitimate assignment and is left untouched rather than
+  // released.
+  private releaseLockIfPresent(taskId: string, request: ControlledMergeRequest, lockIdToRelease: string | null): void {
+    if (lockIdToRelease === null) {
+      return;
+    }
+    const current = this.dependencies.lockStore.get(taskId);
+    if (current === null || current.status !== "ACTIVE" || current.lockId !== lockIdToRelease) {
       return;
     }
     const result: LockResult = this.dependencies.lockStore.release({
       taskId,
-      lockId: lock.lockId,
+      lockId: lockIdToRelease,
       actorId: request.actorId,
       runId: request.runId,
       occurredAt: request.occurredAt,
@@ -488,14 +534,29 @@ export interface ControlledMergePullRequestPort {
   mergePullRequest(params: MergePullRequestParams): Promise<ControlledMergeProviderResult>;
 }
 
+/**
+ * Mutual exclusion for the entire read-decide-write critical section of one
+ * task's controlled merge (existing-merge check, readiness re-evaluation,
+ * pre-merge re-check, merge provider call, evidence write, and lifecycle
+ * writes together), extended to an async `fn` since this module's critical
+ * section spans awaited provider calls — mirrors BOOT-018's/BOOT-019's/
+ * BOOT-020's/BOOT-021's own synchronous task locks, whose critical sections
+ * never needed to span an async boundary.
+ */
+export interface ControlledMergeTaskLock {
+  withLock<T>(taskId: string, fn: () => Promise<T>): Promise<T>;
+}
+
 export interface ControlledMergeDependencies {
   readonly registry: TaskRegistry;
   readonly stateStore: ControlledMergeStateStore;
+  readonly taskLock: ControlledMergeTaskLock;
   readonly branchLifecycle: ControlledMergeBranchAdapter;
   readonly mergeReadiness: ControlledMergeReadinessPort;
   readonly evidenceStore: ControlledMergeEvidenceStore;
   readonly lockStore: ControlledMergeLockStore;
   readonly pullRequests: ControlledMergePullRequestPort;
+  readonly integrationTarget?: string;
 }
 
 export class FileControlledMergeStateStore implements ControlledMergeStateStore {
@@ -544,6 +605,141 @@ export class FileControlledMergeStateStore implements ControlledMergeStateStore 
   private pathFor(taskId: string): string {
     return join(this.root, `${taskId}.lifecycle.json`);
   }
+}
+
+/**
+ * Exclusive per-task mutual exclusion via an exclusive-create lock file,
+ * shared across OS processes, mirroring BOOT-021's own `FileReviewReworkTaskLock`
+ * exactly (per-acquisition token, atomic-rename stale reclaim that
+ * re-verifies it captured the stale instance rather than a fresh lock,
+ * ownership-safe release) but with an async `withLock` so the held lock
+ * spans this module's awaited provider calls rather than only synchronous
+ * file I/O.
+ */
+export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
+  constructor(private readonly root: string) {
+    if (root.trim().length === 0) throw new RangeError("Task lock root must be non-empty.");
+    mkdirSync(root, { recursive: true });
+  }
+
+  async withLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
+    const lockPath = this.lockPathFor(taskId);
+    const token = this.acquire(lockPath, taskId);
+    try {
+      return await fn();
+    } finally {
+      this.release(lockPath, token);
+    }
+  }
+
+  private acquire(lockPath: string, taskId: string): string {
+    const created = this.tryCreate(lockPath);
+    if (created !== null) return created;
+    if (this.reclaimIfStale(lockPath)) {
+      const retried = this.tryCreate(lockPath);
+      if (retried !== null) return retried;
+    }
+    throw new ControlledMergeError(
+      "STATE_CONFLICT",
+      `Task '${taskId}' controlled merge is already in progress by a concurrent caller; retry once it finishes.`,
+    );
+  }
+
+  private release(lockPath: string, token: string): void {
+    let current: string | null;
+    try {
+      current = readFileSync(lockPath, "utf8");
+    } catch {
+      current = null;
+    }
+    if (current !== token) return;
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      // Already gone, or reclaimed by another process as stale; either way
+      // there is nothing left for this holder to clean up.
+    }
+  }
+
+  private tryCreate(lockPath: string): string | null {
+    const token = `${Date.now()}:${randomLockToken()}`;
+    try {
+      writeFileSync(lockPath, token, { encoding: "utf8", flag: "wx" });
+      return token;
+    } catch (error: unknown) {
+      if (errorCode(error) === "EEXIST") return null;
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new ControlledMergeError("STATE_IO_FAILED", `Cannot create controlled-merge task lock at '${lockPath}': ${detail}`);
+    }
+  }
+
+  // See BOOT-020's `FileUatReviewTaskLock.reclaimIfStale` for the full
+  // rationale (unchanged here): a bare rename cannot distinguish "I captured
+  // the stale lock" from "I captured a fresh lock a different caller created
+  // after the original stale holder legitimately released it," so the
+  // content the rename actually captured is re-read and compared against
+  // what was observed as stale before it is discarded.
+  private reclaimIfStale(lockPath: string): boolean {
+    let observed: string;
+    try {
+      observed = readFileSync(lockPath, "utf8");
+    } catch {
+      return false;
+    }
+    const heldSince = Number(observed.split(":")[0]);
+    if (!Number.isFinite(heldSince) || Date.now() - heldSince <= STALE_LOCK_MS) return false;
+
+    const claimPath = `${lockPath}.reclaim-${randomLockToken()}`;
+    try {
+      renameSync(lockPath, claimPath);
+    } catch {
+      return false;
+    }
+
+    let claimed: string | null;
+    try {
+      claimed = readFileSync(claimPath, "utf8");
+    } catch {
+      claimed = null;
+    }
+    if (claimed !== observed) {
+      if (claimed !== null) {
+        try {
+          writeFileSync(lockPath, claimed, { encoding: "utf8", flag: "wx" });
+        } catch {
+          // A third caller has since created its own fresh lock at
+          // lockPath; there is nothing to restore onto.
+        }
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return false;
+    }
+
+    try {
+      unlinkSync(claimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    return true;
+  }
+
+  private lockPathFor(taskId: string): string {
+    return join(this.root, `${taskId}.lifecycle.lock`);
+  }
+}
+
+function randomLockToken(): string {
+  return Math.random().toString(36).slice(2);
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -678,6 +874,13 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// GitHub's "List pull requests" response (used by findPullRequestByHead, so
+// that an already-merged PR is discoverable at all via state=all) exposes
+// `merged_at`, not the `merged` boolean field — that field is only present
+// on the "Get a pull request" single-resource response. Deriving `merged`
+// from `merged_at !== null` works identically against both response shapes,
+// whereas requiring a `merged` boolean would reject every real list-endpoint
+// result as malformed.
 function toRecord(raw: unknown): ControlledMergePullRequestRecord {
   if (!isObject(raw)) {
     throw new PullRequestProviderError("PROVIDER_ERROR", "GitHub pull-request response was not an object.");
@@ -686,14 +889,14 @@ function toRecord(raw: unknown): ControlledMergePullRequestRecord {
   const headSha = isObject(raw.head) ? raw.head.sha : undefined;
   const baseRef = isObject(raw.base) ? raw.base.ref : undefined;
   const state = raw.state;
-  const merged = raw.merged;
+  const mergedAt = raw.merged_at;
   const mergeCommitSha = raw.merge_commit_sha;
   if (
     typeof number !== "number" ||
     typeof headSha !== "string" ||
     typeof baseRef !== "string" ||
     (state !== "open" && state !== "closed") ||
-    typeof merged !== "boolean" ||
+    (mergedAt !== null && typeof mergedAt !== "string") ||
     (mergeCommitSha !== null && mergeCommitSha !== undefined && typeof mergeCommitSha !== "string")
   ) {
     throw new PullRequestProviderError("PROVIDER_ERROR", "GitHub pull-request response is missing required fields.");
@@ -703,7 +906,7 @@ function toRecord(raw: unknown): ControlledMergePullRequestRecord {
     headSha,
     baseRef,
     state,
-    merged,
+    merged: typeof mergedAt === "string",
     mergeCommitSha: typeof mergeCommitSha === "string" ? mergeCommitSha : null,
   });
 }
@@ -736,8 +939,10 @@ export async function createLocalControlledMergeController(
   const registry = await loadTaskRegistry({ repositoryRoot });
   const branchLifecycle = new GitBranchLifecycleAdapter(new LocalGitBranchOperations(repositoryRoot));
   const stateRoot = join(repositoryRoot, LOCAL_AGENT_STATE_RELATIVE_PATH);
+  const lifecycleRoot = join(stateRoot, "lifecycle");
   const evidenceStore = new FileEvidenceStore(join(stateRoot, "evidence"), { repositoryRoot });
-  const stateStore = new FileControlledMergeStateStore(join(stateRoot, "lifecycle"));
+  const stateStore = new FileControlledMergeStateStore(lifecycleRoot);
+  const taskLock = new FileControlledMergeTaskLock(lifecycleRoot);
   const lockStore = new FileAssignmentLockStore(join(stateRoot, "assignments"));
   const providerOptions = {
     owner: options.owner,
@@ -755,11 +960,13 @@ export async function createLocalControlledMergeController(
   return new ControlledMergeController({
     registry,
     stateStore,
+    taskLock,
     branchLifecycle,
     mergeReadiness,
     evidenceStore,
     lockStore,
     pullRequests,
+    ...(options.integrationTarget !== undefined ? { integrationTarget: options.integrationTarget } : {}),
   });
 }
 
@@ -795,9 +1002,25 @@ function validateRequest(request: ControlledMergeRequest): void {
   if (request.runId.trim().length === 0 || request.runId !== request.runId.trim()) {
     throw new ControlledMergeError("INVALID_REQUEST", "Controlled merge runId must be non-empty and trimmed.", false);
   }
-  if (Number.isNaN(Date.parse(request.occurredAt)) || !request.occurredAt.includes("T")) {
-    throw new ControlledMergeError("INVALID_REQUEST", "Controlled merge occurredAt must be an RFC 3339 date-time.", false);
+  // Rejected strictly, and before any provider call: a loosely-parsed
+  // timestamp (missing a timezone offset/Z) would otherwise pass here, let
+  // the irreversible merge provider call proceed, and only be discovered
+  // as invalid later when schemas/v1/merge-evidence.schema.json's stricter
+  // RFC 3339 check rejects it at evidence-record time — after the merge
+  // already happened.
+  if (!RFC3339_PATTERN.test(request.occurredAt) || Number.isNaN(Date.parse(request.occurredAt))) {
+    throw new ControlledMergeError("INVALID_REQUEST", "Controlled merge occurredAt must be a valid RFC 3339 date-time.", false);
   }
+}
+
+function hasHistoryEventBoundToRevision(record: LifecycleRecord, toState: TaskLifecycleState, revision: string): boolean {
+  for (let index = record.history.length - 1; index >= 0; index -= 1) {
+    const event = record.history[index];
+    if (event !== undefined && event.toState === toState && event.revisionIdentity === revision) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isLifecycleState(value: unknown): value is TaskLifecycleState {
