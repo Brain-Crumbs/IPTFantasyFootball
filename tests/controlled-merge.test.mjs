@@ -118,13 +118,26 @@ function notReadyResult(overrides = {}) {
 }
 
 class FakeTaskLock {
-  constructor() {
+  // loseAfterAssertHeldCalls lets a test simulate this holder losing the
+  // lock to a concurrent reclaim partway through: the Nth-and-later call to
+  // the assertHeld fencing callback throws, exactly like the real
+  // FileControlledMergeTaskLock's own assertHeld would once its token no
+  // longer matches the lock file's content.
+  constructor({ loseAfterAssertHeldCalls = null } = {}) {
     this.calls = 0;
+    this.assertHeldCalls = 0;
+    this.loseAfterAssertHeldCalls = loseAfterAssertHeldCalls;
   }
 
   async withLock(_taskId, fn) {
     this.calls += 1;
-    return fn();
+    const assertHeld = () => {
+      this.assertHeldCalls += 1;
+      if (this.loseAfterAssertHeldCalls !== null && this.assertHeldCalls > this.loseAfterAssertHeldCalls) {
+        throw new ControlledMergeError("STATE_CONFLICT", "lock lost to a concurrent reclaim (fixture)", true);
+      }
+    };
+    return fn(assertHeld);
   }
 }
 
@@ -191,15 +204,20 @@ class FakeLockStore {
 // only the completion-time re-read (the second call, inside
 // releaseLockIfPresent) fails.
 class FakeLockStoreThrowsOnSecondGet {
-  constructor(lock = lockRecord()) {
+  // failAtCall lets a test choose which get() call throws: 1 for the
+  // entry-time snapshot (mergeLocked's own first read, for a MERGE_READY
+  // task), 2 (the default) for the completion-time re-read inside
+  // releaseLockIfPresent.
+  constructor(lock = lockRecord(), { failAtCall = 2 } = {}) {
     this.lock = lock;
     this.getCalls = 0;
     this.releaseCalls = [];
+    this.failAtCall = failAtCall;
   }
 
   get() {
     this.getCalls += 1;
-    if (this.getCalls >= 2) {
+    if (this.getCalls >= this.failAtCall) {
       throw new Error("lock store unavailable");
     }
     return this.lock;
@@ -411,6 +429,11 @@ test("resuming from an already-persisted MERGED state finishes bookkeeping with 
     mergeCommitSha: "prior-merge-sha",
     policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
     recordedAt: occurredAt,
+    // The identity of the lock active when the *original* attempt
+    // confirmed this merge — matching the default FakeLockStore fixture's
+    // own lockRecord() — so resume releases it, exactly as if this exact
+    // process had recorded it moments ago rather than reading it back.
+    assignmentLockAtMerge: { lockId: "lock-1", ownerId: "agent-1", runId: "run-1", canonicalBranch },
   });
   assert.equal(recorded.ok, true);
 
@@ -544,6 +567,55 @@ test("an assignment-lock read failure during completion is normalized to LOCK_RE
     "the MERGED transition already persisted before the completion-time lock read failed",
   );
   assert.equal(lock.releaseCalls.length, 0, "release() is never reached once the read itself throws");
+});
+
+test("an assignment-lock read failure at merge entry is normalized to LOCK_RELEASE_FAILED, not a raw throw", async () => {
+  const lock = new FakeLockStoreThrowsOnSecondGet(lockRecord(), { failAtCall: 1 });
+  const pullRequests = new FakePullRequestPort({});
+  const readiness = new FakeMergeReadinessPort(readyResult());
+  const { controller, state } = makeController({ lock, pullRequests, readiness });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "LOCK_RELEASE_FAILED");
+    assert.equal(error.recoverable, true);
+    return true;
+  });
+
+  assert.equal(readiness.calls, 0, "no provider work is attempted once the entry-time lock snapshot itself throws");
+  assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
+});
+
+test("a lock-store release() call that throws directly is normalized to LOCK_RELEASE_FAILED", async () => {
+  class ThrowingReleaseLockStore {
+    constructor(lock = lockRecord()) {
+      this.lock = lock;
+      this.releaseCalls = 0;
+    }
+    get() {
+      return this.lock;
+    }
+    release() {
+      this.releaseCalls += 1;
+      throw new Error("lock store write failure");
+    }
+  }
+  const lock = new ThrowingReleaseLockStore();
+  const { controller, state } = makeController({ lock });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "LOCK_RELEASE_FAILED");
+    assert.equal(error.recoverable, true);
+    return true;
+  });
+
+  assert.equal(lock.releaseCalls, 1);
+  assert.equal(
+    state.get(task.taskId).currentState,
+    "MERGED",
+    "the MERGED transition already persisted before release() itself threw",
+  );
 });
 
 test("an already-released lock is treated as idempotent, not an error", async () => {
@@ -1036,6 +1108,90 @@ test("a wrong-base merged PR at the same revision does not shadow the actual int
   assert.equal(result.pullRequestNumber, 63);
   assert.equal(pullRequests.mergeCalls, 0);
   assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("crash recovery finds a confirmed merge even after the branch moved past the approved revision before evidence was recorded", async () => {
+  // The provider merge succeeded and then this exact process crashed before
+  // evidence was recorded; in that window, a completely unrelated push
+  // landed on the canonical branch. The live current revision is now
+  // something the merged PR was never built from, so the already-merged
+  // shortcut must search using the revision the task's own MERGE_READY
+  // event actually approved, not the branch's new head, or the confirmed
+  // merge is unrecoverable (the PR is merged/closed, so readiness's own
+  // open-PR lookup can never find it either).
+  const movedRevision = "1111111111111111111111111111111111111111";
+  const branch = new FakeBranchAdapter({ rev: movedRevision });
+  const merged = prRecord({ merged: true, headSha: revision, mergeCommitSha: "recovered-after-branch-moved", baseRef: "main" });
+  const pullRequests = new FakePullRequestPort({ existing: [merged] });
+  const readiness = new FakeMergeReadinessPort(readyResult());
+  const { controller, state } = makeController({ branch, pullRequests, readiness });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(result.mergeCommitSha, "recovered-after-branch-moved");
+  assert.equal(result.sourceRevision, revision, "pinned to the MERGE_READY-approved revision, not the branch's new head");
+  assert.equal(readiness.calls, 0, "the shortcut is taken; readiness is never evaluated against the moved head");
+  assert.equal(pullRequests.mergeCalls, 0);
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("resuming a MERGED task releases the lock identity persisted with the original merge, not whatever lock is active now", async () => {
+  const { store: evidence } = makeEvidenceStore();
+  const originalLockIdentity = { lockId: "original-lock", ownerId: "original-agent", runId: "original-run", canonicalBranch };
+  const recorded = evidence.record({
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:${revision}:${occurredAt}`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "prior-merge-sha",
+    policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
+    recordedAt: occurredAt,
+    assignmentLockAtMerge: originalLockIdentity,
+  });
+  assert.equal(recorded.ok, true);
+
+  const stateStore = new MemoryStateStore([
+    [task.taskId, lifecycleRecord(task.taskId, "MERGED", [historyEventFor("MERGED", recorded.record)])],
+  ]);
+  // A completely different, legitimate assignment is active now (the
+  // original was reassigned after appearing abandoned, never knowing its
+  // own merge had already succeeded). Resume must never touch it.
+  const reassignedLock = lockRecord({ lockId: "replacement-lock", ownerId: "new-agent", runId: "new-run" });
+  const lock = new FakeLockStore(reassignedLock);
+  const pullRequests = new FakePullRequestPort({});
+  const { controller } = makeController({ stateStore, evidenceStore: evidence, pullRequests, lock });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(
+    lock.releaseCalls.length,
+    0,
+    "the currently-active (reassigned) lock never matches the persisted original identity, so release() is never called",
+  );
+  assert.equal(lock.lock.status, "ACTIVE", "the replacement assignment's lock is left completely untouched");
+});
+
+test("the async task lock's fencing check aborts a fresh merge before the provider call once the lock has been lost", async () => {
+  const taskLock = new FakeTaskLock({ loseAfterAssertHeldCalls: 0 });
+  const { controller, state, pullRequests } = makeController({ taskLock });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "STATE_CONFLICT");
+    return true;
+  });
+
+  assert.equal(taskLock.assertHeldCalls >= 1, true, "the fencing callback is actually invoked on the fresh-merge path");
+  assert.equal(pullRequests.mergeCalls, 0, "aborting at the fencing check happens before the merge provider is ever called");
+  assert.equal(
+    state.get(task.taskId).currentState,
+    "MERGE_READY",
+    "no evidence or lifecycle write happens once the lock is detected lost",
+  );
 });
 
 test("resume rejects a lifecycle-history evidenceRef naming another task's merge-evidence lineage", async () => {

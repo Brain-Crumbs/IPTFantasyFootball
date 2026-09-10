@@ -94,10 +94,21 @@ export class ControlledMergeController {
     // including the async provider calls below, so two concurrent merge()
     // calls for the same task can never interleave their reads and writes
     // (mirrors BOOT-018's/BOOT-019's/BOOT-020's/BOOT-021's own task locks).
-    return this.dependencies.taskLock.withLock(task.taskId, () => this.mergeLocked(task, request));
+    // `assertHeld` is a fencing check the lock hands back: it is called
+    // immediately before every side-effecting operation below (the merge
+    // provider call, evidence recording, each lifecycle-state save), so a
+    // holder that has lost the lock to a concurrent reclaim (its own
+    // heartbeat having lapsed past the stale threshold) aborts at the next
+    // checkpoint rather than silently completing writes alongside a second,
+    // legitimate holder.
+    return this.dependencies.taskLock.withLock(task.taskId, (assertHeld) => this.mergeLocked(task, request, assertHeld));
   }
 
-  private async mergeLocked(task: RegisteredTask, request: ControlledMergeRequest): Promise<ControlledMergeResult> {
+  private async mergeLocked(
+    task: RegisteredTask,
+    request: ControlledMergeRequest,
+    assertHeld: () => void,
+  ): Promise<ControlledMergeResult> {
     // Re-read inside the lock: the unlocked pre-check above cannot see a
     // concurrent caller that reaches DONE between that check and this
     // caller acquiring the lock.
@@ -107,14 +118,43 @@ export class ControlledMergeController {
       return this.finishedResult(record);
     }
 
+    if (record.currentState === "MERGED") {
+      // Never snapshot the assignment lock here: whatever happens to be
+      // active *now* may belong to an entirely different, later assignment
+      // than the one that actually performed this confirmed merge — the
+      // original attempt may have crashed, been recovered, and reassigned
+      // before this resume call ever ran. Only the identity persisted
+      // alongside the original merge's own evidence (assignmentLockAtMerge)
+      // is ever eligible for release on this path — see resumeBookkeeping.
+      return this.resumeBookkeeping(task, record, request, assertHeld);
+    }
+
+    if (record.currentState !== "MERGE_READY") {
+      throw new ControlledMergeError(
+        "TASK_STATE_NOT_MERGEABLE",
+        `Task '${task.taskId}' is in lifecycle state '${record.currentState}' and cannot be merged; it must be MERGE_READY.`,
+      );
+    }
+
     // Captured once, before any provider call, so completion only ever
     // releases the exact assignment identity this call observed at entry —
     // never a lock some other actor has since legitimately reacquired. The
     // assignment-lock contract does not guarantee lockId is never reused
     // across acquisitions, so the full identity (lockId, ownerId, runId,
     // canonicalBranch) is captured and later compared in full, not lockId
-    // alone.
-    const lockSnapshot = this.dependencies.lockStore.get(task.taskId);
+    // alone. A read failure here (I/O error, malformed lock file) is
+    // normalized the same way the completion-time re-read is, rather than
+    // escaping as a raw exception.
+    let lockSnapshot: AssignmentLockRecord | null;
+    try {
+      lockSnapshot = this.dependencies.lockStore.get(task.taskId);
+    } catch (error: unknown) {
+      throw new ControlledMergeError(
+        "LOCK_RELEASE_FAILED",
+        `Task '${task.taskId}' assignment lock could not be read at merge entry: ${detail(error)}`,
+        true,
+      );
+    }
     const lockIdentityToRelease: LockIdentity | null =
       lockSnapshot !== null && lockSnapshot.status === "ACTIVE"
         ? {
@@ -124,17 +164,6 @@ export class ControlledMergeController {
             canonicalBranch: lockSnapshot.canonicalBranch,
           }
         : null;
-
-    if (record.currentState === "MERGED") {
-      return this.resumeBookkeeping(task, record, request, lockIdentityToRelease);
-    }
-
-    if (record.currentState !== "MERGE_READY") {
-      throw new ControlledMergeError(
-        "TASK_STATE_NOT_MERGEABLE",
-        `Task '${task.taskId}' is in lifecycle state '${record.currentState}' and cannot be merged; it must be MERGE_READY.`,
-      );
-    }
 
     let revision: string;
     try {
@@ -155,6 +184,21 @@ export class ControlledMergeController {
     // still be found here even when it is no longer the most-recent PR for
     // the branch.
     const candidates = await this.findPullRequests(task.taskId, head);
+    // The search key is the revision this task's own MERGE_READY transition
+    // actually approved — never the branch's *current* head. A confirmed
+    // merge can be followed by a completely unrelated push to the same
+    // branch before evidence is ever recorded (a crash between the
+    // provider's own merge call and this controller's bookkeeping); in that
+    // window, `revision` (freshly resolved from the live branch) no longer
+    // matches the merged PR's headSha at all, and since that PR is now
+    // merged and closed, the normal readiness-evaluate path below cannot
+    // recover it either (evaluate() only ever considers open pull
+    // requests) — permanently stranding an already-successful merge in
+    // MERGE_READY. The approved revision, by contrast, is exactly what the
+    // MERGE_READY lifecycle-history event bound at approval time and never
+    // changes after the fact, so searching by it finds the confirmed merge
+    // regardless of anything that has happened to the branch since.
+    const approvedRevision = latestHistoryEventToState(record, "MERGE_READY")?.revisionIdentity ?? null;
     // The base-ref check is part of the candidate predicate itself, not a
     // filter applied only to whatever match is found first: a more-recently-
     // created merged PR against an unrelated base (for example an
@@ -164,35 +208,36 @@ export class ControlledMergeController {
     // and never examine the real match behind it, permanently stranding a
     // genuinely confirmed merge in MERGE_READY.
     const existing =
-      candidates.find((pr) => pr.merged && pr.headSha === revision && pr.baseRef === integrationTarget) ?? null;
-    // Trust an already-merged pull request as a confirmed prior result only
-    // when this task's own lifecycle history still binds its MERGE_READY
-    // transition to the exact current revision — otherwise fall through to
-    // the normal readiness-evaluate path below, which safely rejects (the
-    // merged/closed PR is invisible to findOpenPullRequests, so evaluate()
-    // reports PULL_REQUEST_NOT_FOUND) rather than trusting a stale binding.
-    const mergeReadyForRevision = hasHistoryEventBoundToRevision(record, "MERGE_READY", revision);
-    if (existing !== null && mergeReadyForRevision) {
+      approvedRevision !== null
+        ? candidates.find((pr) => pr.merged && pr.headSha === approvedRevision && pr.baseRef === integrationTarget) ?? null
+        : null;
+    if (existing !== null && approvedRevision !== null) {
       // A prior attempt's merge provider call already succeeded (this exact
       // process crashed before recording evidence/transitioning, or the PR
       // was merged out of band); never call the merge endpoint again for a
       // revision this task's own MERGE_READY-for-revision approval covers.
-      // (existing.merged and existing.headSha === revision are already
-      // guaranteed by the find() predicate above.)
+      // (existing.merged and existing.headSha === approvedRevision are
+      // already guaranteed by the find() predicate above.)
       if (existing.mergeCommitSha === null) {
         throw new ControlledMergeError(
           "MERGE_NOT_CONFIRMED",
           `Task '${task.taskId}' pull request #${existing.number} reports merged=true with no merge commit SHA.`,
         );
       }
-      return this.finalize(task, record, {
-        revision,
-        pullRequestNumber: existing.number,
-        mergeCommitSha: existing.mergeCommitSha,
-        policyDecisionReference: `control-plane.merge-readiness:${task.taskId}@${revision}:previously-confirmed`,
-        request,
-        lockIdentityToRelease,
-      });
+      assertHeld();
+      return this.finalize(
+        task,
+        record,
+        {
+          revision: approvedRevision,
+          pullRequestNumber: existing.number,
+          mergeCommitSha: existing.mergeCommitSha,
+          policyDecisionReference: `control-plane.merge-readiness:${task.taskId}@${approvedRevision}:previously-confirmed`,
+          request,
+          lockIdentityToRelease,
+        },
+        assertHeld,
+      );
     }
 
     let readiness: EvaluateMergeReadinessResult;
@@ -254,6 +299,14 @@ export class ControlledMergeController {
       );
     }
 
+    // Checked immediately before the one call in this module with an
+    // irreversible external side effect: if this holder's heartbeat has
+    // lapsed past the stale threshold and a concurrent caller has already
+    // reclaimed the lock, aborting here — before ever invoking the merge
+    // provider — is strictly better than aborting after, since it avoids a
+    // wasted (and potentially confusing) duplicate merge attempt entirely.
+    assertHeld();
+
     let mergeResult: ControlledMergeProviderResult;
     try {
       mergeResult = await this.dependencies.pullRequests.mergePullRequest({
@@ -271,14 +324,24 @@ export class ControlledMergeController {
       );
     }
 
-    return this.finalize(task, record, {
-      revision,
-      pullRequestNumber: readiness.pullRequestNumber,
-      mergeCommitSha: mergeResult.sha,
-      policyDecisionReference: `control-plane.merge-readiness:${task.taskId}@${revision}:ready`,
-      request,
-      lockIdentityToRelease,
-    });
+    // Re-checked here too: the merge provider call itself just spanned
+    // another await boundary, during which this holder could have lost the
+    // lock even if it still held it a moment ago at the check above.
+    assertHeld();
+
+    return this.finalize(
+      task,
+      record,
+      {
+        revision,
+        pullRequestNumber: readiness.pullRequestNumber,
+        mergeCommitSha: mergeResult.sha,
+        policyDecisionReference: `control-plane.merge-readiness:${task.taskId}@${revision}:ready`,
+        request,
+        lockIdentityToRelease,
+      },
+      assertHeld,
+    );
   }
 
   private async findPullRequests(taskId: string, head: string): Promise<readonly ControlledMergePullRequestRecord[]> {
@@ -300,8 +363,16 @@ export class ControlledMergeController {
       readonly request: ControlledMergeRequest;
       readonly lockIdentityToRelease: LockIdentity | null;
     },
+    assertHeld: () => void,
   ): ControlledMergeResult {
     const { revision, pullRequestNumber, mergeCommitSha, policyDecisionReference, request, lockIdentityToRelease } = params;
+
+    // Every caller of finalize() already checked assertHeld() immediately
+    // before calling it (right after the last await boundary on its own
+    // path); this re-check costs nothing since nothing async happens
+    // between that call and this one, and it means finalize() itself never
+    // depends on every future call site remembering to fence first.
+    assertHeld();
 
     // A prior attempt may have already recorded evidence for this exact
     // confirmed merge and then crashed before persisting the MERGE_READY ->
@@ -324,6 +395,13 @@ export class ControlledMergeController {
       evidenceLineageId = (existingEvidence as StoredEvidenceRecord).lineageId;
       evidenceSequence = (existingEvidence as StoredEvidenceRecord).sequence;
     } else {
+      // The assignment-lock identity active at this exact moment is
+      // persisted alongside the evidence itself — not just held in this
+      // call's own local variable — because a *later* resume (a different
+      // merge() call, possibly in a different process, after this one
+      // crashed before releasing the lock) must release only the identity
+      // tied to *this* original attempt, never whatever lock happens to be
+      // active when that later call runs. See resumeBookkeeping.
       const evidencePayload = {
         schemaId: "ipt.merge-evidence",
         schemaVersion: "1.0.0",
@@ -334,6 +412,7 @@ export class ControlledMergeController {
         mergeCommitSha,
         policyDecisionReference,
         recordedAt: request.occurredAt,
+        assignmentLockAtMerge: lockIdentityToRelease,
       };
       // The provider has already, irreversibly, merged the pull request by
       // this point; a filesystem failure here (a full disk, an unwritable
@@ -402,21 +481,30 @@ export class ControlledMergeController {
     task: RegisteredTask,
     record: LifecycleRecord,
     request: ControlledMergeRequest,
-    lockIdentityToRelease: LockIdentity | null,
+    assertHeld: () => void,
   ): ControlledMergeResult {
+    assertHeld();
     const evidence = this.resolvePinnedEvidence(task.taskId, record, "MERGED");
     const payload = evidence.payload as {
       readonly pullRequestNumber: number;
       readonly mergeCommitSha: string;
       readonly revisionIdentity: string;
+      readonly assignmentLockAtMerge?: unknown;
     };
+    // The lock identity to release is read from *this* evidence record —
+    // the one this original, now-confirmed merge attempt itself persisted —
+    // never re-snapshotted live from the lock store. A live snapshot here
+    // would reflect whatever assignment happens to be active at the moment
+    // of this (possibly much later, possibly different-process) resume
+    // call, which could easily belong to a completely different, legitimate
+    // later assignment of the same task.
     return this.completeFromMerged(task, record, request, {
       pullRequestNumber: payload.pullRequestNumber,
       mergeCommitSha: payload.mergeCommitSha,
       revision: payload.revisionIdentity,
       evidenceLineageId: evidence.lineageId,
       evidenceSequence: evidence.sequence,
-      lockIdentityToRelease,
+      lockIdentityToRelease: parsePersistedLockIdentity(payload.assignmentLockAtMerge),
     });
   }
 
@@ -611,14 +699,28 @@ export class ControlledMergeController {
     ) {
       return;
     }
-    const result: LockResult = this.dependencies.lockStore.release({
-      taskId,
-      lockId: lockIdentityToRelease.lockId,
-      actorId: request.actorId,
-      runId: request.runId,
-      occurredAt: request.occurredAt,
-      reason: "Controlled merge completed; releasing assignment lock.",
-    });
+    // release() itself, not only get(), can throw on the concrete lock
+    // store's own write path (its active-record write, audit append, or
+    // archive rename) — the same normalization boundary applies here as to
+    // the read above, rather than letting a filesystem failure escape as a
+    // raw exception at this already-past-the-point-of-no-return moment.
+    let result: LockResult;
+    try {
+      result = this.dependencies.lockStore.release({
+        taskId,
+        lockId: lockIdentityToRelease.lockId,
+        actorId: request.actorId,
+        runId: request.runId,
+        occurredAt: request.occurredAt,
+        reason: "Controlled merge completed; releasing assignment lock.",
+      });
+    } catch (error: unknown) {
+      throw new ControlledMergeError(
+        "LOCK_RELEASE_FAILED",
+        `Task '${taskId}' assignment lock release threw unexpectedly: ${detail(error)}`,
+        true,
+      );
+    }
     if (!result.ok && result.rejection.code !== "LOCK_NOT_FOUND" && result.rejection.code !== "LOCK_ID_MISMATCH") {
       throw new ControlledMergeError(
         "LOCK_RELEASE_FAILED",
@@ -749,9 +851,19 @@ export interface ControlledMergePullRequestPort {
  * section spans awaited provider calls — mirrors BOOT-018's/BOOT-019's/
  * BOOT-020's/BOOT-021's own synchronous task locks, whose critical sections
  * never needed to span an async boundary.
+ *
+ * `fn` receives an `assertHeld` fencing callback: a synchronous check,
+ * cheap enough to call before every side-effecting operation, that throws
+ * if this holder's lock has since been lost to a concurrent reclaim (its
+ * own heartbeat having lapsed past the stale threshold — a slow process
+ * pause, an interval that failed to fire). A periodic heartbeat alone
+ * narrows how often that can happen but cannot, on a plain file lock,
+ * guarantee it never does; `assertHeld` is the caller's own last line of
+ * defense, letting it abort before a provider call or a write rather than
+ * silently completing one alongside a second, legitimate holder.
  */
 export interface ControlledMergeTaskLock {
-  withLock<T>(taskId: string, fn: () => Promise<T>): Promise<T>;
+  withLock<T>(taskId: string, fn: (assertHeld: () => void) => Promise<T>): Promise<T>;
 }
 
 export interface ControlledMergeDependencies {
@@ -847,15 +959,24 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   }
 
-  async withLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
+  async withLock<T>(taskId: string, fn: (assertHeld: () => void) => Promise<T>): Promise<T> {
     const lockPath = this.lockPathFor(taskId);
     let token = this.acquire(lockPath, taskId);
     const heartbeat = setInterval(() => {
       token = this.refresh(lockPath, token);
     }, this.heartbeatIntervalMs);
     heartbeat.unref?.();
+    const assertHeld = (): void => {
+      if (!this.isHeldBy(lockPath, token)) {
+        throw new ControlledMergeError(
+          "STATE_CONFLICT",
+          `Task '${taskId}' controlled-merge lock was lost to a concurrent reclaim; aborting before any further write.`,
+          true,
+        );
+      }
+    };
     try {
-      return await fn();
+      return await fn(assertHeld);
     } finally {
       clearInterval(heartbeat);
       this.release(lockPath, token);
@@ -917,6 +1038,22 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       // nothing further to do.
     }
     return token;
+  }
+
+  // Backs the assertHeld fencing callback withLock hands to fn(): true only
+  // while the lock file's content still matches this holder's own token.
+  // This does not, on its own, make a check-then-write sequence perfectly
+  // atomic (another process could still reclaim in the gap between this
+  // read and whatever write assertHeld guards) — but calling it immediately
+  // before every side-effecting operation narrows that gap to one
+  // synchronous file read, the same order of residual risk already accepted
+  // for the heartbeat's own read-then-touch pair in refresh().
+  private isHeldBy(lockPath: string, token: string): boolean {
+    try {
+      return readFileSync(lockPath, "utf8") === token;
+    } catch {
+      return false;
+    }
   }
 
   private release(lockPath: string, token: string): void {
@@ -1027,6 +1164,33 @@ function randomLockToken(): string {
 
 function detail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+// Reads back the assignmentLockAtMerge field finalize() persisted into a
+// merge-evidence record. Anything other than exactly a well-formed
+// LockIdentity shape or a genuine `null` — an absent field on older
+// evidence, a malformed value, garbage from a hand-edited store — resolves
+// to `null` (nothing to release) rather than throwing: erring toward never
+// releasing an assignment lock this call cannot positively identify is the
+// same safe-default direction releaseLockIfPresent's own full-identity
+// comparison already takes.
+function parsePersistedLockIdentity(value: unknown): LockIdentity | null {
+  if (value === null || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  const { lockId, ownerId, runId, canonicalBranch } = candidate;
+  if (
+    typeof lockId === "string" &&
+    lockId.length > 0 &&
+    typeof ownerId === "string" &&
+    ownerId.length > 0 &&
+    typeof runId === "string" &&
+    runId.length > 0 &&
+    typeof canonicalBranch === "string" &&
+    canonicalBranch.length > 0
+  ) {
+    return { lockId, ownerId, runId, canonicalBranch };
+  }
+  return null;
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -1378,10 +1542,6 @@ function isValidRfc3339DateTime(value: string): boolean {
 
 function isLeapYear(year: number): boolean {
   return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-}
-
-function hasHistoryEventBoundToRevision(record: LifecycleRecord, toState: TaskLifecycleState, revision: string): boolean {
-  return latestHistoryEventToState(record, toState)?.revisionIdentity === revision;
 }
 
 function latestHistoryEventToState(record: LifecycleRecord, toState: TaskLifecycleState): LifecycleHistoryEvent | null {
