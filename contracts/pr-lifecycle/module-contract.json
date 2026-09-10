@@ -1,0 +1,118 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.pr-lifecycle",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "PullRequestLifecycleAdapter.ensurePullRequest(request): Promise<EnsurePullRequestResult>",
+      "EnsurePullRequestRequest { taskId, childIssueNumber, parentIssueNumber, expectedHead?, base? }",
+      "EnsurePullRequestResult { taskId, number, htmlUrl, headRef, baseRef, revision, created, updated }",
+      "PullRequestOperations.findOpenPullRequests(params): Promise<readonly PullRequestRecord[]> source-control/PR adapter boundary",
+      "PullRequestOperations.createPullRequest(params): Promise<PullRequestRecord>",
+      "PullRequestOperations.updatePullRequest(params): Promise<PullRequestRecord>",
+      "PullRequestRecord { number, htmlUrl, headRef, baseRef, title, body, state }",
+      "PullRequestLifecycleBranchAdapter.canonicalBranch/assertCurrentTaskBranch/currentRevision boundary onto control-plane.git-branch-lifecycle",
+      "PullRequestLifecycleApprovalPort.getApprovalStatus(request) boundary onto control-plane.review-rework",
+      "PullRequestLifecycleError { code, recoverable }",
+      "GitHubPullRequestOperations(options) concrete PullRequestOperations adapter over the GitHub REST API",
+      "PullRequestProviderError { code, status } normalized GitHub-adapter failure",
+      "createLocalPullRequestLifecycleAdapter(repositoryRoot, options) local composition root"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "canonical-open-pr-discovery-by-head-base",
+      "idempotent-pr-create-or-reuse",
+      "idempotent-pr-body-title-update-on-change-only",
+      "pr-body-links-task-child-and-parent-issues",
+      "pr-body-summarizes-current-approval-status-evidence",
+      "duplicate-open-pr-conflict-detection",
+      "wrong-source-or-base-branch-rejection",
+      "github-http-failure-normalization",
+      "provider-agnostic-task-domain-boundary"
+    ],
+    "behavioralConstraints": [
+      "ensurePullRequest() resolves the PR head strictly from the task's canonicalBranch through the unmodified control-plane.git-branch-lifecycle adapter; it never accepts an arbitrary caller-supplied head",
+      "a caller-supplied expectedHead that does not equal the resolved canonical branch is rejected as BRANCH_REJECTED before any branch assertion, evidence read, or provider call is made",
+      "the PR base must equal the bootstrap integration target ('main' by default, overridable only at the dependency/composition level, never silently by a per-call base that disagrees with it); a per-call base that disagrees with the configured integration target is rejected as BASE_REF_MISMATCH",
+      "the current Git branch must match the task's canonical branch and the exact current HEAD revision is resolved through the same adapter before any provider call; a mismatch or Git failure is normalized to BRANCH_REJECTED and no provider call is made",
+      "review/approval evidence for the PR body is read through control-plane.review-rework's getApprovalStatus(), never re-derived from the evidence store directly; a failure reading it is normalized to EVIDENCE_UNAVAILABLE before any provider call is made",
+      "findOpenPullRequests() is called with the exact resolved head/base before any create or update decision; zero results create a new PR, exactly one result reuses or updates it, and more than one result is rejected as DUPLICATE_PR_CONFLICT without calling create or update",
+      "a reused PR whose current title and body already equal the freshly computed desired title/body performs no provider write (created=false, updated=false); a reused PR whose title or body differs is updated in place via exactly one updatePullRequest call (created=false, updated=true)",
+      "a PR is created via exactly one createPullRequest call only when no open PR exists for the resolved head/base (created=true, updated=false)",
+      "the desired PR title is `<taskId>: <task title>` and the desired body links `Closes #<childIssueNumber>` and `Parent: #<parentIssueNumber>`, states the resolved head/base branch identity and exact revision, and lists every role getApprovalStatus() reports (NONE/STALE/CURRENT) with its outcome and history count",
+      "GitHubPullRequestOperations maps every non-2xx GitHub response to a PullRequestProviderError whose code is derived from the HTTP status (401/403 -> AUTH_FAILED, 404 -> NOT_FOUND, 422 -> VALIDATION_FAILED, 429 -> RATE_LIMITED, any other non-2xx -> PROVIDER_ERROR) and whose status field carries the exact HTTP status; a transport-level failure (the fetch call itself rejecting) is mapped to NETWORK_FAILED with no status; a 2xx response whose JSON body is missing a required PR field is mapped to PROVIDER_ERROR",
+      "PullRequestLifecycleAdapter never inspects a PullRequestProviderError's HTTP status or GitHub-specific payload shape directly; it only wraps the already-normalized provider error as PR_PROVIDER_FAILED",
+      "GitHubPullRequestOperations rejects an empty owner, repo, or token at construction with a RangeError rather than deferring to a failed first request"
+    ],
+    "invariants": [
+      "task-domain logic (PullRequestLifecycleAdapter) depends only on the PullRequestOperations interface, never on GitHub-specific request/response payloads",
+      "this module performs no lifecycle-state transition, no CI policy evaluation, and no merge",
+      "this module invents no review judgment and reads approval evidence only through control-plane.review-rework, never deciding it",
+      "a branch, evidence, or provider failure leaves no partial PR write: create/update is attempted at most once per ensurePullRequest() call, only after every upstream check succeeds",
+      "PR discovery/idempotency is achieved by querying the provider for the current open PR by head/base on every call; this module keeps no local cache of PR identity"
+    ],
+    "examples": [
+      "a task with no existing open PR for its canonical branch into main creates exactly one PR whose body links its child issue, #1, its branch/revision, and its current (mostly NONE) approval status",
+      "re-running ensurePullRequest() immediately afterward with unchanged approval status reuses the same PR and performs no provider write",
+      "re-running ensurePullRequest() after a QA PASS is recorded updates the existing PR's body to reflect the new approval status via exactly one updatePullRequest call",
+      "two open PRs already existing for the same head/base (created out of band) cause ensurePullRequest() to fail as DUPLICATE_PR_CONFLICT rather than picking one arbitrarily",
+      "a GitHub 404 while creating a PR (for example a deleted base branch) surfaces as PR_PROVIDER_FAILED wrapping a NOT_FOUND provider error"
+    ],
+    "edgeCases": [
+      "an unregistered taskId is rejected as TASK_NOT_FOUND",
+      "a non-schema-valid taskId, a non-positive/non-integer childIssueNumber or parentIssueNumber, or an untrimmed expectedHead/base is rejected as INVALID_REQUEST before any dependency is touched",
+      "a Git branch mismatch reported by the branch adapter is normalized to BRANCH_REJECTED rather than propagating a raw BranchLifecycleError",
+      "an approval-status read failure is normalized to EVIDENCE_UNAVAILABLE rather than propagating a raw error",
+      "a GitHub response body that parses as JSON but is not an array where an array of pull requests is expected is treated as PROVIDER_ERROR"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.git-branch-lifecycle",
+    "control-plane.review-rework",
+    "control-plane.task-registry",
+    "global fetch"
+  ],
+  "forbiddenDependencies": [
+    "agent-provider/*",
+    "merge-controller/*",
+    "fantasy-product/*",
+    "ci-enforcement/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-ci-enforcement-workflow",
+      "expectations": [
+        "BOOT-023 can rely on a discoverable canonical open PR per task branch/main pair whose existence this module both creates and keeps discoverable, without needing to reimplement GitHub PR discovery itself"
+      ],
+      "requiredCapabilities": [
+        "canonical-open-pr-discovery-by-head-base",
+        "idempotent-pr-create-or-reuse"
+      ],
+      "acceptedRanges": [
+        "an EnsurePullRequestResult naming the exact open PR number/URL for a task's canonical branch"
+      ],
+      "requiredReachableRanges": [
+        "successful discovery of an already-existing canonical PR",
+        "successful creation of a new canonical PR when none exists"
+      ]
+    },
+    {
+      "consumerId": "future-merge-readiness-policy-engine",
+      "expectations": [
+        "BOOT-024/BOOT-025 can read the exact PR number/head/base/revision this module last ensured for a task, and the approval-status summary embedded in its body, as one input to computing merge readiness, without this module ever computing or asserting merge readiness itself"
+      ],
+      "requiredCapabilities": [
+        "pr-body-summarizes-current-approval-status-evidence",
+        "provider-agnostic-task-domain-boundary"
+      ],
+      "acceptedRanges": [
+        "an EnsurePullRequestResult reporting created/updated as independent booleans, never both true for the same call"
+      ],
+      "requiredReachableRanges": [
+        "a PR that is neither created nor updated because it is already current"
+      ]
+    }
+  ]
+}
