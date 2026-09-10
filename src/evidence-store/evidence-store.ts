@@ -49,6 +49,10 @@ export type RecordResult =
   | { readonly ok: true; readonly record: StoredEvidenceRecord }
   | { readonly ok: false; readonly rejection: EvidenceRejection };
 
+export type ValidateResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly rejection: EvidenceRejection };
+
 export type RevisionCheckResult =
   | { readonly status: "CURRENT"; readonly record: StoredEvidenceRecord }
   | { readonly status: "REVISION_MISMATCH"; readonly record: StoredEvidenceRecord; readonly expectedRevisionIdentity: string }
@@ -62,6 +66,16 @@ export type RevisionCheckResult =
  */
 export interface EvidenceStore {
   record(payload: unknown): RecordResult;
+  // A pure, read-only check: runs the exact same validation record() itself
+  // applies before ever writing anything (payload shape, schemaId,
+  // schemaVersion, full schema-document validation, taskId pattern, lineage
+  // derivability), without persisting a record either way. Lets a consumer
+  // that already has a *stored* payload in hand (for example a candidate for
+  // reuse, rather than a fresh payload it is about to submit) confirm it is
+  // still a fully schema-valid record — including fields record()'s own
+  // three-loosely-compared-field callers might otherwise never re-check —
+  // without duplicating this store's own validation logic elsewhere.
+  validate(payload: unknown): ValidateResult;
   getCurrent(lineageId: string): StoredEvidenceRecord | null;
   getHistory(lineageId: string): readonly StoredEvidenceRecord[];
   checkRevision(lineageId: string, expectedRevisionIdentity: string): RevisionCheckResult;
@@ -103,48 +117,12 @@ export class FileEvidenceStore implements EvidenceStore {
   }
 
   record(payload: unknown): RecordResult {
-    if (!isObject(payload)) {
-      return reject("INVALID_PAYLOAD", ["$: evidence payload must be a JSON object"]);
-    }
-
-    const schemaId = payload.schemaId;
-    if (typeof schemaId !== "string" || !isSupportedSchemaId(schemaId)) {
-      return reject("UNSUPPORTED_SCHEMA_ID", [
-        `$.schemaId: expected one of ${Object.keys(SUPPORTED_SCHEMAS).join(", ")}, received '${String(schemaId)}'`,
-      ]);
-    }
-
-    const loaded = this.#schemas.get(schemaId);
-    if (!loaded) {
-      return reject("UNSUPPORTED_SCHEMA_ID", [`$.schemaId: '${schemaId}' is not a supported evidence schema`]);
-    }
-
-    if (payload.schemaVersion !== loaded.schemaVersion) {
-      return reject("UNSUPPORTED_SCHEMA_VERSION", [
-        `$.schemaVersion: reader supports '${loaded.schemaVersion}' for '${schemaId}', received '${String(payload.schemaVersion)}'`,
-      ]);
-    }
-
-    const reasons = validateValue(payload, loaded.document, loaded.document).sort(compareText);
-    if (reasons.length > 0) {
-      return reject("SCHEMA_VALIDATION_FAILED", reasons);
-    }
-
-    if (typeof payload.taskId !== "string" || !TASK_ID_PATTERN.test(payload.taskId)) {
-      return reject("SCHEMA_VALIDATION_FAILED", [`$.taskId: '${String(payload.taskId)}' is not a valid task identifier`]);
-    }
-
-    const lineageId = lineageIdFor(schemaId, payload);
-    if (lineageId === null) {
-      return reject("SCHEMA_VALIDATION_FAILED", [
-        schemaId === "ipt.validation-evidence"
-          ? "$.validatorId: required to derive an evidence lineage"
-          : "$.role: required to derive a review lineage",
-      ]);
-    }
+    const validated = this.#validatePayload(payload);
+    if (!validated.ok) return validated.result;
+    const { payload: validPayload, lineageId } = validated;
 
     const storedAt = new Date().toISOString();
-    const frozenPayload = deepFreeze(clone(payload));
+    const frozenPayload = deepFreeze(clone(validPayload));
     const sequence = this.#writeNextSlot(lineageId, (attempt) =>
       `${JSON.stringify({ lineageId, sequence: attempt, storedAt, payload: frozenPayload }, null, 2)}\n`,
     );
@@ -157,6 +135,76 @@ export class FileEvidenceStore implements EvidenceStore {
     });
 
     return Object.freeze({ ok: true, record });
+  }
+
+  validate(payload: unknown): ValidateResult {
+    const validated = this.#validatePayload(payload);
+    return validated.ok ? Object.freeze({ ok: true }) : validated.result;
+  }
+
+  // Shared by record() and validate() so both apply the exact same checks in
+  // the exact same order — a payload record() would accept is always exactly
+  // the set validate() reports as ok, and vice versa, by construction rather
+  // than by keeping two implementations in sync by hand.
+  #validatePayload(
+    payload: unknown,
+  ): { readonly ok: true; readonly payload: JsonObject; readonly lineageId: string } | { readonly ok: false; readonly result: RecordResult } {
+    if (!isObject(payload)) {
+      return { ok: false, result: reject("INVALID_PAYLOAD", ["$: evidence payload must be a JSON object"]) };
+    }
+
+    const schemaId = payload.schemaId;
+    if (typeof schemaId !== "string" || !isSupportedSchemaId(schemaId)) {
+      return {
+        ok: false,
+        result: reject("UNSUPPORTED_SCHEMA_ID", [
+          `$.schemaId: expected one of ${Object.keys(SUPPORTED_SCHEMAS).join(", ")}, received '${String(schemaId)}'`,
+        ]),
+      };
+    }
+
+    const loaded = this.#schemas.get(schemaId);
+    if (!loaded) {
+      return {
+        ok: false,
+        result: reject("UNSUPPORTED_SCHEMA_ID", [`$.schemaId: '${schemaId}' is not a supported evidence schema`]),
+      };
+    }
+
+    if (payload.schemaVersion !== loaded.schemaVersion) {
+      return {
+        ok: false,
+        result: reject("UNSUPPORTED_SCHEMA_VERSION", [
+          `$.schemaVersion: reader supports '${loaded.schemaVersion}' for '${schemaId}', received '${String(payload.schemaVersion)}'`,
+        ]),
+      };
+    }
+
+    const reasons = validateValue(payload, loaded.document, loaded.document).sort(compareText);
+    if (reasons.length > 0) {
+      return { ok: false, result: reject("SCHEMA_VALIDATION_FAILED", reasons) };
+    }
+
+    if (typeof payload.taskId !== "string" || !TASK_ID_PATTERN.test(payload.taskId)) {
+      return {
+        ok: false,
+        result: reject("SCHEMA_VALIDATION_FAILED", [`$.taskId: '${String(payload.taskId)}' is not a valid task identifier`]),
+      };
+    }
+
+    const lineageId = lineageIdFor(schemaId, payload);
+    if (lineageId === null) {
+      return {
+        ok: false,
+        result: reject("SCHEMA_VALIDATION_FAILED", [
+          schemaId === "ipt.validation-evidence"
+            ? "$.validatorId: required to derive an evidence lineage"
+            : "$.role: required to derive a review lineage",
+        ]),
+      };
+    }
+
+    return { ok: true, payload, lineageId };
   }
 
   getCurrent(lineageId: string): StoredEvidenceRecord | null {

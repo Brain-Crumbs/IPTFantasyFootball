@@ -2,7 +2,13 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, 
 import { join } from "node:path";
 import { FileAssignmentLockStore, type AssignmentLockRecord, type LockResult } from "../assignment-lock/index.js";
 import { LOCAL_AGENT_STATE_RELATIVE_PATH } from "../dev-start/index.js";
-import { FileEvidenceStore, mergeEvidenceLineageId, type RecordResult, type StoredEvidenceRecord } from "../evidence-store/index.js";
+import {
+  FileEvidenceStore,
+  mergeEvidenceLineageId,
+  type RecordResult,
+  type StoredEvidenceRecord,
+  type ValidateResult,
+} from "../evidence-store/index.js";
 import {
   BranchLifecycleError,
   GitBranchLifecycleAdapter,
@@ -199,9 +205,20 @@ export class ControlledMergeController {
     // changes after the fact, so searching by it finds the confirmed merge
     // regardless of anything that has happened to the branch since.
     const approvedRevision = latestHistoryEventToState(record, "MERGE_READY")?.revisionIdentity ?? null;
+    // The highest-numbered matching candidate, not merely the first one
+    // find() encounters: ControlledMergePullRequestPort makes no promise
+    // about candidate ordering, so if both a historical, reverted PR and
+    // the actual newer approval also happen to report merged=true (the
+    // ordinary "confirmed prior attempt" case this shortcut exists for, not
+    // only the adversarial reused-SHA scenario below), an adapter that
+    // simply returns the older one first would otherwise select it over the
+    // genuinely current, correct match sitting later in the array.
     const matched =
       approvedRevision !== null
-        ? candidates.find((pr) => pr.merged && pr.headSha === approvedRevision && pr.baseRef === integrationTarget) ?? null
+        ? candidates.reduce<ControlledMergePullRequestRecord | null>((best, pr) => {
+            if (!(pr.merged && pr.headSha === approvedRevision && pr.baseRef === integrationTarget)) return best;
+            return best === null || pr.number > best.number ? pr : best;
+          }, null)
         : null;
     // A merged, revision-and-base-matching candidate is not automatically
     // proof of *this* attempt's confirmed merge: if the canonical branch and
@@ -431,7 +448,7 @@ export class ControlledMergeController {
     // malformed one rather than trusting it or hard-failing on it.
     const reusable =
       existingEvidence !== null &&
-      isMergeEvidencePayloadFor(existingEvidence.payload, task.taskId, revision) &&
+      this.isMergeEvidencePayloadFor(existingEvidence.payload, task.taskId, revision) &&
       existingEvidence.payload.pullRequestNumber === pullRequestNumber &&
       existingEvidence.payload.mergeCommitSha === mergeCommitSha;
 
@@ -729,7 +746,7 @@ export class ControlledMergeController {
         false,
       );
     }
-    if (!isMergeEvidencePayloadFor(exact.payload, taskId, event.revisionIdentity)) {
+    if (!this.isMergeEvidencePayloadFor(exact.payload, taskId, event.revisionIdentity)) {
       throw new ControlledMergeError(
         "EVIDENCE_REJECTED",
         `Task '${taskId}' evidence record '${event.evidenceRef}' named by its ${toState} lifecycle-history event is not valid merge evidence for this task's revision.`,
@@ -737,6 +754,33 @@ export class ControlledMergeController {
       );
     }
     return exact;
+  }
+
+  // Guards trust in a stored evidence payload wherever this controller is
+  // about to treat one as describing this task's confirmed merge — both
+  // resolvePinnedEvidence's resume/idempotent-read path and finalize()'s own
+  // reuse check: it must actually be a *fully schema-valid* `ipt.merge-
+  // evidence` record (via evidenceStore's own validate(), the exact check
+  // record() itself would apply — not only a handful of loosely compared
+  // field values, which a `schemaVersion` mismatch, a fractional
+  // pullRequestNumber, or a missing evidenceId/policyDecisionReference/
+  // recordedAt could otherwise slip past) for this exact task and the exact
+  // revision the caller expects — anything else means the record, however
+  // superficially plausible, does not describe this task's confirmed merge.
+  private isMergeEvidencePayloadFor(payload: unknown, taskId: string, expectedRevision: string | undefined): boolean {
+    if (typeof expectedRevision !== "string") return false;
+    if (typeof payload !== "object" || payload === null) return false;
+    if (!this.dependencies.evidenceStore.validate(payload).ok) return false;
+    const candidate = payload as Record<string, unknown>;
+    return (
+      candidate.schemaId === "ipt.merge-evidence" &&
+      candidate.taskId === taskId &&
+      candidate.revisionIdentity === expectedRevision &&
+      typeof candidate.pullRequestNumber === "number" &&
+      candidate.pullRequestNumber >= 1 &&
+      typeof candidate.mergeCommitSha === "string" &&
+      candidate.mergeCommitSha.length > 0
+    );
   }
 
   // Normalizes a raw filesystem/I/O throw from the evidence store's
@@ -924,6 +968,11 @@ export interface ControlledMergeReadinessPort {
 
 export interface ControlledMergeEvidenceStore {
   record(payload: unknown): RecordResult;
+  // A pure, read-only check applying the exact same schema validation
+  // record() itself would — used to revalidate a *stored* candidate record
+  // before ever trusting it as reusable (see finalize()'s reuse check),
+  // rather than trusting a bare comparison of a few field values.
+  validate(payload: unknown): ValidateResult;
   getCurrent(lineageId: string): StoredEvidenceRecord | null;
   getHistory(lineageId: string): readonly StoredEvidenceRecord[];
 }
@@ -1326,6 +1375,46 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     }
     if (Date.now() - stats.mtimeMs <= this.staleLockMs) return;
 
+    // A plain stat-then-unlink (the original implementation) is not
+    // actually atomic: another caller could, in the gap between the
+    // staleness check above and the removal below, *itself* finish
+    // reclaiming this exact stale marker and start its own fresh, live
+    // release()/reclaimIfStale() call (writing a brand-new marker at this
+    // same path). Blindly unlinking at that point would strip that fresh,
+    // in-flight call of its own protection mid-flight — the same class of
+    // bug this whole reservation mechanism exists to prevent. Claiming the
+    // marker via an atomic rename first, then re-checking the *captured*
+    // file's own age (rename preserves mtime), tells the two cases apart:
+    // whichever caller's rename lands first captures whatever is genuinely
+    // at this path at that instant, and only a capture that is still old
+    // enough is ever treated as abandoned.
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+    try {
+      renameSync(reservationPath, reclaimMarkerPath);
+    } catch {
+      return; // Already gone; another caller already reclaimed or cleared it.
+    }
+
+    let claimedStats: { readonly mtimeMs: number } | null;
+    try {
+      claimedStats = statSync(reclaimMarkerPath);
+    } catch {
+      claimedStats = null;
+    }
+    if (claimedStats === null) return;
+    if (Date.now() - claimedStats.mtimeMs <= this.staleLockMs) {
+      // Not actually stale: a live call created a fresh marker here after
+      // the check above but before this claim landed. Restore it untouched
+      // rather than discarding a live reservation.
+      try {
+        renameSync(reclaimMarkerPath, reservationPath);
+      } catch {
+        // A third operation has since created its own fresh marker at
+        // reservationPath; there is nothing further to restore onto.
+      }
+      return;
+    }
+
     for (const claimPath of [this.releaseClaimedPath(lockPath), this.reclaimClaimedPath(lockPath)]) {
       try {
         renameSync(claimPath, lockPath);
@@ -1337,7 +1426,7 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       }
     }
     try {
-      unlinkSync(reservationPath);
+      unlinkSync(reclaimMarkerPath);
     } catch {
       // Already gone; nothing left to clean up.
     }
@@ -1899,36 +1988,6 @@ function latestHistoryEventToState(record: LifecycleRecord, toState: TaskLifecyc
     }
   }
   return null;
-}
-
-// The lifecycle history event that recorded a MERGED/DONE transition carries
-// an evidenceRef of the exact form `${lineageId}@${sequence}` (see
-// finalize()'s own transitionLifecycle() calls). Parsing it back and pinning
-// resume/idempotent-read logic to that *exact* sequence — rather than
-// whatever getCurrent() reports as the lineage's current record right now —
-// mirrors BOOT-021's own parseFailureEvidenceRef/rework-binding pattern: a
-// hypothetical later write to the same lineage (an administrative repair, a
-// future bug) must never silently change what an already-persisted MERGED
-// or DONE transition is understood to describe.
-// Guards resolvePinnedEvidence's trust in a lifecycle-history-named evidence
-// record: it must actually be an `ipt.merge-evidence` record for this exact
-// task and the exact revision the history event itself recorded, and must
-// carry a usable pull-request number and merge commit SHA — anything else
-// means the evidenceRef, however syntactically well-formed, does not
-// describe this task's confirmed merge.
-function isMergeEvidencePayloadFor(payload: unknown, taskId: string, expectedRevision: string | undefined): boolean {
-  if (typeof payload !== "object" || payload === null) return false;
-  const candidate = payload as Record<string, unknown>;
-  return (
-    candidate.schemaId === "ipt.merge-evidence" &&
-    candidate.taskId === taskId &&
-    typeof expectedRevision === "string" &&
-    candidate.revisionIdentity === expectedRevision &&
-    typeof candidate.pullRequestNumber === "number" &&
-    candidate.pullRequestNumber >= 1 &&
-    typeof candidate.mergeCommitSha === "string" &&
-    candidate.mergeCommitSha.length > 0
-  );
 }
 
 function parseEvidenceRef(ref: string): { readonly lineageId: string; readonly sequence: number } | null {

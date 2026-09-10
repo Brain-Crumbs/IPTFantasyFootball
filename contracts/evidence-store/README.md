@@ -16,6 +16,7 @@ Primary API:
 
 - `new FileEvidenceStore(root, options?: { repositoryRoot?: string })`
 - `EvidenceStore.record(payload: unknown): RecordResult`
+- `EvidenceStore.validate(payload: unknown): ValidateResult` (BOOT-025) — the exact same checks `record()` itself applies (payload shape, schemaId, schemaVersion, full schema-document validation, taskId pattern, lineage derivability), reported the same way, but never persists anything: `record()` and `validate()` share one internal implementation, so a payload one accepts is always exactly what the other reports `ok` for. Lets a caller that already holds a *stored* payload (a candidate for reuse, say) reconfirm it is still fully schema-valid without re-implementing this store's own validation logic.
 - `EvidenceStore.getCurrent(lineageId: string): StoredEvidenceRecord | null`
 - `EvidenceStore.getHistory(lineageId: string): readonly StoredEvidenceRecord[]`
 - `EvidenceStore.checkRevision(lineageId: string, expectedRevisionIdentity: string): RevisionCheckResult`

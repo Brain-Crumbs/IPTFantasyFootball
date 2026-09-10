@@ -7,11 +7,13 @@
     "interfaces": [
       "FileEvidenceStore(root, options?: { repositoryRoot?: string })",
       "EvidenceStore.record(payload: unknown): RecordResult",
+      "EvidenceStore.validate(payload: unknown): ValidateResult (BOOT-025)",
       "EvidenceStore.getCurrent(lineageId: string): StoredEvidenceRecord | null",
       "EvidenceStore.getHistory(lineageId: string): readonly StoredEvidenceRecord[]",
       "EvidenceStore.checkRevision(lineageId: string, expectedRevisionIdentity: string): RevisionCheckResult",
       "StoredEvidenceRecord { lineageId, sequence, status, storedAt, payload }",
       "RecordResult = { ok: true, record: StoredEvidenceRecord } | { ok: false, rejection: EvidenceRejection }",
+      "ValidateResult = { ok: true } | { ok: false, rejection: EvidenceRejection }",
       "EvidenceRejection { code, reasons }",
       "RevisionCheckResult = { status: 'CURRENT', record } | { status: 'REVISION_MISMATCH', record, expectedRevisionIdentity } | { status: 'NOT_FOUND' }",
       "validationEvidenceLineageId(taskId, validatorId): string",
@@ -29,9 +31,11 @@
       "current-vs-superseded-distinction",
       "explicit-revision-mismatch-detection",
       "deterministic-local-persistence",
-      "multi-schema-record-support"
+      "multi-schema-record-support",
+      "pure-read-only-schema-validation-without-persisting-a-record"
     ],
     "behavioralConstraints": [
+      "validate(payload) applies the exact same checks record() itself applies (payload-is-an-object, supported schemaId, exact schemaVersion match, full schema-document validation, taskId pattern, lineage derivability) and reports the same EvidenceRejection shape on failure, but never writes anything either way — record() and validate() share one internal implementation, so a payload record() would accept is always exactly the set validate() reports ok for, by construction rather than by keeping two implementations in sync by hand",
       "record() accepts only payloads whose schemaId is a supported evidence schema and whose schemaVersion matches the reader's exact supported version",
       "record() validates the full payload against the corresponding schemas/v1/*.schema.json document, including $ref-resolved nested shapes and role/outcome-conditioned allOf/if/then requirements, before acceptance",
       "a lineage is derived deterministically from taskId plus validatorId for validation-evidence records, taskId plus role for review-result records, or taskId alone for merge-evidence records, so the three record kinds never collide even for the same taskId",
@@ -118,12 +122,14 @@
     {
       "consumerId": "controlled-merge",
       "expectations": [
-        "BOOT-025 can persist one ipt.merge-evidence record per task via mergeEvidenceLineageId(taskId) immediately after a merge is confirmed; getCurrent is used only by the pre-write reuse check, while finishing interrupted post-merge bookkeeping or answering a repeated call for an already-DONE task instead reads the exact sequence named by the task's own MERGED/DONE lifecycle-history evidenceRef via getHistory, so a later write to the lineage never changes what an already-persisted transition is understood to describe"
+        "BOOT-025 can persist one ipt.merge-evidence record per task via mergeEvidenceLineageId(taskId) immediately after a merge is confirmed; getCurrent is used only by the pre-write reuse check, while finishing interrupted post-merge bookkeeping or answering a repeated call for an already-DONE task instead reads the exact sequence named by the task's own MERGED/DONE lifecycle-history evidenceRef via getHistory, so a later write to the lineage never changes what an already-persisted transition is understood to describe",
+        "before ever treating a current or pinned stored record as reusable (rather than appending/trusting a fresh one), the controller calls validate() on its payload to fully reconfirm schema validity, not only a handful of loosely compared field values"
       ],
       "requiredCapabilities": [
         "revision-bound-evidence-persistence",
         "schema-validated-acceptance",
-        "multi-schema-record-support"
+        "multi-schema-record-support",
+        "pure-read-only-schema-validation-without-persisting-a-record"
       ],
       "acceptedRanges": [
         "a RecordResult with ok:true and a CURRENT StoredEvidenceRecord for the task's merge lineage",

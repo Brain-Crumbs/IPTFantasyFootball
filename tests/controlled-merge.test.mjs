@@ -1365,6 +1365,81 @@ test("finalize() never reuses a stored evidence record whose payload is malforme
   assert.equal(state.get(task.taskId).currentState, "DONE");
 });
 
+test("finalize() never reuses a stored evidence record that fails full schema validation, even when it passes a loose comparison of the three key fields", async () => {
+  const { store: evidence, dir: evidenceDir } = makeEvidenceStore();
+  const lineageId = mergeEvidenceLineageId(task.taskId);
+  const seeded = evidence.record({
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:seed`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "merged-sha-1",
+    policyDecisionReference: "placeholder",
+    recordedAt: occurredAt,
+  });
+  assert.equal(seeded.ok, true);
+
+  // Drop the required evidenceId field in place: schemaId, taskId,
+  // revisionIdentity, pullRequestNumber, and mergeCommitSha (the fields a
+  // loose three/five-field comparison alone would check) are all still
+  // exactly right, but this is no longer a fully schema-valid
+  // ipt.merge-evidence record.
+  const { readdirSync, writeFileSync: write } = await import("node:fs");
+  const lineageDirName = readdirSync(evidenceDir)[0];
+  const lineageDir = join(evidenceDir, lineageDirName);
+  const fileName = readdirSync(lineageDir).find((name) => /^\d+\.json$/.test(name));
+  const corrupted = {
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "stale-sha-missing-evidenceid",
+    policyDecisionReference: "placeholder",
+    recordedAt: occurredAt,
+  };
+  write(
+    join(lineageDir, fileName),
+    `${JSON.stringify({ lineageId, sequence: seeded.record.sequence, storedAt: occurredAt, payload: corrupted })}\n`,
+    { encoding: "utf8" },
+  );
+
+  const pullRequests = new FakePullRequestPort({
+    existing: [prRecord({ merged: true, mergeCommitSha: "merged-sha-1" })],
+  });
+  const { controller, state } = makeController({ pullRequests, evidenceStore: evidence });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(result.mergeCommitSha, "merged-sha-1");
+  const history = evidence.getHistory(lineageId);
+  assert.equal(history.length, 2, "the schema-invalid record was not reused; a fresh valid one was appended instead");
+  assert.equal(history[1].payload.evidenceId !== undefined, true);
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
+test("when both a historical reverted PR and the task's actual newer approval report merged:true, the newer one is preferred regardless of candidate array order", async () => {
+  // ControlledMergePullRequestPort makes no promise about candidate
+  // ordering: an adapter could return either PR first. find()'s "first
+  // match wins" would otherwise pick whichever happens to come first in
+  // the array, even when a genuinely newer, correct match exists.
+  const oldReverted = prRecord({ number: 10, merged: true, mergeCommitSha: "stale-reverted-sha" });
+  const actualNewer = prRecord({ number: 63, merged: true, mergeCommitSha: "genuine-merge-sha" });
+  const pullRequests = new FakePullRequestPort({ existing: [oldReverted, actualNewer] });
+  const { controller, state } = makeController({ pullRequests });
+
+  const result = await controller.merge(request());
+
+  assert.equal(result.lifecycleState, "DONE");
+  assert.equal(result.mergeCommitSha, "genuine-merge-sha");
+  assert.equal(result.pullRequestNumber, 63);
+  assert.equal(pullRequests.mergeCalls, 0);
+  assert.equal(state.get(task.taskId).currentState, "DONE");
+});
+
 test("crash recovery finds the confirmed merge even when a stray unrelated PR is now the most recent for the branch", async () => {
   // The genuinely approved PR (already merged, by this exact controller's
   // own earlier, interrupted attempt) plus a stray closed PR against a

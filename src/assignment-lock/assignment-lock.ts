@@ -537,6 +537,47 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     }
     if (Date.now() - stats.mtimeMs <= RELEASE_CLAIM_STALE_MS) return;
 
+    // A plain stat-then-unlink (the original implementation) is not
+    // actually atomic: another caller could, in the gap between the
+    // staleness check above and the removal below, *itself* finish
+    // reclaiming this exact stale marker and start its own fresh, live
+    // release() (writing a brand-new marker at this same path). Blindly
+    // unlinking at that point would strip that fresh, in-flight release()
+    // of its own protection mid-flight — the same class of bug this whole
+    // reservation mechanism exists to prevent — rather than only ever
+    // discarding a marker this call itself verified is still the stale one.
+    // Claiming the marker via an atomic rename first, then re-checking the
+    // *captured* file's own age (rename preserves mtime), tells the two
+    // cases apart: whichever caller's rename lands first captures whatever
+    // is genuinely at this path at that instant, and only a capture that is
+    // still old enough is ever treated as abandoned.
+    const reclaimMarkerPath = `${releaseClaimPath}.reclaim`;
+    try {
+      renameSync(releaseClaimPath, reclaimMarkerPath);
+    } catch {
+      return; // Already gone; another caller already reclaimed or cleared it.
+    }
+
+    let claimedStats: { readonly mtimeMs: number } | null;
+    try {
+      claimedStats = statSync(reclaimMarkerPath);
+    } catch {
+      claimedStats = null;
+    }
+    if (claimedStats === null) return;
+    if (Date.now() - claimedStats.mtimeMs <= RELEASE_CLAIM_STALE_MS) {
+      // Not actually stale: a live release() call created a fresh marker
+      // here after the check above but before this claim landed. Restore
+      // it untouched rather than discarding a live reservation.
+      try {
+        renameSync(reclaimMarkerPath, releaseClaimPath);
+      } catch {
+        // A third operation has since created its own fresh marker at
+        // releaseClaimPath; there is nothing further to restore onto.
+      }
+      return;
+    }
+
     try {
       renameSync(this.#releaseClaimedRecordPath(taskId), this.#activePath(taskId));
     } catch {
@@ -547,7 +588,7 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
       // further to restore.
     }
     try {
-      unlinkSync(releaseClaimPath);
+      unlinkSync(reclaimMarkerPath);
     } catch {
       // Already gone; nothing left to clean up.
     }
@@ -635,7 +676,16 @@ function requireDate(name: string, value: string): string | null {
 function toComparableInstant(value: string): number {
   const isLeapSecond = value.length > 18 && value[17] === "6" && value[18] === "0";
   const parseableForm = isLeapSecond ? `${value.slice(0, 17)}59${value.slice(19)}` : value;
-  return Date.parse(parseableForm);
+  const parsed = Date.parse(parseableForm);
+  // A leap second is a genuinely later instant than the :59 second right
+  // before it, not the same one — substituting the digit alone (needed
+  // only because Date.parse has no representation for :60) would otherwise
+  // collapse the two into the same millisecond value, making adjacent
+  // instants compare as equal (rejecting a perfectly valid "acquiredAt
+  // :59, expiresAt :60" ordering) and making a lock expiring at the leap
+  // second look already expired a full second early against a "now" of
+  // :59. Adding the elapsed second back restores strict, correct ordering.
+  return isLeapSecond && !Number.isNaN(parsed) ? parsed + 1000 : parsed;
 }
 
 function freezeLock(lock: AssignmentLockRecord): AssignmentLockRecord {

@@ -298,6 +298,27 @@ test("an abandoned release() reservation (process crashed mid-release) is reclai
   assert.equal(existsSync(reservationPath), false);
 }));
 
+test("a leap-second timestamp compares as strictly later than the :59 second right before it, not equal to it", () => withStore((store) => {
+  // acquiredAt at :59, expiresAt at the leap second right after it (:60) is
+  // a valid, later expiry — substituting the digit alone for Date.parse
+  // (without accounting for the elapsed second) would collapse the two to
+  // the same millisecond value and incorrectly reject this as "not later
+  // than acquiredAt".
+  const acquired = store.acquire(acquire({
+    acquiredAt: "1990-12-31T23:59:59Z",
+    expiresAt: "1990-12-31T23:59:60Z",
+  }));
+  assert.equal(acquired.ok, true);
+
+  // A lock expiring exactly at that leap second must not be considered
+  // already stale one second early when checked against a "now" of :59.
+  const stillActive = store.acquire(acquire({
+    ownerId: "agent-b", runId: "run-b", lockId: "lock-b", acquiredAt: "1990-12-31T23:59:59Z",
+  }));
+  assert.equal(stillActive.ok, false);
+  assert.equal(stillActive.rejection.code, "LOCK_CONFLICT");
+}));
+
 test("a leap-second expiresAt is compared correctly against acquiredAt/now instead of as NaN", () => withStore((store) => {
   // expiresAt no later than acquiredAt must still be rejected even when
   // acquiredAt itself is a leap second (Date.parse(':60') is NaN, so a raw
