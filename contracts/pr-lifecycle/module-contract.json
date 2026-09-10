@@ -2,7 +2,7 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.pr-lifecycle",
-  "moduleVersion": "1.0.0",
+  "moduleVersion": "1.1.0",
   "structuralContract": {
     "interfaces": [
       "PullRequestLifecycleAdapter.ensurePullRequest(request): Promise<EnsurePullRequestResult>",
@@ -11,7 +11,7 @@
       "PullRequestOperations.findOpenPullRequests(params): Promise<readonly PullRequestRecord[]> source-control/PR adapter boundary",
       "PullRequestOperations.createPullRequest(params): Promise<PullRequestRecord>",
       "PullRequestOperations.updatePullRequest(params): Promise<PullRequestRecord>",
-      "PullRequestRecord { number, htmlUrl, headRef, baseRef, title, body, state }",
+      "PullRequestRecord { number, htmlUrl, headRef, headSha, baseRef, title, body, state }",
       "PullRequestLifecycleBranchAdapter.canonicalBranch/assertCurrentTaskBranch/currentRevision boundary onto control-plane.git-branch-lifecycle",
       "PullRequestLifecycleApprovalPort.getApprovalStatus(request) boundary onto control-plane.review-rework",
       "PullRequestLifecycleError { code, recoverable }",
@@ -25,11 +25,15 @@
       "canonical-open-pr-discovery-by-head-base",
       "idempotent-pr-create-or-reuse",
       "idempotent-pr-body-title-update-on-change-only",
+      "generated-section-delimited-body-merge",
       "pr-body-links-task-child-and-parent-issues",
       "pr-body-summarizes-current-approval-status-evidence",
       "duplicate-open-pr-conflict-detection",
       "wrong-source-or-base-branch-rejection",
+      "approval-snapshot-revision-consistency-check",
+      "remote-head-revision-verification",
       "github-http-failure-normalization",
+      "github-403-rate-limit-vs-auth-classification",
       "provider-agnostic-task-domain-boundary"
     ],
     "behavioralConstraints": [
@@ -38,11 +42,14 @@
       "the PR base must equal the bootstrap integration target ('main' by default, overridable only at the dependency/composition level, never silently by a per-call base that disagrees with it); a per-call base that disagrees with the configured integration target is rejected as BASE_REF_MISMATCH",
       "the current Git branch must match the task's canonical branch and the exact current HEAD revision is resolved through the same adapter before any provider call; a mismatch or Git failure is normalized to BRANCH_REJECTED and no provider call is made",
       "review/approval evidence for the PR body is read through control-plane.review-rework's getApprovalStatus(), never re-derived from the evidence store directly; a failure reading it is normalized to EVIDENCE_UNAVAILABLE before any provider call is made",
+      "getApprovalStatus() re-resolves the branch revision independently of the branch adapter call ensurePullRequest() already made; if the two disagree (the branch moved in between), the call is rejected as REVISION_CHANGED before any provider call is made, rather than labeling approvals CURRENT/STALE against a revision the returned result does not actually describe",
       "findOpenPullRequests() is called with the exact resolved head/base before any create or update decision; zero results create a new PR, exactly one result reuses or updates it, and more than one result is rejected as DUPLICATE_PR_CONFLICT without calling create or update",
-      "a reused PR whose current title and body already equal the freshly computed desired title/body performs no provider write (created=false, updated=false); a reused PR whose title or body differs is updated in place via exactly one updatePullRequest call (created=false, updated=true)",
+      "the PR body's machine-owned content is confined to a single delimited generated section (`<!-- control-plane.pr-lifecycle:generated:begin/end -->`); creating a PR wraps that section as the entire initial body, and updating a PR replaces only the content between the markers -- any existing body content outside the markers (for example a hand-authored changed-surfaces/acceptance-criteria/validation/risks writeup from the normal GitHub PR-creation flow) is preserved verbatim, and is appended-to rather than overwritten the first time this module ever touches a PR body that predates it",
+      "a reused PR whose current title and generated section already equal the freshly computed desired title/section performs no provider write (created=false, updated=false); a reused PR whose title or generated-section content differs is updated in place via exactly one updatePullRequest call carrying the merged body (created=false, updated=true)",
       "a PR is created via exactly one createPullRequest call only when no open PR exists for the resolved head/base (created=true, updated=false)",
-      "the desired PR title is `<taskId>: <task title>` and the desired body links `Closes #<childIssueNumber>` and `Parent: #<parentIssueNumber>`, states the resolved head/base branch identity and exact revision, and lists every role getApprovalStatus() reports (NONE/STALE/CURRENT) with its outcome and history count",
-      "GitHubPullRequestOperations maps every non-2xx GitHub response to a PullRequestProviderError whose code is derived from the HTTP status (401/403 -> AUTH_FAILED, 404 -> NOT_FOUND, 422 -> VALIDATION_FAILED, 429 -> RATE_LIMITED, any other non-2xx -> PROVIDER_ERROR) and whose status field carries the exact HTTP status; a transport-level failure (the fetch call itself rejecting) is mapped to NETWORK_FAILED with no status; a 2xx response whose JSON body is missing a required PR field is mapped to PROVIDER_ERROR",
+      "the desired PR title is `<taskId>: <task title>` and the desired generated section links `Closes #<childIssueNumber>` and `Parent: #<parentIssueNumber>`, states the resolved head/base branch identity and exact revision, and lists every role getApprovalStatus() reports (NONE/STALE/CURRENT) with its outcome and history count",
+      "before returning, the ensured/discovered PullRequestRecord's headSha (the exact remote head commit GitHub reports) must equal the exact local revision ensurePullRequest() resolved; a mismatch (for example an unpushed local commit, or a remote branch that has since diverged) is rejected as REMOTE_HEAD_MISMATCH rather than returning a result whose embedded revision/evidence claims describe code the PR does not actually contain",
+      "GitHubPullRequestOperations maps every non-2xx GitHub response to a PullRequestProviderError whose code is derived from the HTTP status (401 -> AUTH_FAILED, 403 -> RATE_LIMITED when the response message matches /rate limit/i, otherwise AUTH_FAILED, 404 -> NOT_FOUND, 422 -> VALIDATION_FAILED, 429 -> RATE_LIMITED, any other non-2xx -> PROVIDER_ERROR) and whose status field carries the exact HTTP status; a transport-level failure (the fetch call itself rejecting) is mapped to NETWORK_FAILED with no status; a 2xx response whose JSON body is missing a required PR field (including head.sha) is mapped to PROVIDER_ERROR",
       "PullRequestLifecycleAdapter never inspects a PullRequestProviderError's HTTP status or GitHub-specific payload shape directly; it only wraps the already-normalized provider error as PR_PROVIDER_FAILED",
       "GitHubPullRequestOperations rejects an empty owner, repo, or token at construction with a RangeError rather than deferring to a failed first request"
     ],
@@ -50,22 +57,28 @@
       "task-domain logic (PullRequestLifecycleAdapter) depends only on the PullRequestOperations interface, never on GitHub-specific request/response payloads",
       "this module performs no lifecycle-state transition, no CI policy evaluation, and no merge",
       "this module invents no review judgment and reads approval evidence only through control-plane.review-rework, never deciding it",
-      "a branch, evidence, or provider failure leaves no partial PR write: create/update is attempted at most once per ensurePullRequest() call, only after every upstream check succeeds",
-      "PR discovery/idempotency is achieved by querying the provider for the current open PR by head/base on every call; this module keeps no local cache of PR identity"
+      "a branch, evidence, revision-consistency, provider, or remote-head-verification failure leaves no partial PR write: create/update is attempted at most once per ensurePullRequest() call, only after every upstream check succeeds, and a post-write remote-head mismatch is reported as a failure rather than silently accepted",
+      "PR discovery/idempotency is achieved by querying the provider for the current open PR by head/base on every call; this module keeps no local cache of PR identity",
+      "hand-authored PR body content outside the generated-section markers is never deleted or overwritten by this module"
     ],
     "examples": [
-      "a task with no existing open PR for its canonical branch into main creates exactly one PR whose body links its child issue, #1, its branch/revision, and its current (mostly NONE) approval status",
+      "a task with no existing open PR for its canonical branch into main creates exactly one PR whose generated section links its child issue, #1, its branch/revision, and its current (mostly NONE) approval status",
       "re-running ensurePullRequest() immediately afterward with unchanged approval status reuses the same PR and performs no provider write",
-      "re-running ensurePullRequest() after a QA PASS is recorded updates the existing PR's body to reflect the new approval status via exactly one updatePullRequest call",
+      "re-running ensurePullRequest() after a QA PASS is recorded updates the existing PR's generated section to reflect the new approval status via exactly one updatePullRequest call, leaving any hand-authored body content outside the markers untouched",
+      "the first ensurePullRequest() call against a PR whose body a human/agent hand-authored before this module ever ran against it appends the generated section to that existing body rather than replacing it",
       "two open PRs already existing for the same head/base (created out of band) cause ensurePullRequest() to fail as DUPLICATE_PR_CONFLICT rather than picking one arbitrarily",
-      "a GitHub 404 while creating a PR (for example a deleted base branch) surfaces as PR_PROVIDER_FAILED wrapping a NOT_FOUND provider error"
+      "a GitHub 404 while creating a PR (for example a deleted base branch) surfaces as PR_PROVIDER_FAILED wrapping a NOT_FOUND provider error",
+      "a local branch with a commit that was never pushed causes ensurePullRequest() to fail as REMOTE_HEAD_MISMATCH rather than returning success for a PR that does not contain that commit",
+      "a GitHub 403 response whose message contains 'secondary rate limit' maps to PullRequestProviderError code RATE_LIMITED rather than AUTH_FAILED"
     ],
     "edgeCases": [
       "an unregistered taskId is rejected as TASK_NOT_FOUND",
       "a non-schema-valid taskId, a non-positive/non-integer childIssueNumber or parentIssueNumber, or an untrimmed expectedHead/base is rejected as INVALID_REQUEST before any dependency is touched",
       "a Git branch mismatch reported by the branch adapter is normalized to BRANCH_REJECTED rather than propagating a raw BranchLifecycleError",
       "an approval-status read failure is normalized to EVIDENCE_UNAVAILABLE rather than propagating a raw error",
-      "a GitHub response body that parses as JSON but is not an array where an array of pull requests is expected is treated as PROVIDER_ERROR"
+      "getApprovalStatus() resolving a different revision than the branch adapter already resolved is rejected as REVISION_CHANGED",
+      "a GitHub response body that parses as JSON but is not an array where an array of pull requests is expected is treated as PROVIDER_ERROR",
+      "a GitHub pull-request response missing head.sha is treated as PROVIDER_ERROR, the same as any other missing required field"
     ]
   },
   "allowedDependencies": [
@@ -101,7 +114,8 @@
     {
       "consumerId": "future-merge-readiness-policy-engine",
       "expectations": [
-        "BOOT-024/BOOT-025 can read the exact PR number/head/base/revision this module last ensured for a task, and the approval-status summary embedded in its body, as one input to computing merge readiness, without this module ever computing or asserting merge readiness itself"
+        "BOOT-024/BOOT-025 can read the exact PR number/head/base/revision this module last ensured for a task, and the approval-status summary embedded in its body, as one input to computing merge readiness, without this module ever computing or asserting merge readiness itself",
+        "a returned EnsurePullRequestResult's revision is guaranteed to equal the PR's actual remote head commit (REMOTE_HEAD_MISMATCH is raised otherwise), so merge-readiness logic never has to independently re-verify that the PR reflects the revision this module reports"
       ],
       "requiredCapabilities": [
         "pr-body-summarizes-current-approval-status-evidence",

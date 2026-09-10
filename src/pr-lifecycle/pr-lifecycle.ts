@@ -5,24 +5,32 @@ import { loadTaskRegistry, type RegisteredTask, type TaskRegistry } from "../tas
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
 const DEFAULT_INTEGRATION_TARGET = "main";
 const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
+const GENERATED_SECTION_BEGIN = "<!-- control-plane.pr-lifecycle:generated:begin -->";
+const GENERATED_SECTION_END = "<!-- control-plane.pr-lifecycle:generated:end -->";
 
 /**
  * BOOT-022 pull-request lifecycle integration. GitHub is an adapter behind
  * `PullRequestOperations`, never the workflow domain model: `ensurePullRequest`
  * discovers or creates exactly one canonical open PR for a task's canonical
- * branch into the bootstrap integration branch, keeps its title/body
- * synchronized with the task's identity, linked issues, exact revision, and
- * BOOT-021's `getApprovalStatus()` evidence summary, and is idempotent across
- * repeated calls: an unchanged desired title/body reuses the existing PR
- * without writing to it, and a changed one updates it in place rather than
- * ever creating a second PR for the same head/base pair. Merging, CI policy,
- * and merge-readiness decisions remain out of scope (BOOT-023 onward).
+ * branch into the bootstrap integration branch, keeps a delimited
+ * machine-owned section of its body synchronized with the task's identity,
+ * linked issues, exact revision, and BOOT-021's `getApprovalStatus()`
+ * evidence summary (any other hand-authored body content is preserved
+ * verbatim), and is idempotent across repeated calls: an unchanged desired
+ * title/section reuses the existing PR without writing to it, and a changed
+ * one updates it in place rather than ever creating a second PR for the same
+ * head/base pair. Every returned/ensured record's remote head commit is
+ * verified to equal the exact local revision the caller resolved, so a PR
+ * can never be reported as representing code that was not actually pushed.
+ * Merging, CI policy, and merge-readiness decisions remain out of scope
+ * (BOOT-023 onward).
  */
 
 export interface PullRequestRecord {
   readonly number: number;
   readonly htmlUrl: string;
   readonly headRef: string;
+  readonly headSha: string;
   readonly baseRef: string;
   readonly title: string;
   readonly body: string;
@@ -64,8 +72,10 @@ export type PullRequestLifecycleErrorCode =
   | "BRANCH_REJECTED"
   | "BASE_REF_MISMATCH"
   | "EVIDENCE_UNAVAILABLE"
+  | "REVISION_CHANGED"
   | "DUPLICATE_PR_CONFLICT"
-  | "PR_PROVIDER_FAILED";
+  | "PR_PROVIDER_FAILED"
+  | "REMOTE_HEAD_MISMATCH";
 
 export class PullRequestLifecycleError extends Error {
   readonly code: PullRequestLifecycleErrorCode;
@@ -158,9 +168,21 @@ export class PullRequestLifecycleAdapter {
         `Task '${task.taskId}' approval status could not be read: ${detail}`,
       );
     }
+    // getApprovalStatus() re-resolves the branch revision independently
+    // (control-plane.review-rework's own assertBranchAndRevision); if the
+    // branch moved between the two reads, the evidence summary below would
+    // describe a different commit than the revision this call reports, so
+    // that drift is rejected rather than silently mislabeling stale
+    // approvals as current for the wrong revision.
+    if (approvals.revision !== revision) {
+      throw new PullRequestLifecycleError(
+        "REVISION_CHANGED",
+        `Task '${task.taskId}' branch revision changed from '${revision}' to '${approvals.revision}' while approval evidence was being read; retry once the branch is stable.`,
+      );
+    }
 
     const title = buildTitle(task);
-    const body = buildBody(task, request, head, base, revision, approvals);
+    const section = buildGeneratedSection(task, request, head, base, revision, approvals);
 
     let existing: readonly PullRequestRecord[];
     try {
@@ -176,29 +198,59 @@ export class PullRequestLifecycleAdapter {
       );
     }
 
+    let record: PullRequestRecord;
+    let created: boolean;
+    let updated: boolean;
+
     if (existing.length === 0) {
-      let created: PullRequestRecord;
       try {
-        created = await this.dependencies.pullRequests.createPullRequest({ head, base, title, body });
+        record = await this.dependencies.pullRequests.createPullRequest({
+          head,
+          base,
+          title,
+          body: wrapGeneratedSection(section),
+        });
       } catch (error: unknown) {
         throw normalizeProviderError(task.taskId, error);
       }
-      return freezeResult(task.taskId, created, revision, true, false);
+      created = true;
+      updated = false;
+    } else {
+      const current = existing[0] as PullRequestRecord;
+      const needsUpdate = current.title !== title || extractGeneratedSection(current.body) !== section;
+      if (!needsUpdate) {
+        record = current;
+        created = false;
+        updated = false;
+      } else {
+        try {
+          record = await this.dependencies.pullRequests.updatePullRequest({
+            number: current.number,
+            title,
+            body: mergeGeneratedSection(current.body, section),
+          });
+        } catch (error: unknown) {
+          throw normalizeProviderError(task.taskId, error);
+        }
+        created = false;
+        updated = true;
+      }
     }
 
-    const current = existing[0] as PullRequestRecord;
-    const needsUpdate = current.title !== title || current.body !== body;
-    if (!needsUpdate) {
-      return freezeResult(task.taskId, current, revision, false, false);
+    // The PR record's remote head commit is a deterministic fact GitHub
+    // reports independently of anything this process resolved locally; if
+    // the local branch has unpushed commits (or the remote otherwise
+    // diverged), the PR would represent different code than `revision`, and
+    // every evidence/approval claim embedded in its body would be false for
+    // the commit GitHub actually has.
+    if (record.headSha !== revision) {
+      throw new PullRequestLifecycleError(
+        "REMOTE_HEAD_MISMATCH",
+        `Task '${task.taskId}' pull request #${record.number} head is at '${record.headSha}' on GitHub, not the resolved local revision '${revision}'; push the local branch before continuing.`,
+      );
     }
 
-    let updated: PullRequestRecord;
-    try {
-      updated = await this.dependencies.pullRequests.updatePullRequest({ number: current.number, title, body });
-    } catch (error: unknown) {
-      throw normalizeProviderError(task.taskId, error);
-    }
-    return freezeResult(task.taskId, updated, revision, false, true);
+    return freezeResult(task.taskId, record, revision, created, updated);
   }
 
   private lookupTask(taskId: string): RegisteredTask {
@@ -233,7 +285,16 @@ function buildTitle(task: RegisteredTask): string {
   return `${task.taskId}: ${task.title}`;
 }
 
-function buildBody(
+/**
+ * Content only (no delimiter markers) for the machine-owned section of the
+ * PR body. Never returns the whole desired body directly, so a hand-authored
+ * changed-surfaces/acceptance-criteria/validation/risks writeup elsewhere in
+ * the PR body (for example the one a human or agent writes when opening the
+ * PR through the normal GitHub PR-creation flow) is never clobbered by a
+ * later `ensurePullRequest()` sync — see `wrapGeneratedSection`/
+ * `mergeGeneratedSection`.
+ */
+function buildGeneratedSection(
   task: RegisteredTask,
   request: EnsurePullRequestRequest,
   head: string,
@@ -261,9 +322,52 @@ function buildBody(
     "",
     "## Review/validation evidence",
     approvalLines,
-    "",
-    "_This description is generated and kept in sync by control-plane.pr-lifecycle (BOOT-022); do not hand-edit the evidence section above._",
   ].join("\n");
+}
+
+function wrapGeneratedSection(content: string): string {
+  return [
+    GENERATED_SECTION_BEGIN,
+    "_This section is generated and kept in sync by control-plane.pr-lifecycle (BOOT-022); do not hand-edit it. Content outside these markers is preserved._",
+    "",
+    content,
+    GENERATED_SECTION_END,
+  ].join("\n");
+}
+
+function extractGeneratedSection(body: string): string | null {
+  const beginIndex = body.indexOf(GENERATED_SECTION_BEGIN);
+  const endIndex = body.indexOf(GENERATED_SECTION_END);
+  if (beginIndex === -1 || endIndex === -1 || endIndex < beginIndex) {
+    return null;
+  }
+  const inner = body.slice(beginIndex + GENERATED_SECTION_BEGIN.length, endIndex);
+  const withoutNotice = inner.replace(
+    "_This section is generated and kept in sync by control-plane.pr-lifecycle (BOOT-022); do not hand-edit it. Content outside these markers is preserved._",
+    "",
+  );
+  return withoutNotice.trim();
+}
+
+/**
+ * Replaces only the delimited machine-owned section within `existingBody`,
+ * preserving everything before/after it untouched. When `existingBody` has
+ * no markers yet (for example a PR whose body a human or agent authored
+ * directly through the normal GitHub PR-creation flow, before this module
+ * ever ran against it), the generated section is appended rather than
+ * replacing that content.
+ */
+function mergeGeneratedSection(existingBody: string, content: string): string {
+  const wrapped = wrapGeneratedSection(content);
+  const beginIndex = existingBody.indexOf(GENERATED_SECTION_BEGIN);
+  const endIndex = existingBody.indexOf(GENERATED_SECTION_END);
+  if (beginIndex !== -1 && endIndex !== -1 && endIndex > beginIndex) {
+    const before = existingBody.slice(0, beginIndex);
+    const after = existingBody.slice(endIndex + GENERATED_SECTION_END.length);
+    return `${before}${wrapped}${after}`;
+  }
+  const trimmed = existingBody.trim();
+  return trimmed.length > 0 ? `${trimmed}\n\n${wrapped}` : wrapped;
 }
 
 function formatApproval(approval: RoleApprovalStatus): string {
@@ -436,15 +540,21 @@ export class GitHubPullRequestOperations implements PullRequestOperations {
 
     const message = extractMessage(data) ?? `HTTP ${response.status}`;
     throw new PullRequestProviderError(
-      mapStatus(response.status),
+      mapStatus(response.status, message),
       `GitHub PR request failed (${response.status}): ${message}`,
       response.status,
     );
   }
 }
 
-function mapStatus(status: number): PullRequestProviderErrorCode {
-  if (status === 401 || status === 403) return "AUTH_FAILED";
+// GitHub reports both primary ("API rate limit exceeded...") and secondary
+// ("You have exceeded a secondary rate limit...") rate limiting as HTTP 403,
+// the same status it uses for a genuine authorization failure. Without this
+// distinction a caller could not tell a temporary throttle it should back
+// off and retry from invalid/expired credentials it should stop retrying.
+function mapStatus(status: number, message: string): PullRequestProviderErrorCode {
+  if (status === 401) return "AUTH_FAILED";
+  if (status === 403) return /rate limit/i.test(message) ? "RATE_LIMITED" : "AUTH_FAILED";
   if (status === 404) return "NOT_FOUND";
   if (status === 422) return "VALIDATION_FAILED";
   if (status === 429) return "RATE_LIMITED";
@@ -466,6 +576,7 @@ function toRecord(raw: unknown): PullRequestRecord {
   const number = raw.number;
   const htmlUrl = raw.html_url;
   const headRef = isObject(raw.head) ? raw.head.ref : undefined;
+  const headSha = isObject(raw.head) ? raw.head.sha : undefined;
   const baseRef = isObject(raw.base) ? raw.base.ref : undefined;
   const title = raw.title;
   const body = raw.body;
@@ -474,6 +585,7 @@ function toRecord(raw: unknown): PullRequestRecord {
     typeof number !== "number" ||
     typeof htmlUrl !== "string" ||
     typeof headRef !== "string" ||
+    typeof headSha !== "string" ||
     typeof baseRef !== "string" ||
     typeof title !== "string" ||
     (state !== "open" && state !== "closed")
@@ -484,6 +596,7 @@ function toRecord(raw: unknown): PullRequestRecord {
     number,
     htmlUrl,
     headRef,
+    headSha,
     baseRef,
     title,
     body: typeof body === "string" ? body : "",

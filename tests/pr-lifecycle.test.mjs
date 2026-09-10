@@ -82,11 +82,12 @@ class FakeApprovalsPort {
 }
 
 class FakePullRequestOperations {
-  constructor({ existing = [], failFind = null, failCreate = null, failUpdate = null } = {}) {
+  constructor({ existing = [], failFind = null, failCreate = null, failUpdate = null, remoteHeadSha = revision } = {}) {
     this.existing = existing;
     this.failFind = failFind;
     this.failCreate = failCreate;
     this.failUpdate = failUpdate;
+    this.remoteHeadSha = remoteHeadSha;
     this.findCalls = [];
     this.createCalls = [];
     this.updateCalls = [];
@@ -106,6 +107,7 @@ class FakePullRequestOperations {
       number: this.nextNumber,
       htmlUrl: `https://github.com/Brain-Crumbs/IPTFantasyFootball/pull/${this.nextNumber}`,
       headRef: params.head,
+      headSha: this.remoteHeadSha,
       baseRef: params.base,
       title: params.title,
       body: params.body,
@@ -208,8 +210,8 @@ test("re-running after approvals change updates the existing pull request in pla
 
 test("rejects more than one open pull request as a conflict", async () => {
   const conflicting = [
-    { number: 1, htmlUrl: "u1", headRef: "bootstrap/boot-022-pr-lifecycle", baseRef: "main", title: "a", body: "a", state: "open" },
-    { number: 2, htmlUrl: "u2", headRef: "bootstrap/boot-022-pr-lifecycle", baseRef: "main", title: "b", body: "b", state: "open" },
+    { number: 1, htmlUrl: "u1", headRef: "bootstrap/boot-022-pr-lifecycle", headSha: revision, baseRef: "main", title: "a", body: "a", state: "open" },
+    { number: 2, htmlUrl: "u2", headRef: "bootstrap/boot-022-pr-lifecycle", headSha: revision, baseRef: "main", title: "b", body: "b", state: "open" },
   ];
   const pullRequests = new FakePullRequestOperations({ existing: conflicting });
   const adapter = makeAdapter({ pullRequests });
@@ -248,6 +250,72 @@ test("normalizes a pull-request provider failure into PR_PROVIDER_FAILED", async
   await expectCode(adapter.ensurePullRequest(baseRequest()), "PR_PROVIDER_FAILED");
 });
 
+test("rejects a branch revision that changed while approval evidence was being read", async () => {
+  const approvals = new FakeApprovalsPort(approvalResult({ revision: "a-different-revision-than-branch-head" }));
+  const adapter = makeAdapter({ approvals });
+  await expectCode(adapter.ensurePullRequest(baseRequest()), "REVISION_CHANGED");
+});
+
+test("rejects a created pull request whose remote head does not match the resolved local revision", async () => {
+  const pullRequests = new FakePullRequestOperations({ remoteHeadSha: "not-the-local-revision" });
+  const adapter = makeAdapter({ pullRequests });
+  await expectCode(adapter.ensurePullRequest(baseRequest()), "REMOTE_HEAD_MISMATCH");
+});
+
+test("rejects a reused pull request whose remote head does not match the resolved local revision", async () => {
+  const stale = {
+    number: 7,
+    htmlUrl: "u7",
+    headRef: "bootstrap/boot-022-pr-lifecycle",
+    headSha: "an-old-remote-head",
+    baseRef: "main",
+    title: "BOOT-022: Pull-request lifecycle integration",
+    body: "hand-authored body, no generated section yet",
+    state: "open",
+  };
+  const pullRequests = new FakePullRequestOperations({ existing: [stale] });
+  const adapter = makeAdapter({ pullRequests });
+  await expectCode(adapter.ensurePullRequest(baseRequest()), "REMOTE_HEAD_MISMATCH");
+});
+
+test("updating an existing pull request preserves hand-authored body content outside the generated section", async () => {
+  const handAuthored = [
+    "## Summary",
+    "",
+    "A hand-written PR description with changed surfaces, acceptance-criteria evidence, and risks — exactly",
+    "the kind of content a developer/agent writes when opening the PR through the normal GitHub flow.",
+  ].join("\n");
+  const existing = {
+    number: 60,
+    htmlUrl: "u60",
+    headRef: "bootstrap/boot-022-pr-lifecycle",
+    headSha: revision,
+    baseRef: "main",
+    title: "BOOT-022: Pull-request lifecycle integration",
+    body: handAuthored,
+    state: "open",
+  };
+  const pullRequests = new FakePullRequestOperations({ existing: [existing] });
+  const adapter = makeAdapter({ pullRequests });
+
+  const result = await adapter.ensurePullRequest(baseRequest());
+
+  assert.equal(result.updated, true);
+  assert.equal(pullRequests.updateCalls.length, 1);
+  const updatedBody = pullRequests.updateCalls[0].body;
+  assert.match(updatedBody, /A hand-written PR description/);
+  assert.match(updatedBody, /Closes #24/);
+  assert.match(updatedBody, /control-plane\.pr-lifecycle:generated:begin/);
+
+  // Re-running against the now-synced body performs no further write: the
+  // generated section already matches, and the hand-authored prose is
+  // preserved rather than being re-appended on every call.
+  pullRequests.existing = [Object.freeze({ ...existing, body: updatedBody })];
+  const second = await adapter.ensurePullRequest(baseRequest());
+  assert.equal(second.updated, false);
+  assert.equal(pullRequests.updateCalls.length, 1);
+});
+
 test("rejects an unregistered task", async () => {
   const adapter = makeAdapter({ tasks: [] });
   await expectCode(adapter.ensurePullRequest(baseRequest()), "TASK_NOT_FOUND");
@@ -275,7 +343,7 @@ function pull(overrides = {}) {
   return {
     number: 42,
     html_url: "https://github.com/Brain-Crumbs/IPTFantasyFootball/pull/42",
-    head: { ref: "bootstrap/boot-022-pr-lifecycle" },
+    head: { ref: "bootstrap/boot-022-pr-lifecycle", sha: revision },
     base: { ref: "main" },
     title: "BOOT-022: Pull-request lifecycle integration",
     body: "body",
@@ -313,6 +381,7 @@ test("GitHubPullRequestOperations sends an authenticated GET and parses open pul
   assert.equal(result.length, 1);
   assert.equal(result[0].number, 42);
   assert.equal(result[0].headRef, "bootstrap/boot-022-pr-lifecycle");
+  assert.equal(result[0].headSha, revision);
 });
 
 test("GitHubPullRequestOperations creates a pull request via POST", async () => {
@@ -360,7 +429,6 @@ test("GitHubPullRequestOperations updates a pull request via PATCH by number", a
 
 for (const [status, code] of [
   [401, "AUTH_FAILED"],
-  [403, "AUTH_FAILED"],
   [404, "NOT_FOUND"],
   [422, "VALIDATION_FAILED"],
   [429, "RATE_LIMITED"],
@@ -372,6 +440,29 @@ for (const [status, code] of [
     await assert.rejects(
       operations.createPullRequest({ head: "h", base: "main", title: "t", body: "b" }),
       (error) => error instanceof PullRequestProviderError && error.code === code && error.status === status,
+    );
+  });
+}
+
+test("GitHubPullRequestOperations maps a genuine HTTP 403 to AUTH_FAILED", async () => {
+  const fetchImpl = async () => jsonResponse(403, { message: "Must have admin rights to this repository." });
+  const operations = githubOperations(fetchImpl);
+  await assert.rejects(
+    operations.createPullRequest({ head: "h", base: "main", title: "t", body: "b" }),
+    (error) => error instanceof PullRequestProviderError && error.code === "AUTH_FAILED" && error.status === 403,
+  );
+});
+
+for (const message of [
+  "API rate limit exceeded for installation.",
+  "You have exceeded a secondary rate limit and have been temporarily blocked.",
+]) {
+  test(`GitHubPullRequestOperations maps a rate-limit HTTP 403 ("${message}") to RATE_LIMITED`, async () => {
+    const fetchImpl = async () => jsonResponse(403, { message });
+    const operations = githubOperations(fetchImpl);
+    await assert.rejects(
+      operations.createPullRequest({ head: "h", base: "main", title: "t", body: "b" }),
+      (error) => error instanceof PullRequestProviderError && error.code === "RATE_LIMITED" && error.status === 403,
     );
   });
 }
@@ -389,6 +480,15 @@ test("GitHubPullRequestOperations maps a fetch rejection to NETWORK_FAILED", asy
 
 test("GitHubPullRequestOperations rejects a malformed success response", async () => {
   const fetchImpl = async () => jsonResponse(200, { number: 42 });
+  const operations = githubOperations(fetchImpl);
+  await assert.rejects(
+    operations.createPullRequest({ head: "h", base: "main", title: "t", body: "b" }),
+    (error) => error instanceof PullRequestProviderError && error.code === "PROVIDER_ERROR",
+  );
+});
+
+test("GitHubPullRequestOperations rejects a success response missing the head commit sha", async () => {
+  const fetchImpl = async () => jsonResponse(200, pull({ head: { ref: "bootstrap/boot-022-pr-lifecycle" } }));
   const operations = githubOperations(fetchImpl);
   await assert.rejects(
     operations.createPullRequest({ head: "h", base: "main", title: "t", body: "b" }),
