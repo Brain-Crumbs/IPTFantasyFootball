@@ -96,8 +96,8 @@ A branch, resolution, or evidence-persistence failure leaves the task's lifecycl
 
 The repository still contains no fantasy-football product implementation. The bootstrap has progressed beyond documentation-only scaffolding, but these downstream capabilities remain outside the current boundary:
 
-- review retry/rework orchestration (QA, Architecture, and UAT/Product review are implemented by BOOT-018, BOOT-019, and BOOT-020 respectively; deciding those judgments themselves remains the reviewer's, not this repository's);
-- PR creation/update and revision-bound review invalidation;
+- PR creation/update;
+- rework entry for `DEV_VALIDATION_FAILED`/`MERGE_BLOCKED`/`BLOCKED` (only a failed QA/Architecture/UAT review is reworkable today, via BOOT-021's `ReviewReworkGate`; deciding QA/Architecture/UAT/Product judgments themselves remains the reviewer's, not this repository's — see `contracts/review-rework/README.md` "Out-of-scope follow-up");
 - merge policy/controller and controlled completion;
 - agent provider adapters/runners;
 - sequential orchestration/cutover tooling;

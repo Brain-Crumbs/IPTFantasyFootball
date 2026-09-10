@@ -39,6 +39,11 @@ export const RESERVED_COMMANDS: readonly CommandDescriptor[] = [
     summary: "Report project workflow status (owned by BOOT-030).",
     status: "reserved",
   },
+  {
+    name: "rework",
+    summary: "Drive the review rework and approval invalidation loop (owned by BOOT-021; behavior implemented, CLI wiring owned by BOOT-026+).",
+    status: "reserved",
+  },
 ] as const;
 
 export const ALL_COMMANDS: readonly CommandDescriptor[] = [

@@ -49,7 +49,7 @@ const REWORKABLE_FAILURE_ROLE_BY_STATE: ReadonlyMap<TaskLifecycleState, ReviewRo
   ["UAT_FAILED", "UAT/Product"],
 ]);
 
-const REVIEW_ROLE_ORDER: readonly ReviewRole[] = ["QA", "Architect", "UAT/Product"];
+const REVIEW_ROLE_ORDER: readonly ReviewRole[] = ["QA", "Architect", "UAT/Product", "MergeController"];
 
 export type ReviewReworkErrorCode =
   | "INVALID_REQUEST"
@@ -176,6 +176,33 @@ function latestEventBoundToRevision(
   return null;
 }
 
+interface EvidenceRefEntry {
+  readonly lineageId: string;
+  readonly sequence: number;
+}
+
+// The lifecycle history event that recorded a *_FAILED transition carries an
+// evidenceRef of the exact form `${lineageId}@${sequence}` (see
+// enterReworkLocked/QaReviewGate/ArchitectureReviewGate/UatReviewGate's own
+// `transition()` calls). Parsing it back lets enterReworkLocked bind rework
+// to that *exact* review-result record rather than to "whatever the
+// lineage's current record happens to be right now" -- which, since
+// ReviewFramework.submit() permits further same-role attempts for the same
+// revision after a FAIL/BLOCKED, is not guaranteed to still be the same
+// record by the time enterRework() runs.
+function parseFailureEvidenceRef(taskId: string, fromState: TaskLifecycleState, evidenceRef: string): EvidenceRefEntry {
+  const trimmed = evidenceRef.trim();
+  const at = trimmed.lastIndexOf("@");
+  const sequence = at >= 0 ? Number(trimmed.slice(at + 1)) : Number.NaN;
+  if (at <= 0 || !Number.isInteger(sequence) || sequence <= 0) {
+    throw new ReviewReworkError(
+      "TASK_STATE_NOT_REWORKABLE",
+      `Task '${taskId}' '${fromState}' lifecycle history evidenceRef '${evidenceRef}' is malformed.`,
+    );
+  }
+  return { lineageId: trimmed.slice(0, at), sequence };
+}
+
 /**
  * BOOT-021 review rework and approval invalidation loop. It owns exactly the
  * two lifecycle transitions the BOOT-009 state machine already declares but
@@ -230,21 +257,27 @@ export class ReviewReworkGate {
   /**
    * Read-only: takes no lock, mutates no state. For the Developer role and
    * every role the task's `requiredReviewRoles` declares (in BOOT-009's own
-   * `QA -> Architect -> UAT/Product` review order), reports whether the
-   * evidence store's current review-result for that role/task lineage is
-   * `NONE` (never reviewed), `STALE` (a PASS/FAIL/BLOCKED judgment exists
-   * but is bound to a revision that is not the task's exact current
-   * revision, so it is no longer trustworthy evidence of anything about the
-   * current code), or `CURRENT` (bound to the exact current revision, and
-   * therefore still a valid approval or rejection of it). No distinction is
-   * made between a code change, a contract change, or a metadata-only
-   * change: `currentRevision()` names the exact Git commit the task's branch
-   * is at, and any commit that moves it invalidates every role's prior
-   * approval uniformly. This is a deliberately coarse, whole-revision
-   * policy rather than a surface/diff-aware one (issue #23 explicitly places
-   * "advanced diff-semantic analysis beyond practical bootstrap needs" out
-   * of scope) — see `contracts/review-rework/README.md` "Invalidation
-   * policy" for the documented rationale.
+   * `QA -> Architect -> UAT/Product -> MergeController` review order),
+   * reports whether the evidence store's current `ipt.review-result` for
+   * that role/task lineage is `NONE` (no review-result record exists yet —
+   * for the Developer role specifically, this is the bridged handoff every
+   * BOOT-017/018/019/020 gate writes/reads through the same lineage, never
+   * raw `ipt.validation-evidence`, so a task that has only passed
+   * developer-validation but has not yet had a handoff bridged by a
+   * QA/Architecture/UAT gate correctly reports Developer as `NONE` here),
+   * `STALE` (a PASS/FAIL/BLOCKED judgment exists but is bound to a revision
+   * that is not the task's exact current revision, so it is no longer
+   * trustworthy evidence of anything about the current code), or `CURRENT`
+   * (bound to the exact current revision, and therefore still a valid
+   * approval or rejection of it). No distinction is made between a code
+   * change, a contract change, or a metadata-only change: `currentRevision()`
+   * names the exact Git commit the task's branch is at, and any commit that
+   * moves it invalidates every role's prior approval uniformly. This is a
+   * deliberately coarse, whole-revision policy rather than a surface/diff-
+   * aware one (issue #23 explicitly places "advanced diff-semantic analysis
+   * beyond practical bootstrap needs" out of scope) — see
+   * `contracts/review-rework/README.md` "Invalidation policy" for the
+   * documented rationale.
    */
   getApprovalStatus(request: ApprovalStatusRequest): ApprovalStatusResult {
     if (!TASK_ID_PATTERN.test(request.taskId)) {
@@ -261,7 +294,16 @@ export class ReviewReworkGate {
 
     const roles = rolesToReport.map((role) => {
       const lineageId = reviewResultLineageId(task.taskId, role);
-      const history = this.dependencies.evidenceStore.getHistory(lineageId);
+      let history: readonly StoredEvidenceRecord[];
+      try {
+        history = this.dependencies.evidenceStore.getHistory(lineageId);
+      } catch (error: unknown) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new ReviewReworkError(
+          "FAILURE_EVIDENCE_REJECTED",
+          `Task '${task.taskId}' ${role} review-result evidence '${lineageId}' could not be read: ${detail}`,
+        );
+      }
       const current = history.length > 0 ? (history[history.length - 1] as StoredEvidenceRecord) : null;
       const approval: RoleApprovalStatus =
         current === null
@@ -291,12 +333,19 @@ export class ReviewReworkGate {
     }
     const revision = this.assertBranchAndRevision(task);
 
-    // Defense-in-depth, mirroring every BOOT-018/019/020 gate's own
-    // "never trust lifecycle state alone" style: confirm the lifecycle
-    // history itself records the *_FAILED entry bound to this exact
-    // revision, independently of what the evidence store's current record
-    // for the role says below.
-    if (latestEventBoundToRevision(record, record.currentState, revision) === null) {
+    // Confirm the lifecycle history itself records the *_FAILED entry bound
+    // to this exact revision (defense against a state edited outside the
+    // normal transition path, mirroring every BOOT-018/019/020 gate's own
+    // entry check), and recover the exact review-result record that
+    // transition's evidenceRef named -- not merely "whatever the lineage's
+    // current record happens to be now". A same-role review attempt
+    // recorded after the *_FAILED transition (ReviewFramework.submit()
+    // permits further attempts for the same revision) would otherwise let
+    // this bind rework to findings that did not actually cause the failure,
+    // or make a still-unaddressed failure unreworkable because a later
+    // attempt superseded it.
+    const failureEvent = latestEventBoundToRevision(record, record.currentState, revision);
+    if (failureEvent === null) {
       throw new ReviewReworkError(
         "TASK_STATE_NOT_REWORKABLE",
         `Task '${task.taskId}' has no lifecycle history entry recording '${record.currentState}' for revision '${revision}'.`,
@@ -304,6 +353,14 @@ export class ReviewReworkGate {
     }
 
     const lineageId = reviewResultLineageId(task.taskId, role);
+    const expected = parseFailureEvidenceRef(task.taskId, record.currentState, failureEvent.evidenceRef);
+    if (expected.lineageId !== lineageId) {
+      throw new ReviewReworkError(
+        "TASK_STATE_NOT_REWORKABLE",
+        `Task '${task.taskId}' '${record.currentState}' evidenceRef '${failureEvent.evidenceRef}' does not reference the ${role} review-result lineage.`,
+      );
+    }
+
     let current: StoredEvidenceRecord | null;
     try {
       current = this.dependencies.evidenceStore.getCurrent(lineageId);
@@ -315,10 +372,15 @@ export class ReviewReworkGate {
       );
     }
     const outcome = current?.payload.outcome;
-    if (current === null || current.payload.revisionIdentity !== revision || outcome === "PASS") {
+    if (
+      current === null ||
+      current.sequence !== expected.sequence ||
+      current.payload.revisionIdentity !== revision ||
+      outcome === "PASS"
+    ) {
       throw new ReviewReworkError(
         "FAILURE_EVIDENCE_REJECTED",
-        `Task '${task.taskId}' has no current non-PASS ${role} review-result for revision '${revision}'; rework cannot be recorded without the exact evidence that failed.`,
+        `Task '${task.taskId}' ${role} review-result evidence '${lineageId}@${expected.sequence}' bound to the recorded '${record.currentState}' failure is no longer current for revision '${revision}' (a later review attempt may have superseded it); rework cannot be recorded without the exact evidence that failed.`,
       );
     }
 

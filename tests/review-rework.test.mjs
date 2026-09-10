@@ -126,6 +126,9 @@ const ROLE_DETAILS = {
     intendedOutcomesScenarios: ["a reviewer exercises the intended outcome"],
     observedBehavior: ["the intended outcome occurred"],
   }),
+  MergeController: () => ({
+    policyChecks: ["ci:green", "evidence:current"],
+  }),
 };
 
 function recordReview(evidenceStore, { taskId, role, revisionIdentity, outcome, runId, reviewerId, at }) {
@@ -193,7 +196,7 @@ function cleanup(value) {
 test("enterRework advances QA_FAILED to REWORK_REQUIRED and binds the FAILed QA review-result as evidence", () => {
   const value = fixture({
     taskState: "QA_FAILED",
-    history: [historyEvent({ toState: "QA_FAILED" })],
+    history: [historyEvent({ toState: "QA_FAILED", evidenceRef: `${reviewResultLineageId("BOOT-021", "QA")}@1` })],
   });
   try {
     const failed = recordReview(value.evidenceStore, {
@@ -229,7 +232,13 @@ test("enterRework advances QA_FAILED to REWORK_REQUIRED and binds the FAILed QA 
 test("enterRework advances ARCHITECTURE_FAILED to REWORK_REQUIRED for a BLOCKED Architecture outcome", () => {
   const value = fixture({
     taskState: "ARCHITECTURE_FAILED",
-    history: [historyEvent({ fromState: "ARCHITECTURE_REVIEW", toState: "ARCHITECTURE_FAILED" })],
+    history: [
+      historyEvent({
+        fromState: "ARCHITECTURE_REVIEW",
+        toState: "ARCHITECTURE_FAILED",
+        evidenceRef: `${reviewResultLineageId("BOOT-021", "Architect")}@1`,
+      }),
+    ],
   });
   try {
     recordReview(value.evidenceStore, {
@@ -253,7 +262,13 @@ test("enterRework advances ARCHITECTURE_FAILED to REWORK_REQUIRED for a BLOCKED 
 test("enterRework advances UAT_FAILED to REWORK_REQUIRED", () => {
   const value = fixture({
     taskState: "UAT_FAILED",
-    history: [historyEvent({ fromState: "UAT_REVIEW", toState: "UAT_FAILED" })],
+    history: [
+      historyEvent({
+        fromState: "UAT_REVIEW",
+        toState: "UAT_FAILED",
+        evidenceRef: `${reviewResultLineageId("BOOT-021", "UAT/Product")}@1`,
+      }),
+    ],
   });
   try {
     recordReview(value.evidenceStore, {
@@ -288,7 +303,7 @@ test("enterRework rejects a task not in a QA_FAILED/ARCHITECTURE_FAILED/UAT_FAIL
 test("enterRework rejects when no current non-PASS review-result exists for the failed role at the exact revision", () => {
   const value = fixture({
     taskState: "QA_FAILED",
-    history: [historyEvent({ toState: "QA_FAILED" })],
+    history: [historyEvent({ toState: "QA_FAILED", evidenceRef: `${reviewResultLineageId("BOOT-021", "QA")}@1` })],
   });
   try {
     // No QA review-result recorded at all.
@@ -334,7 +349,7 @@ test("enterRework rejects when the current QA review-result evidence is bound to
   // history event alone as proof of what the evidence actually says.
   const value = fixture({
     taskState: "QA_FAILED",
-    history: [historyEvent({ toState: "QA_FAILED", revisionIdentity: revision })],
+    history: [historyEvent({ toState: "QA_FAILED", revisionIdentity: revision, evidenceRef: `${reviewResultLineageId("BOOT-021", "QA")}@1` })],
   });
   try {
     recordReview(value.evidenceStore, {
@@ -358,7 +373,7 @@ test("enterRework rejects when the current QA review-result evidence is bound to
 test("enterRework rejects when the current QA review-result is (contrary to the failed lifecycle state) PASS", () => {
   const value = fixture({
     taskState: "QA_FAILED",
-    history: [historyEvent({ toState: "QA_FAILED" })],
+    history: [historyEvent({ toState: "QA_FAILED", evidenceRef: `${reviewResultLineageId("BOOT-021", "QA")}@1` })],
   });
   try {
     recordReview(value.evidenceStore, {
@@ -367,6 +382,46 @@ test("enterRework rejects when the current QA review-result is (contrary to the 
       revisionIdentity: revision,
       outcome: "PASS",
       runId: "run-1",
+      reviewerId: "qa-agent-1",
+    });
+
+    assert.throws(
+      () => value.gate.enterRework({ taskId: value.task.taskId, actorId: "dev-agent-1", runId: "run-2", occurredAt }),
+      (error) => error instanceof ReviewReworkError && error.code === "FAILURE_EVIDENCE_REJECTED",
+    );
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("enterRework rejects when a later same-role attempt has superseded the exact evidence the FAILED transition referenced", () => {
+  // ReviewFramework.submit() permits further same-role/same-revision attempts
+  // after a FAIL/BLOCKED (runId disambiguates them). If one lands between the
+  // QA_FAILED transition and enterRework(), the lineage's *current* record is
+  // no longer the one the transition's evidenceRef named. enterRework() must
+  // bind to (and validate) that exact referenced record, not to "whatever is
+  // current now" -- otherwise it could bind rework to findings that never
+  // caused this failure, or block a still-unaddressed failure from being
+  // reworked at all because a later attempt superseded it.
+  const value = fixture({
+    taskState: "QA_FAILED",
+    history: [historyEvent({ toState: "QA_FAILED", evidenceRef: `${reviewResultLineageId("BOOT-021", "QA")}@1` })],
+  });
+  try {
+    recordReview(value.evidenceStore, {
+      taskId: value.task.taskId,
+      role: "QA",
+      revisionIdentity: revision,
+      outcome: "FAIL",
+      runId: "run-1",
+      reviewerId: "qa-agent-1",
+    });
+    recordReview(value.evidenceStore, {
+      taskId: value.task.taskId,
+      role: "QA",
+      revisionIdentity: revision,
+      outcome: "FAIL",
+      runId: "run-1b",
       reviewerId: "qa-agent-1",
     });
 
@@ -493,7 +548,7 @@ test("resumeDevelopment rejects when the REWORK_REQUIRED entry is bound to a dif
 test("a full rework cycle: QA fail -> enterRework -> resumeDevelopment -> new revision -> QA PASS -> approvals report CURRENT PASS with prior FAIL preserved in history", () => {
   const value = fixture({
     taskState: "QA_FAILED",
-    history: [historyEvent({ toState: "QA_FAILED" })],
+    history: [historyEvent({ toState: "QA_FAILED", evidenceRef: `${reviewResultLineageId("BOOT-021", "QA")}@1` })],
   });
   try {
     recordReview(value.evidenceStore, {
@@ -606,7 +661,7 @@ test("getApprovalStatus invalidates every role uniformly on any new revision, in
   // approval uniformly (see contracts/review-rework/README.md).
   const value = fixture({ taskState: "DEV_VALIDATED", history: [] });
   try {
-    for (const role of ["Developer", "QA", "Architect", "UAT/Product"]) {
+    for (const role of ["Developer", "QA", "Architect", "UAT/Product", "MergeController"]) {
       recordReview(value.evidenceStore, {
         taskId: value.task.taskId,
         role,
@@ -636,6 +691,22 @@ test("getApprovalStatus only reports Developer plus the task's own requiredRevie
   try {
     const status = value.gate.getApprovalStatus({ taskId: value.task.taskId });
     assert.deepEqual(status.roles.map((entry) => entry.role), ["Developer", "QA"]);
+  } finally {
+    cleanup(value);
+  }
+});
+
+test("getApprovalStatus includes MergeController, in Developer -> QA -> Architect -> UAT/Product -> MergeController order, when required", () => {
+  const value = fixture({
+    task: task({ requiredReviewRoles: ["Developer", "QA", "Architect", "UAT/Product", "MergeController"] }),
+    taskState: "DEV_VALIDATED",
+    history: [],
+  });
+  try {
+    const status = value.gate.getApprovalStatus({ taskId: value.task.taskId });
+    assert.deepEqual(status.roles.map((entry) => entry.role), ["Developer", "QA", "Architect", "UAT/Product", "MergeController"]);
+    const mergeController = status.roles.find((entry) => entry.role === "MergeController");
+    assert.equal(mergeController.approval.status, "NONE");
   } finally {
     cleanup(value);
   }

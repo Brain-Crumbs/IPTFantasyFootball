@@ -47,6 +47,7 @@ Reserved commands deliberately fail until their owning task supplies behavior:
 
 - `review` — BOOT-017+
 - `status` — BOOT-030
+- `rework` — BOOT-021 (behavior implemented as `ReviewReworkGate`; CLI wiring owned by BOOT-026+)
 
 ## Manual-bootstrap authority
 

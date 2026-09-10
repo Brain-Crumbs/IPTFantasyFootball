@@ -41,15 +41,16 @@
     ],
     "behavioralConstraints": [
       "enterRework() only accepts a task whose current lifecycle state is exactly QA_FAILED, ARCHITECTURE_FAILED, or UAT_FAILED; every other state is rejected as TASK_STATE_NOT_REWORKABLE",
-      "enterRework() maps QA_FAILED -> QA, ARCHITECTURE_FAILED -> Architect, UAT_FAILED -> UAT/Product, and requires that role's current review-result evidence to be bound to the exact current branch revision and not PASS, read back from the evidence store rather than inferred from lifecycle state alone; otherwise it is rejected as FAILURE_EVIDENCE_REJECTED",
-      "enterRework() also independently confirms the task's lifecycle history records the current *_FAILED state bound to the exact current revision, or it is rejected as TASK_STATE_NOT_REWORKABLE before the evidence store is even read -- the lifecycle history and the evidence store are each verified on their own, neither trusted as proof of the other",
-      "enterRework() binds the REWORK_REQUIRED transition's evidenceRef to the exact failed review-result record's lineageId@sequence rather than copying or summarizing its findings, so the structured findings that caused the failure remain exactly as originally recorded",
+      "enterRework() maps QA_FAILED -> QA, ARCHITECTURE_FAILED -> Architect, UAT_FAILED -> UAT/Product",
+      "enterRework() independently confirms the task's lifecycle history records the current *_FAILED state bound to the exact current revision, or it is rejected as TASK_STATE_NOT_REWORKABLE before the evidence store is even read -- the lifecycle history and the evidence store are each verified on their own, neither trusted as proof of the other",
+      "enterRework() parses the *_FAILED history event's own evidenceRef (lineageId@sequence) and requires the evidence store's *current* record for that lineage to still be exactly that sequence, bound to the exact current revision, and not PASS -- not merely 'whatever is current now' -- so a later same-role review attempt recorded after the *_FAILED transition (which control-plane.review-framework permits) cannot bind rework to findings that did not cause the failure, or make a still-unaddressed failure unreworkable because a later attempt superseded it; a mismatch on any of those is rejected as FAILURE_EVIDENCE_REJECTED",
+      "enterRework() binds the REWORK_REQUIRED transition's evidenceRef to that exact failed review-result record's lineageId@sequence rather than copying or summarizing its findings, so the structured findings that caused the failure remain exactly as originally recorded",
       "resumeDevelopment() only accepts a task whose current lifecycle state is exactly REWORK_REQUIRED; every other state is rejected as TASK_STATE_NOT_REWORKABLE",
       "resumeDevelopment() requires the task's lifecycle history to record a REWORK_REQUIRED transition bound to the exact current branch revision, or it is rejected as TASK_STATE_NOT_REWORKABLE before any transition is attempted",
       "both enterRework() and resumeDevelopment() assert canonical branch identity and resolve the exact revision before any evidence or lifecycle state is touched",
       "both transitions are made through the unmodified control-plane.lifecycle-state-machine's transitionLifecycle(), carrying the exact revision as revisionIdentity and the caller's actorId/runId",
-      "getApprovalStatus() takes no lock and mutates no state; it asserts branch identity, resolves the exact current revision, and reads each relevant role's current review-result lineage directly from the evidence store",
-      "getApprovalStatus() reports the Developer role plus every role in the task's requiredReviewRoles, in QA -> Architect -> UAT/Product order, and no role outside that set",
+      "getApprovalStatus() takes no lock and mutates no state; it asserts branch identity, resolves the exact current revision, and reads each relevant role's current review-result lineage directly from the evidence store, normalizing any evidence-store read failure into a structured FAILURE_EVIDENCE_REJECTED error rather than propagating a raw exception",
+      "getApprovalStatus() reports the Developer role plus every role in the task's requiredReviewRoles, in QA -> Architect -> UAT/Product -> MergeController order, and no role outside that set",
       "getApprovalStatus() reports NONE when a role's lineage has no record, CURRENT when its current record's revisionIdentity equals the task's exact current revision, and STALE otherwise -- with no distinction made between a code, contract, or metadata-only change that produced the new revision",
       "getApprovalStatus()'s historyCount reports the full length of a role's evidence lineage (every CURRENT and SUPERSEDED record), so multiple rework cycles remain visible as a growing, fully-ordered history",
       "enterRework()/resumeDevelopment() hold an exclusive per-task lock (ReviewReworkTaskLock) across their entire re-verification and lifecycle-transition sequence; a concurrent call for the same task is rejected as STATE_CONFLICT rather than interleaving reads and writes with the lock holder",
@@ -77,10 +78,12 @@
       "an unregistered task ID is rejected as TASK_NOT_FOUND",
       "a wrong current branch is rejected as BRANCH_REJECTED before evidence or lifecycle state is touched",
       "enterRework() rejects when the failed role's current review-result evidence is bound to a stale revision, or is (contrary to the failed lifecycle state) PASS, as FAILURE_EVIDENCE_REJECTED",
+      "enterRework() rejects when a later same-role review attempt has superseded the exact evidence sequence the *_FAILED transition's evidenceRef named, as FAILURE_EVIDENCE_REJECTED, even though the lineage's current record is itself non-stale and non-PASS",
       "resumeDevelopment() rejects when the REWORK_REQUIRED history entry is bound to a revision other than the exact current one, as TASK_STATE_NOT_REWORKABLE",
       "two concurrent enterRework()/resumeDevelopment() calls for the same task never both proceed past the task lock; the loser is rejected as STATE_CONFLICT without touching evidence or lifecycle state",
       "a lock file left behind by a crashed call is reclaimed once it is older than the abandonment threshold",
-      "getApprovalStatus() for a task whose requiredReviewRoles omits Architect and UAT/Product reports only Developer and QA"
+      "getApprovalStatus() for a task whose requiredReviewRoles omits Architect, UAT/Product, and MergeController reports only Developer and QA",
+      "getApprovalStatus() for a task whose requiredReviewRoles includes MergeController reports it, alongside Developer/QA/Architect/UAT/Product, even though MergeController has no lifecycle review-sequence state of its own"
     ]
   },
   "allowedDependencies": [
