@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# A newer push on the same PR/branch supersedes an in-flight run rather than
+# queuing behind it; PR merge-readiness (BOOT-024/BOOT-025) must always read
+# the status of the exact current head, never a stale queued run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (tsc)
+        run: npm run build
+
+      - name: Test (node --test)
+        run: npm test
+
+  schema-validation:
+    name: Schema and contract validation (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install schema-validation dependencies
+        run: pip install -r schemas/requirements.txt
+
+      - name: Validate schema fixtures
+        run: python schemas/validate_fixtures.py
+
+      - name: Validate real repository contract/task records
+        run: python schemas/validate_repository_contracts.py
