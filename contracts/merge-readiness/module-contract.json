@@ -14,12 +14,13 @@
       "MergeReadinessApprovalPort.getApprovalStatus(request) boundary onto control-plane.review-rework",
       "MergeReadinessEvidencePort.getCurrent(lineageId) boundary onto control-plane.evidence-store",
       "MergeReadinessLifecycleStatePort.get(taskId) boundary onto control-plane.lifecycle-state-machine's persisted lifecycle records",
-      "MergeReadinessPrPort.findOpenPullRequests({ head, base }): Promise<readonly PullRequestRecord[]> boundary onto control-plane.pr-lifecycle's PullRequestRecord shape",
-      "MergeReadinessCiPort.listCheckRuns(ref): Promise<readonly CiCheckRunRecord[]> source-control/CI-status adapter boundary",
-      "CiCheckRunRecord { name, status, conclusion, startedAt }",
+      "MergeReadinessPrPort.findOpenPullRequests({ head }): Promise<readonly PullRequestRecord[]> boundary onto control-plane.pr-lifecycle's PullRequestRecord shape, discovering by head branch alone (never a server-side base filter)",
+      "MergeReadinessCiPort.listCheckRuns(ref, checkName): Promise<readonly CiCheckRunRecord[]> source-control/CI-status adapter boundary, queried once per required check name",
+      "CiCheckRunRecord { name, status, conclusion, startedAt } (status accepts any GitHub-reported string, not a closed enum)",
       "MergeReadinessError { code, recoverable }",
-      "GitHubCiStatusOperations(options) concrete MergeReadinessCiPort adapter over the GitHub REST Checks API",
+      "GitHubCiStatusOperations(options) concrete MergeReadinessCiPort adapter over the GitHub REST Checks API's check_name-filtered endpoint",
       "CiStatusProviderError { code, status } normalized GitHub-adapter failure",
+      "GitHubMergeReadinessPullRequestOperations(options) concrete MergeReadinessPrPort adapter over the GitHub REST pulls-list endpoint, head-only filtered",
       "DEFAULT_REQUIRED_CI_CHECKS readonly string[] naming BOOT-023's two required GitHub Actions job/check-run names",
       "createLocalMergeReadinessPolicyEngine(repositoryRoot, options) local composition root"
     ]
@@ -27,12 +28,13 @@
   "semanticContract": {
     "capabilities": [
       "deterministic-merge-readiness-computation-from-exact-revision-evidence",
+      "task-own-merge-ready-lifecycle-state-revision-binding-check",
+      "per-role-review-diagnostic-fallback-when-not-yet-merge-ready",
       "pr-head-vs-approved-revision-mismatch-detection",
-      "pr-base-branch-identity-check",
-      "per-role-required-review-current-pass-check",
+      "pr-base-branch-identity-check-without-server-side-base-filtering",
       "unresolved-blocking-finding-detection-on-a-failed-current-review",
       "declared-dependency-done-state-check",
-      "required-ci-check-success-verification-for-the-exact-revision",
+      "required-ci-check-success-verification-for-the-exact-revision-by-name",
       "latest-check-run-selection-per-check-context",
       "machine-readable-typed-not-ready-reasons",
       "no-override-parameter-for-a-failed-deterministic-gate",
@@ -44,31 +46,37 @@
       "evaluate() resolves the task's canonical branch and exact current revision strictly through the unmodified control-plane.git-branch-lifecycle adapter; a Git branch mismatch or Git failure is normalized to BRANCH_REJECTED and no further check is performed",
       "review/approval evidence is read through control-plane.review-rework's getApprovalStatus(), never re-derived from the evidence store's revision-matching logic directly; a failure reading it is normalized to EVIDENCE_UNAVAILABLE",
       "getApprovalStatus() re-resolves the branch revision independently of the branch adapter call evaluate() already made; if the two disagree (the branch moved in between), the call is rejected as REVISION_CHANGED rather than computing readiness against a revision the returned evidence does not actually describe",
-      "every role reported by getApprovalStatus() other than MergeController is required to be CURRENT with outcome PASS for readiness; NONE, STALE, or a CURRENT non-PASS outcome each produce one REVIEW_NOT_CURRENT_PASS reason naming that role; MergeController's own judgment is never treated as a prerequisite of this evaluation, since it is what this evaluation exists to inform (control-plane.controlled-merge, BOOT-025)",
-      "a role whose current approval is CURRENT with a non-PASS outcome additionally has its current ipt.review-result record read through control-plane.evidence-store; any finding in that record at severity MEDIUM, HIGH, or CRITICAL produces one BLOCKING_FINDINGS_UNRESOLVED reason naming that role and every such findingId; a role's STALE or NONE approval never triggers this check, since a stale/absent record's findings do not describe the current revision",
+      "the primary review-readiness signal is the task's own lifecycle record, read through MergeReadinessLifecycleStatePort.get(taskId): readiness requires currentState === MERGE_READY AND a history entry with toState === MERGE_READY and revisionIdentity === the resolved current revision; a missing record is treated as lifecycle state PLANNED; when this signal does not confirm readiness for the exact revision, evaluate() emits one TASK_NOT_MERGE_READY reason naming the observed currentState",
+      "when — and only when — the task is not confirmed MERGE_READY for the exact revision, every role reported by getApprovalStatus() other than MergeController is additionally checked as diagnostic detail: NONE, STALE, or a CURRENT non-PASS outcome each produce one REVIEW_NOT_CURRENT_PASS reason naming that role; when the task IS confirmed MERGE_READY for the exact revision, no per-role check runs at all — this specifically covers a task whose requiredReviewRoles needs no independent QA/Architecture/UAT stage, for which control-plane.review-rework never writes a Developer review-result bridge and getApprovalStatus() would otherwise report Developer: NONE forever",
+      "a role whose current approval is CURRENT with a non-PASS outcome (only evaluated per the previous constraint) additionally has its current ipt.review-result record read through control-plane.evidence-store; any finding in that record at severity MEDIUM, HIGH, or CRITICAL produces one BLOCKING_FINDINGS_UNRESOLVED reason naming that role and every such findingId; a role's STALE or NONE approval never triggers this check, since a stale/absent record's findings do not describe the current revision",
       "every taskId in the task's declared dependencies array is checked through MergeReadinessLifecycleStatePort.get(); a missing record is treated as lifecycle state PLANNED; any dependency whose state is not exactly DONE produces one DEPENDENCY_NOT_SATISFIED reason naming that dependency taskId; dependencies are checked in ascending lexical taskId order for deterministic reason ordering",
-      "listCheckRuns() is called once per evaluate() call with the exact resolved revision; for each of the dependencies-configured requiredCiChecks (defaulting to DEFAULT_REQUIRED_CI_CHECKS), the returned check runs are filtered by exact name match and the one with the lexically greatest startedAt is treated as authoritative; a check name with no matching run, or whose latest run is not status=completed with conclusion=success, produces one CI_CHECK_NOT_SUCCESSFUL reason naming that check context",
-      "findOpenPullRequests() is called once per evaluate() call with the task's resolved canonical branch as head and the configured integrationTarget (default 'main') as base; zero results produce exactly one PULL_REQUEST_NOT_FOUND reason with pullRequestNumber null; more than one result is rejected as PR_STATE_CONFLICT without evaluating any further pull-request reason; exactly one result is inspected for PULL_REQUEST_BASE_MISMATCH (its baseRef differs from integrationTarget) and PULL_REQUEST_HEAD_MISMATCH (its headSha differs from the resolved current revision), each producing its own reason when true",
+      "listCheckRuns(revision, checkName) is called once per required check name (the dependencies-configured requiredCiChecks, defaulting to DEFAULT_REQUIRED_CI_CHECKS), filtering server-side via GitHub's own check_name parameter rather than fetching one unfiltered page of every check run on the revision, so a revision with more check runs than a single page cannot hide a required context past the first page; the returned runs are filtered defensively by exact name match and the one with the lexically greatest startedAt is treated as authoritative; a check name with no matching run, or whose latest run is not status=completed with conclusion=success, produces one CI_CHECK_NOT_SUCCESSFUL reason naming that check context; a run's status is accepted as any non-empty string GitHub reports (queued/in_progress/completed/waiting/requested/pending/etc.), never validated against a closed enum, since only exact equality with 'completed' is ever tested",
+      "findOpenPullRequests() is called once per evaluate() call with only the task's resolved canonical branch as head — never a server-side base filter, since GitHub's own base filter would silently exclude an open PR targeting the wrong base before this module could ever classify it; zero results produce exactly one PULL_REQUEST_NOT_FOUND reason with pullRequestNumber null; more than one result is rejected as PR_STATE_CONFLICT without evaluating any further pull-request reason; exactly one result is inspected locally against the configured integrationTarget (default 'main') for PULL_REQUEST_BASE_MISMATCH (its baseRef differs) and PULL_REQUEST_HEAD_MISMATCH (its headSha differs from the resolved current revision), each producing its own reason when true",
       "ready is exactly reasons.length === 0; there is no request field, override parameter, or free-text justification that can set ready=true while any reason remains — every reason is computed solely from the typed dependency ports listed above",
       "GitHubCiStatusOperations maps every non-2xx GitHub response to a CiStatusProviderError whose code is derived from the HTTP status (401 -> AUTH_FAILED, 403 -> RATE_LIMITED when the response message matches /rate limit/i, otherwise AUTH_FAILED, 404 -> NOT_FOUND, 429 -> RATE_LIMITED, any other non-2xx -> PROVIDER_ERROR) and whose status field carries the exact HTTP status; a transport-level failure (the fetch call itself rejecting) is mapped to NETWORK_FAILED with no status; a 2xx response whose JSON body is missing a required check_runs array, or whose entries are missing a required field, is mapped to PROVIDER_ERROR",
+      "GitHubMergeReadinessPullRequestOperations maps GitHub HTTP status to a PullRequestProviderError (BOOT-022's own error type) using the same 401/403/404/422/429 mapping BOOT-022 already documents",
       "MergeReadinessPolicyEngine never inspects a CiStatusProviderError's or PullRequestProviderError's HTTP status or GitHub-specific payload shape directly; it only wraps the already-normalized provider error as CI_PROVIDER_FAILED or PR_PROVIDER_FAILED",
-      "GitHubCiStatusOperations rejects an empty owner, repo, or token at construction with a RangeError rather than deferring to a failed first request"
+      "GitHubCiStatusOperations and GitHubMergeReadinessPullRequestOperations each reject an empty owner, repo, or token at construction with a RangeError rather than deferring to a failed first request"
     ],
     "invariants": [
       "this module performs no lifecycle-state transition, no merge, and no QA/Architecture/UAT/MergeController judgment; it only reads already-recorded evidence and provider state and computes a deterministic readiness boolean plus typed reasons from it",
       "task-domain logic (MergeReadinessPolicyEngine) depends only on the MergeReadinessApprovalPort/MergeReadinessEvidencePort/MergeReadinessLifecycleStatePort/MergeReadinessPrPort/MergeReadinessCiPort interfaces, never on GitHub-specific request/response payloads or on the internal storage layout of any dependency module",
       "evaluate() writes no evidence, PR, or lifecycle state; it is a pure read-only query and is safe to call repeatedly with no side effect",
       "a branch, evidence, lifecycle-state, provider, or duplicate-pull-request-conflict failure is reported as a thrown MergeReadinessError before any reason is computed for that check, rather than folding an unreadable/ambiguous precondition into a 'not ready' reason; only a genuinely evaluable state produces reasons",
-      "for identical dependency-port responses, evaluate() always returns byte-for-byte identical output (reason order is fixed: reviews in getApprovalStatus()'s own role order, then dependencies in ascending lexical order, then CI checks in configured order, then pull-request identity last)"
+      "for identical dependency-port responses, evaluate() always returns byte-for-byte identical output (reason order is fixed: the task's own MERGE_READY-for-revision check and any per-role diagnostic detail first, then dependencies in ascending lexical order, then CI checks in configured order, then pull-request identity last)"
     ],
     "examples": [
-      "a task whose Developer/QA/Architect/UAT-Product reviews are all CURRENT PASS, whose declared dependencies are all DONE, whose required CI checks are both completed/success for the exact revision, and whose canonical open pull request's head/base match the resolved revision/integration target returns ready=true with an empty reasons array",
-      "a pull request whose head commit does not match the resolved current revision (for example a push landed after the last approvals were recorded) returns ready=false with a PULL_REQUEST_HEAD_MISMATCH reason, even though every review is still CURRENT PASS for the earlier commit that produced those approvals' own evidence",
-      "a task whose requiredReviewRoles includes Architect but has no recorded Architect review returns ready=false with a REVIEW_NOT_CURRENT_PASS reason naming Architect",
+      "a task whose own lifecycle record is MERGE_READY with a history entry bound to the exact current revision, whose declared dependencies are all DONE, whose required CI checks are both completed/success for the exact revision, and whose canonical open pull request's head/base match the resolved revision/integration target returns ready=true with an empty reasons array",
+      "a task whose QA/Architecture/UAT reviews all recorded PASS but whose review gate crashed before persisting the DEV_VALIDATED -> ... -> MERGE_READY lifecycle transition returns ready=false with a TASK_NOT_MERGE_READY reason (naming the task's actual, earlier currentState) rather than ready=true, because this module trusts BOOT-009's own authoritative transition record over re-deriving the same conclusion from possibly-incomplete role evidence",
+      "a task whose requiredReviewRoles is only Developer (or Developer plus MergeController) — for which control-plane.review-rework never bridges a Developer review-result, since only the QA/Architecture/UAT gates do — reaches ready=true once its own lifecycle record shows MERGE_READY bound to the exact revision, without ever needing that bridge to exist",
+      "a pull request whose head commit does not match the resolved current revision (for example a push landed after the task last reached MERGE_READY) returns ready=false with a PULL_REQUEST_HEAD_MISMATCH reason, even though the task's own lifecycle record is still MERGE_READY for the earlier commit",
+      "a task not yet MERGE_READY whose requiredReviewRoles includes Architect but has no recorded Architect review returns ready=false with both a TASK_NOT_MERGE_READY reason and a REVIEW_NOT_CURRENT_PASS reason naming Architect",
       "a task whose 'Build and test (Node)' check run's latest attempt for the exact revision has conclusion=failure returns ready=false with a CI_CHECK_NOT_SUCCESSFUL reason naming that check context, independent of the 'Schema and contract validation (Python)' check's own result",
+      "a check run reporting status=waiting (a valid GitHub Checks status this module does not special-case) is treated the same as any other not-yet-completed status: CI_CHECK_NOT_SUCCESSFUL, not a parse failure of the whole provider response",
       "a QA review whose current outcome is FAIL and whose recorded findings include one HIGH-severity entry returns both a REVIEW_NOT_CURRENT_PASS and a BLOCKING_FINDINGS_UNRESOLVED reason for QA, the latter naming that exact findingId",
       "a task depending on BOOT-015 while BOOT-015's own lifecycle record is IN_DEVELOPMENT (not DONE) returns ready=false with a DEPENDENCY_NOT_SATISFIED reason naming BOOT-015",
-      "two open pull requests already existing for the same head/base (created out of band) cause evaluate() to fail as PR_STATE_CONFLICT rather than picking one arbitrarily to compute readiness against"
+      "an open pull request from the task's canonical branch targeting 'develop' instead of 'main' is discovered (head-only filtering finds it regardless of its actual base) and returns ready=false with a PULL_REQUEST_BASE_MISMATCH reason, rather than PULL_REQUEST_NOT_FOUND",
+      "two open pull requests already existing for the same head branch (created out of band, regardless of their individual bases) cause evaluate() to fail as PR_STATE_CONFLICT rather than picking one arbitrarily to compute readiness against"
     ],
     "edgeCases": [
       "an unregistered taskId is rejected as TASK_NOT_FOUND",
@@ -76,9 +84,10 @@
       "a Git branch mismatch reported by the branch adapter is normalized to BRANCH_REJECTED rather than propagating a raw BranchLifecycleError",
       "an approval-status or evidence-store read failure is normalized to EVIDENCE_UNAVAILABLE rather than propagating a raw error",
       "getApprovalStatus() resolving a different revision than the branch adapter already resolved is rejected as REVISION_CHANGED",
-      "a lifecycle-state read failure for a dependency taskId is normalized to LIFECYCLE_STATE_UNAVAILABLE rather than propagating a raw error",
-      "a dependency taskId with no persisted lifecycle record at all is treated as PLANNED (not DONE), the same convention BOOT-008's next-task selection already documents, and therefore produces a DEPENDENCY_NOT_SATISFIED reason",
-      "zero open pull requests for the resolved head/base produces a PULL_REQUEST_NOT_FOUND reason (not a thrown error), since a task legitimately has no pull request yet before control-plane.pr-lifecycle has ever ensured one",
+      "a lifecycle-state read failure — for the task itself or for a dependency taskId — is normalized to LIFECYCLE_STATE_UNAVAILABLE rather than propagating a raw error",
+      "a task (or a dependency taskId) with no persisted lifecycle record at all is treated as PLANNED (not DONE, not MERGE_READY), the same convention BOOT-008's next-task selection already documents",
+      "a task whose lifecycle record is currentState=MERGE_READY but whose history has no entry binding that transition to the exact current revision (a later commit landed without a new rework/review cycle) falls back to the per-role diagnostic check rather than trusting a stale MERGE_READY label",
+      "zero open pull requests for the resolved head branch produces a PULL_REQUEST_NOT_FOUND reason (not a thrown error), since a task legitimately has no pull request yet before control-plane.pr-lifecycle has ever ensured one",
       "a GitHub response body that parses as JSON but has no check_runs array, or whose check-run entries omit a required field, is treated as PROVIDER_ERROR",
       "two check runs sharing the same name for the same revision (a rerun) are resolved to the one with the lexically greatest startedAt, never summed or averaged"
     ]
@@ -89,7 +98,7 @@
     "control-plane.review-rework",
     "control-plane.evidence-store",
     "control-plane.lifecycle-state-machine",
-    "control-plane.pr-lifecycle (PullRequestRecord shape and GitHubPullRequestOperations reuse only)",
+    "control-plane.pr-lifecycle (PullRequestRecord shape and PullRequestProviderError type reuse only)",
     "global fetch"
   ],
   "forbiddenDependencies": [

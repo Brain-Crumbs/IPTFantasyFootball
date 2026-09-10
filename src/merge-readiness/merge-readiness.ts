@@ -8,14 +8,14 @@ import {
   type TaskBranchMetadata,
 } from "../git-branch-lifecycle/index.js";
 import type { LifecycleRecord, ReviewRole } from "../lifecycle/index.js";
-import { GitHubPullRequestOperations, PullRequestProviderError, type PullRequestRecord } from "../pr-lifecycle/index.js";
+import { PullRequestProviderError, type PullRequestRecord } from "../pr-lifecycle/index.js";
 import {
   FileReviewReworkStateStore,
   createLocalReviewReworkGate,
   type ApprovalStatusRequest,
   type ApprovalStatusResult,
 } from "../review-rework/index.js";
-import { loadTaskRegistry, type RegisteredTask, type TaskRegistry } from "../task-registry/index.js";
+import { loadTaskRegistry, type RegisteredTask, type TaskLifecycleState, type TaskRegistry } from "../task-registry/index.js";
 
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
 const DEFAULT_INTEGRATION_TARGET = "main";
@@ -35,11 +35,28 @@ export const DEFAULT_REQUIRED_CI_CHECKS: readonly string[] = Object.freeze([
 /**
  * BOOT-024 merge-readiness policy engine. `evaluate()` computes, purely from
  * exact-revision evidence already produced by earlier BOOT modules, whether a
- * task's pull request is merge-ready: its resolved current Git revision, the
- * unmodified BOOT-021 `getApprovalStatus()` per-role review evidence, any
- * unresolved MEDIUM+ finding on a non-PASS current review, each declared
+ * task's pull request is merge-ready.
+ *
+ * The primary review-readiness gate trusts the task's own BOOT-009 lifecycle
+ * record: if its `currentState` is `MERGE_READY` *and* that exact transition
+ * is bound to the current revision (a lifecycle-history event with
+ * `toState: "MERGE_READY"` and `revisionIdentity` equal to the resolved
+ * current revision), every required review the state machine's own
+ * `REVIEW_GATES_SATISFIED` prerequisite already enforced is trusted without
+ * re-deriving it — this also correctly covers a task whose `requiredReviewRoles`
+ * needs no independent QA/Architecture/UAT stage at all (BOOT-009 allows
+ * `DEV_VALIDATED -> MERGE_READY` directly for such a task, and no
+ * `control-plane.review-rework` Developer-review-result bridge is ever
+ * written for that path). When the task is *not* confirmed `MERGE_READY` for
+ * the exact revision — including when a review gate recorded PASS evidence
+ * but its own lifecycle-transition write never persisted — a `TASK_NOT_MERGE_READY`
+ * reason is emitted, and the unmodified BOOT-021 `getApprovalStatus()` per-role
+ * evidence (plus, for a non-PASS current review, its recorded MEDIUM+
+ * findings) is surfaced as granular diagnostic detail explaining why.
+ *
+ * Independently of review readiness, `evaluate()` also checks each declared
  * dependency's lifecycle state, the required BOOT-023 CI check results for
- * that exact revision, and the canonical open pull request's actual head/base
+ * the exact revision, and the canonical open pull request's actual head/base
  * identity. It reinterprets no QA/Architecture/UAT judgment (a role's
  * FAIL/BLOCKED outcome is read back, never re-decided), executes no merge,
  * and mutates no lifecycle state. Every non-ready outcome carries one or more
@@ -83,7 +100,7 @@ export class MergeReadinessPolicyEngine {
     }
 
     const reasons: MergeReadinessReason[] = [];
-    reasons.push(...this.reviewReasons(task, revision, approvals));
+    reasons.push(...(await this.reviewReasons(task, revision, approvals)));
     reasons.push(...this.dependencyReasons(task));
     reasons.push(...(await this.ciReasons(task, revision)));
 
@@ -101,12 +118,40 @@ export class MergeReadinessPolicyEngine {
     });
   }
 
-  private reviewReasons(
+  /**
+   * Trusts the task's own BOOT-009 lifecycle record as the primary
+   * review-readiness signal (see class-level doc comment for why); the
+   * unmodified BOOT-021 `getApprovalStatus()` per-role evidence is consulted
+   * for granular reasons only when that primary signal has not (yet)
+   * confirmed readiness for the exact current revision.
+   */
+  private async reviewReasons(
     task: RegisteredTask,
     revision: string,
     approvals: ApprovalStatusResult,
-  ): readonly MergeReadinessReason[] {
-    const reasons: MergeReadinessReason[] = [];
+  ): Promise<readonly MergeReadinessReason[]> {
+    let taskLifecycle: LifecycleRecord | null;
+    try {
+      taskLifecycle = this.dependencies.lifecycleState.get(task.taskId);
+    } catch (error: unknown) {
+      throw new MergeReadinessError(
+        "LIFECYCLE_STATE_UNAVAILABLE",
+        `Task '${task.taskId}' lifecycle state could not be read: ${detail(error)}`,
+      );
+    }
+    const taskState: TaskLifecycleState = taskLifecycle?.currentState ?? "PLANNED";
+    const mergeReadyForRevision =
+      taskState === "MERGE_READY" && hasHistoryEventBoundToRevision(taskLifecycle, "MERGE_READY", revision);
+    if (mergeReadyForRevision) {
+      return Object.freeze([]);
+    }
+
+    const reasons: MergeReadinessReason[] = [
+      {
+        code: "TASK_NOT_MERGE_READY",
+        message: `Task '${task.taskId}' lifecycle state is '${taskState}', not MERGE_READY for the exact current revision '${revision}'.`,
+      },
+    ];
     for (const entry of approvals.roles) {
       // MergeController's own judgment is what this evaluation ultimately
       // informs (BOOT-025); it is never a prerequisite of itself.
@@ -201,17 +246,24 @@ export class MergeReadinessPolicyEngine {
     return reasons;
   }
 
+  /**
+   * Queries each required check context individually via the GitHub Checks
+   * API's own `check_name` server-side filter, rather than fetching one
+   * unfiltered page of every check run on the revision: a revision with more
+   * than one page of unrelated check runs (third-party apps, matrix jobs)
+   * could otherwise leave a required BOOT-023 context undiscovered on a
+   * later page this module never fetches.
+   */
   private async ciReasons(task: RegisteredTask, revision: string): Promise<readonly MergeReadinessReason[]> {
-    let checkRuns: readonly CiCheckRunRecord[];
-    try {
-      checkRuns = await this.dependencies.ciStatus.listCheckRuns(revision);
-    } catch (error: unknown) {
-      throw normalizeCiError(task.taskId, error);
-    }
-
     const reasons: MergeReadinessReason[] = [];
     const requiredChecks = this.dependencies.requiredCiChecks ?? DEFAULT_REQUIRED_CI_CHECKS;
     for (const context of requiredChecks) {
+      let checkRuns: readonly CiCheckRunRecord[];
+      try {
+        checkRuns = await this.dependencies.ciStatus.listCheckRuns(revision, context);
+      } catch (error: unknown) {
+        throw normalizeCiError(task.taskId, error);
+      }
       const latest = latestCheckRun(checkRuns, context);
       if (latest === null) {
         reasons.push({
@@ -233,6 +285,14 @@ export class MergeReadinessPolicyEngine {
     return reasons;
   }
 
+  /**
+   * Discovers open pull requests by the resolved canonical branch alone
+   * (never filtering by base server-side): the GitHub API's own `base`
+   * filter would silently exclude a PR opened against the wrong base before
+   * this module ever saw it, making `PULL_REQUEST_BASE_MISMATCH`
+   * unreachable against a real PR provider. Base identity is instead
+   * verified locally, against the actual discovered `baseRef`.
+   */
   private async pullRequestReasons(
     task: RegisteredTask,
     revision: string,
@@ -241,7 +301,7 @@ export class MergeReadinessPolicyEngine {
   ): Promise<{ pullRequestNumber: number | null; reasons: readonly MergeReadinessReason[] }> {
     let openPullRequests: readonly PullRequestRecord[];
     try {
-      openPullRequests = await this.dependencies.pullRequests.findOpenPullRequests({ head, base: integrationTarget });
+      openPullRequests = await this.dependencies.pullRequests.findOpenPullRequests({ head });
     } catch (error: unknown) {
       throw normalizePrError(task.taskId, error);
     }
@@ -249,7 +309,7 @@ export class MergeReadinessPolicyEngine {
     if (openPullRequests.length > 1) {
       throw new MergeReadinessError(
         "PR_STATE_CONFLICT",
-        `Task '${task.taskId}' has ${openPullRequests.length} conflicting open pull requests for '${head}' -> '${integrationTarget}'; resolve manually before continuing.`,
+        `Task '${task.taskId}' has ${openPullRequests.length} conflicting open pull requests for branch '${head}'; resolve manually before continuing.`,
       );
     }
 
@@ -259,7 +319,7 @@ export class MergeReadinessPolicyEngine {
         reasons: [
           {
             code: "PULL_REQUEST_NOT_FOUND",
-            message: `Task '${task.taskId}' has no open pull request for '${head}' -> '${integrationTarget}'.`,
+            message: `Task '${task.taskId}' has no open pull request for branch '${head}'.`,
           },
         ],
       };
@@ -315,6 +375,7 @@ export class MergeReadinessError extends Error {
 }
 
 export type MergeReadinessReasonCode =
+  | "TASK_NOT_MERGE_READY"
   | "PULL_REQUEST_NOT_FOUND"
   | "PULL_REQUEST_HEAD_MISMATCH"
   | "PULL_REQUEST_BASE_MISMATCH"
@@ -362,26 +423,23 @@ export interface MergeReadinessLifecycleStatePort {
   get(taskId: string): LifecycleRecord | null;
 }
 
-export interface FindOpenPullRequestsParams {
+export interface FindOpenPullRequestsByHeadParams {
   readonly head: string;
-  readonly base: string;
 }
 
 export interface MergeReadinessPrPort {
-  findOpenPullRequests(params: FindOpenPullRequestsParams): Promise<readonly PullRequestRecord[]>;
+  findOpenPullRequests(params: FindOpenPullRequestsByHeadParams): Promise<readonly PullRequestRecord[]>;
 }
-
-export type CiCheckRunStatus = "queued" | "in_progress" | "completed";
 
 export interface CiCheckRunRecord {
   readonly name: string;
-  readonly status: CiCheckRunStatus;
+  readonly status: string;
   readonly conclusion: string | null;
   readonly startedAt: string;
 }
 
 export interface MergeReadinessCiPort {
-  listCheckRuns(ref: string): Promise<readonly CiCheckRunRecord[]>;
+  listCheckRuns(ref: string, checkName: string): Promise<readonly CiCheckRunRecord[]>;
 }
 
 export interface MergeReadinessDependencies {
@@ -394,6 +452,21 @@ export interface MergeReadinessDependencies {
   readonly ciStatus: MergeReadinessCiPort;
   readonly integrationTarget?: string;
   readonly requiredCiChecks?: readonly string[];
+}
+
+function hasHistoryEventBoundToRevision(
+  record: LifecycleRecord | null,
+  toState: TaskLifecycleState,
+  revision: string,
+): boolean {
+  if (record === null) return false;
+  for (let index = record.history.length - 1; index >= 0; index -= 1) {
+    const event = record.history[index];
+    if (event !== undefined && event.toState === toState && event.revisionIdentity === revision) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function latestCheckRun(checkRuns: readonly CiCheckRunRecord[], name: string): CiCheckRunRecord | null {
@@ -487,9 +560,12 @@ export interface GitHubCiStatusOperationsOptions {
 
 /**
  * Concrete `MergeReadinessCiPort` implementation over the GitHub REST Checks
- * API (`GET /repos/{owner}/{repo}/commits/{ref}/check-runs`). Every non-2xx
- * response and every transport failure is mapped into a `CiStatusProviderError`
- * with a normalized code, mirroring `GitHubPullRequestOperations` (BOOT-022).
+ * API (`GET /repos/{owner}/{repo}/commits/{ref}/check-runs?check_name=...`),
+ * filtering server-side to the one required check name per call so a
+ * revision with many unrelated check runs can never push a required BOOT-023
+ * context past a single response page. Every non-2xx response and every
+ * transport failure is mapped into a `CiStatusProviderError` with a
+ * normalized code, mirroring `PullRequestProviderError` (BOOT-022).
  */
 export class GitHubCiStatusOperations implements MergeReadinessCiPort {
   private readonly owner: string;
@@ -509,8 +585,9 @@ export class GitHubCiStatusOperations implements MergeReadinessCiPort {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async listCheckRuns(ref: string): Promise<readonly CiCheckRunRecord[]> {
-    const data = await this.request("GET", `/repos/${this.owner}/${this.repo}/commits/${encodeURIComponent(ref)}/check-runs?per_page=100`);
+  async listCheckRuns(ref: string, checkName: string): Promise<readonly CiCheckRunRecord[]> {
+    const query = `check_name=${encodeURIComponent(checkName)}&per_page=100`;
+    const data = await this.request("GET", `/repos/${this.owner}/${this.repo}/commits/${encodeURIComponent(ref)}/check-runs?${query}`);
     if (!isObject(data) || !Array.isArray(data.check_runs)) {
       throw new CiStatusProviderError("PROVIDER_ERROR", "GitHub check-runs response did not contain a check_runs array.");
     }
@@ -547,11 +624,11 @@ export class GitHubCiStatusOperations implements MergeReadinessCiPort {
     }
 
     const message = extractMessage(data) ?? `HTTP ${response.status}`;
-    throw new CiStatusProviderError(mapStatus(response.status, message), `GitHub check-runs request failed (${response.status}): ${message}`, response.status);
+    throw new CiStatusProviderError(mapCiStatus(response.status, message), `GitHub check-runs request failed (${response.status}): ${message}`, response.status);
   }
 }
 
-function mapStatus(status: number, message: string): CiStatusProviderErrorCode {
+function mapCiStatus(status: number, message: string): CiStatusProviderErrorCode {
   if (status === 401) return "AUTH_FAILED";
   if (status === 403) return /rate limit/i.test(message) ? "RATE_LIMITED" : "AUTH_FAILED";
   if (status === 404) return "NOT_FOUND";
@@ -563,6 +640,15 @@ function extractMessage(data: unknown): string | null {
   return isObject(data) && typeof data.message === "string" ? data.message : null;
 }
 
+// GitHub Actions check runs can validly report statuses beyond
+// queued/in_progress/completed (for example waiting/requested/pending, used
+// for deployment-protection-rule-gated jobs). Restricting the accepted
+// vocabulary here would make one unrelated check run with such a status fail
+// the entire provider response as PROVIDER_ERROR, even though this module
+// only ever inspects a run's status for exact equality with "completed" (see
+// ciReasons()) and treats every other value identically ("not yet
+// successful") -- so any non-empty string is accepted and passed through
+// unmodified rather than validated against a closed set.
 function toCheckRunRecord(raw: unknown): CiCheckRunRecord {
   if (!isObject(raw)) {
     throw new CiStatusProviderError("PROVIDER_ERROR", "GitHub check-run entry was not an object.");
@@ -573,13 +659,139 @@ function toCheckRunRecord(raw: unknown): CiCheckRunRecord {
   const startedAt = raw.started_at;
   if (
     typeof name !== "string" ||
-    (status !== "queued" && status !== "in_progress" && status !== "completed") ||
+    typeof status !== "string" ||
+    status.length === 0 ||
     (conclusion !== null && typeof conclusion !== "string") ||
     typeof startedAt !== "string"
   ) {
     throw new CiStatusProviderError("PROVIDER_ERROR", "GitHub check-run response is missing required fields.");
   }
   return Object.freeze({ name, status, conclusion, startedAt });
+}
+
+/* ------------------------------------------------------------------------ */
+/* GitHub pull-request-discovery adapter                                    */
+/* ------------------------------------------------------------------------ */
+
+export interface GitHubMergeReadinessPullRequestOperationsOptions {
+  readonly owner: string;
+  readonly repo: string;
+  readonly token: string;
+  readonly apiBaseUrl?: string;
+  readonly fetchImpl?: FetchLike;
+}
+
+/**
+ * Concrete `MergeReadinessPrPort` implementation over the GitHub REST API,
+ * discovering open pull requests by head branch alone (never filtering by
+ * base server-side — see `pullRequestReasons()`'s doc comment for why).
+ * Errors are normalized into the same `PullRequestProviderError` type
+ * `control-plane.pr-lifecycle` (BOOT-022) defines, so `evaluate()`'s
+ * `normalizePrError()` handles both provenances identically.
+ */
+export class GitHubMergeReadinessPullRequestOperations implements MergeReadinessPrPort {
+  private readonly owner: string;
+  private readonly repo: string;
+  private readonly token: string;
+  private readonly apiBaseUrl: string;
+  private readonly fetchImpl: FetchLike;
+
+  constructor(options: GitHubMergeReadinessPullRequestOperationsOptions) {
+    if (options.owner.trim().length === 0) throw new RangeError("GitHub PR-discovery adapter owner must be non-empty.");
+    if (options.repo.trim().length === 0) throw new RangeError("GitHub PR-discovery adapter repo must be non-empty.");
+    if (options.token.trim().length === 0) throw new RangeError("GitHub PR-discovery adapter token must be non-empty.");
+    this.owner = options.owner;
+    this.repo = options.repo;
+    this.token = options.token;
+    this.apiBaseUrl = options.apiBaseUrl ?? DEFAULT_GITHUB_API_BASE_URL;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  async findOpenPullRequests(params: FindOpenPullRequestsByHeadParams): Promise<readonly PullRequestRecord[]> {
+    const query = `state=open&head=${encodeURIComponent(`${this.owner}:${params.head}`)}`;
+    const data = await this.request("GET", `/repos/${this.owner}/${this.repo}/pulls?${query}`);
+    if (!Array.isArray(data)) {
+      throw new PullRequestProviderError("PROVIDER_ERROR", "GitHub pulls list response was not an array.");
+    }
+    return Object.freeze(data.map((entry) => toPullRequestRecord(entry)));
+  }
+
+  private async request(method: string, path: string): Promise<unknown> {
+    const init: IptFetchInit = {
+      method,
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${this.token}`,
+        "User-Agent": "iptfantasyfootball-control-plane",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    };
+
+    let response: IptFetchResponse;
+    try {
+      response = await this.fetchImpl(`${this.apiBaseUrl}${path}`, init);
+    } catch (error: unknown) {
+      throw new PullRequestProviderError("NETWORK_FAILED", `GitHub request failed: ${detail(error)}`);
+    }
+
+    let data: unknown = null;
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
+    }
+
+    if (response.ok) {
+      return data;
+    }
+
+    const message = extractMessage(data) ?? `HTTP ${response.status}`;
+    throw new PullRequestProviderError(mapPrStatus(response.status, message), `GitHub pulls request failed (${response.status}): ${message}`, response.status);
+  }
+}
+
+function mapPrStatus(status: number, message: string): "AUTH_FAILED" | "NOT_FOUND" | "VALIDATION_FAILED" | "RATE_LIMITED" | "PROVIDER_ERROR" {
+  if (status === 401) return "AUTH_FAILED";
+  if (status === 403) return /rate limit/i.test(message) ? "RATE_LIMITED" : "AUTH_FAILED";
+  if (status === 404) return "NOT_FOUND";
+  if (status === 422) return "VALIDATION_FAILED";
+  if (status === 429) return "RATE_LIMITED";
+  return "PROVIDER_ERROR";
+}
+
+function toPullRequestRecord(raw: unknown): PullRequestRecord {
+  if (!isObject(raw)) {
+    throw new PullRequestProviderError("PROVIDER_ERROR", "GitHub pull-request response was not an object.");
+  }
+  const number = raw.number;
+  const htmlUrl = raw.html_url;
+  const headRef = isObject(raw.head) ? raw.head.ref : undefined;
+  const headSha = isObject(raw.head) ? raw.head.sha : undefined;
+  const baseRef = isObject(raw.base) ? raw.base.ref : undefined;
+  const title = raw.title;
+  const body = raw.body;
+  const state = raw.state;
+  if (
+    typeof number !== "number" ||
+    typeof htmlUrl !== "string" ||
+    typeof headRef !== "string" ||
+    typeof headSha !== "string" ||
+    typeof baseRef !== "string" ||
+    typeof title !== "string" ||
+    (state !== "open" && state !== "closed")
+  ) {
+    throw new PullRequestProviderError("PROVIDER_ERROR", "GitHub pull-request response is missing required fields.");
+  }
+  return Object.freeze({
+    number,
+    htmlUrl,
+    headRef,
+    headSha,
+    baseRef,
+    title,
+    body: typeof body === "string" ? body : "",
+    state,
+  });
 }
 
 /* ------------------------------------------------------------------------ */
@@ -619,7 +831,7 @@ export async function createLocalMergeReadinessPolicyEngine(
     ...(options.apiBaseUrl !== undefined ? { apiBaseUrl: options.apiBaseUrl } : {}),
     ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
   };
-  const pullRequests = new GitHubPullRequestOperations(providerOptions);
+  const pullRequests = new GitHubMergeReadinessPullRequestOperations(providerOptions);
   const ciStatus = new GitHubCiStatusOperations(providerOptions);
   return new MergeReadinessPolicyEngine({
     registry,

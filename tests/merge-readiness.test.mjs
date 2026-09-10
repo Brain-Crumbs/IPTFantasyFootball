@@ -5,6 +5,7 @@ import {
   CiStatusProviderError,
   DEFAULT_REQUIRED_CI_CHECKS,
   GitHubCiStatusOperations,
+  GitHubMergeReadinessPullRequestOperations,
   MergeReadinessError,
   MergeReadinessPolicyEngine,
 } from "../dist/merge-readiness/index.js";
@@ -75,10 +76,6 @@ function checkRun(name, overrides = {}) {
   return Object.freeze({ name, status: "completed", conclusion: "success", startedAt: "2026-01-01T00:00:00Z", ...overrides });
 }
 
-function greenCheckRuns() {
-  return DEFAULT_REQUIRED_CI_CHECKS.map((name) => checkRun(name));
-}
-
 class FakeBranchAdapter {
   constructor({ fail = false, rev = revision } = {}) {
     this.fail = fail;
@@ -122,16 +119,38 @@ class FakeEvidencePort {
   }
 }
 
+// Every task except an explicitly-listed one defaults to MERGE_READY, bound
+// to `revision` in its own lifecycle history — this is the primary
+// review-readiness signal evaluate() now trusts, so most tests only need to
+// configure it away from that default when they specifically want to
+// exercise the per-role diagnostic-reason fallback path.
 class FakeLifecycleStatePort {
-  constructor(states = new Map(), { fail = false } = {}) {
+  constructor(states = new Map([["BOOT-024", "MERGE_READY"]]), { fail = false, boundRevision = revision } = {}) {
     this.states = states;
     this.fail = fail;
+    this.boundRevision = boundRevision;
   }
 
   get(taskId) {
     if (this.fail) throw new Error("fixture lifecycle-state read failure");
     const state = this.states.get(taskId);
-    return state === undefined ? null : Object.freeze({ taskId, currentState: state, history: Object.freeze([]) });
+    if (state === undefined) return null;
+    const history =
+      state === "MERGE_READY"
+        ? [
+            {
+              eventId: "fixture-event",
+              taskId,
+              fromState: "UAT_REVIEW",
+              toState: "MERGE_READY",
+              occurredAt: "2026-01-01T00:00:00Z",
+              reason: "fixture",
+              evidenceRef: "fixture",
+              revisionIdentity: this.boundRevision,
+            },
+          ]
+        : [];
+    return Object.freeze({ taskId, currentState: state, history: Object.freeze(history) });
   }
 }
 
@@ -150,16 +169,16 @@ class FakePrPort {
 }
 
 class FakeCiPort {
-  constructor({ runs = greenCheckRuns(), fail = null } = {}) {
+  constructor({ runs = [checkRun(DEFAULT_REQUIRED_CI_CHECKS[0]), checkRun(DEFAULT_REQUIRED_CI_CHECKS[1])], fail = null } = {}) {
     this.runs = runs;
     this.fail = fail;
     this.calls = [];
   }
 
-  async listCheckRuns(ref) {
-    this.calls.push(ref);
+  async listCheckRuns(ref, checkName) {
+    this.calls.push({ ref, checkName });
     if (this.fail) throw this.fail;
-    return this.runs;
+    return this.runs.filter((run) => run.name === checkName);
   }
 }
 
@@ -211,7 +230,39 @@ test("a changed pull-request head after approvals returns not-ready", async () =
   assert.ok(reasonCodes(result).includes("PULL_REQUEST_HEAD_MISMATCH"));
 });
 
-test("a missing Architecture approval returns not-ready", async () => {
+test("a task not yet at MERGE_READY for the current revision returns TASK_NOT_MERGE_READY", async () => {
+  const lifecycleState = new FakeLifecycleStatePort(new Map([["BOOT-024", "UAT_REVIEW"]]));
+  const engine = makeEngine({ lifecycleState });
+  const result = await engine.evaluate({ taskId: "BOOT-024" });
+
+  assert.equal(result.ready, false);
+  const reason = result.reasons.find((entry) => entry.code === "TASK_NOT_MERGE_READY");
+  assert.ok(reason);
+  assert.match(reason.message, /UAT_REVIEW/);
+});
+
+test("a stale MERGE_READY bound to an earlier revision falls back to per-role diagnostics", async () => {
+  const lifecycleState = new FakeLifecycleStatePort(new Map([["BOOT-024", "MERGE_READY"]]), { boundRevision: "an-old-revision" });
+  const engine = makeEngine({ lifecycleState });
+  const result = await engine.evaluate({ taskId: "BOOT-024" });
+
+  assert.equal(result.ready, false);
+  assert.ok(reasonCodes(result).includes("TASK_NOT_MERGE_READY"));
+});
+
+test("a task with no persisted lifecycle record is treated as PLANNED, not MERGE_READY", async () => {
+  const lifecycleState = new FakeLifecycleStatePort(new Map());
+  const engine = makeEngine({ lifecycleState });
+  const result = await engine.evaluate({ taskId: "BOOT-024" });
+
+  assert.equal(result.ready, false);
+  const reason = result.reasons.find((entry) => entry.code === "TASK_NOT_MERGE_READY");
+  assert.ok(reason);
+  assert.match(reason.message, /PLANNED/);
+});
+
+test("a missing Architecture approval returns not-ready when the task is not yet MERGE_READY", async () => {
+  const lifecycleState = new FakeLifecycleStatePort(new Map([["BOOT-024", "ARCHITECTURE_REVIEW"]]));
   const approvals = new FakeApprovalsPort(
     approvalResult({
       roles: Object.freeze([
@@ -222,7 +273,7 @@ test("a missing Architecture approval returns not-ready", async () => {
       ]),
     }),
   );
-  const engine = makeEngine({ approvals });
+  const engine = makeEngine({ approvals, lifecycleState });
   const result = await engine.evaluate({ taskId: "BOOT-024" });
 
   assert.equal(result.ready, false);
@@ -230,7 +281,28 @@ test("a missing Architecture approval returns not-ready", async () => {
   assert.ok(reason, "expected a REVIEW_NOT_CURRENT_PASS reason for Architect");
 });
 
+test("a task whose requiredReviewRoles needs no independent review reaches ready via MERGE_READY alone", async () => {
+  // Developer-only tasks never get a Developer review-result bridge written
+  // (only the QA/Architecture/UAT gates write one), so getApprovalStatus()
+  // would report Developer: NONE forever. The primary MERGE_READY-for-revision
+  // signal must not depend on that bridge existing.
+  const t = task({ requiredReviewRoles: ["Developer", "MergeController"] });
+  const approvals = new FakeApprovalsPort(
+    Object.freeze({
+      taskId: "BOOT-024",
+      revision,
+      roles: Object.freeze([Object.freeze({ role: "Developer", approval: Object.freeze({ status: "NONE" }), historyCount: 0 })]),
+    }),
+  );
+  const engine = makeEngine({ tasks: [t], approvals });
+  const result = await engine.evaluate({ taskId: "BOOT-024" });
+
+  assert.equal(result.ready, true);
+  assert.deepEqual(result.reasons, []);
+});
+
 test("a stale review (bound to a different revision) returns not-ready", async () => {
+  const lifecycleState = new FakeLifecycleStatePort(new Map([["BOOT-024", "UAT_REVIEW"]]));
   const approvals = new FakeApprovalsPort(
     approvalResult({
       roles: Object.freeze([
@@ -241,7 +313,7 @@ test("a stale review (bound to a different revision) returns not-ready", async (
       ]),
     }),
   );
-  const engine = makeEngine({ approvals });
+  const engine = makeEngine({ approvals, lifecycleState });
   const result = await engine.evaluate({ taskId: "BOOT-024" });
 
   assert.equal(result.ready, false);
@@ -256,6 +328,15 @@ test("failing CI returns not-ready", async () => {
   assert.equal(result.ready, false);
   const reason = result.reasons.find((entry) => entry.code === "CI_CHECK_NOT_SUCCESSFUL" && entry.checkContext === DEFAULT_REQUIRED_CI_CHECKS[0]);
   assert.ok(reason, "expected a CI_CHECK_NOT_SUCCESSFUL reason for the failing check");
+});
+
+test("a CI check run with a non-terminal status (e.g. waiting) is treated as not-yet-successful, not a parse failure", async () => {
+  const runs = [checkRun(DEFAULT_REQUIRED_CI_CHECKS[0], { status: "waiting", conclusion: null }), checkRun(DEFAULT_REQUIRED_CI_CHECKS[1])];
+  const engine = makeEngine({ ciStatus: new FakeCiPort({ runs }) });
+  const result = await engine.evaluate({ taskId: "BOOT-024" });
+
+  assert.equal(result.ready, false);
+  assert.ok(result.reasons.some((entry) => entry.code === "CI_CHECK_NOT_SUCCESSFUL" && entry.checkContext === DEFAULT_REQUIRED_CI_CHECKS[0]));
 });
 
 test("a missing CI check run returns not-ready", async () => {
@@ -279,7 +360,19 @@ test("only the latest CI check run for a context is consulted", async () => {
   assert.equal(result.ready, true);
 });
 
+test("CI checks are queried by exact check name, one call per required context", async () => {
+  const ciStatus = new FakeCiPort();
+  const engine = makeEngine({ ciStatus });
+  await engine.evaluate({ taskId: "BOOT-024" });
+
+  assert.deepEqual(
+    ciStatus.calls.map((call) => call.checkName),
+    [...DEFAULT_REQUIRED_CI_CHECKS],
+  );
+});
+
 test("an unresolved blocking finding on a failed review returns an explicit reason", async () => {
+  const lifecycleState = new FakeLifecycleStatePort(new Map([["BOOT-024", "QA_FAILED"]]));
   const approvals = new FakeApprovalsPort(
     approvalResult({
       roles: Object.freeze([
@@ -309,7 +402,7 @@ test("an unresolved blocking finding on a failed review returns an explicit reas
       ],
     ]),
   );
-  const engine = makeEngine({ approvals, evidence });
+  const engine = makeEngine({ approvals, evidence, lifecycleState });
   const result = await engine.evaluate({ taskId: "BOOT-024" });
 
   assert.equal(result.ready, false);
@@ -321,7 +414,7 @@ test("an unresolved blocking finding on a failed review returns an explicit reas
 
 test("an unsatisfied dependency returns an explicit reason", async () => {
   const t = task({ dependencies: ["BOOT-009", "BOOT-015"] });
-  const lifecycleState = new FakeLifecycleStatePort(new Map([["BOOT-009", "DONE"], ["BOOT-015", "IN_DEVELOPMENT"]]));
+  const lifecycleState = new FakeLifecycleStatePort(new Map([["BOOT-024", "MERGE_READY"], ["BOOT-009", "DONE"], ["BOOT-015", "IN_DEVELOPMENT"]]));
   const engine = makeEngine({ tasks: [t], lifecycleState });
   const result = await engine.evaluate({ taskId: "BOOT-024" });
 
@@ -357,6 +450,15 @@ test("a pull request targeting the wrong base returns PULL_REQUEST_BASE_MISMATCH
   assert.ok(reasonCodes(result).includes("PULL_REQUEST_BASE_MISMATCH"));
 });
 
+test("pull requests are discovered by head branch alone, without a server-side base filter", async () => {
+  const pullRequests = new FakePrPort();
+  const engine = makeEngine({ pullRequests });
+  await engine.evaluate({ taskId: "BOOT-024" });
+
+  assert.equal(pullRequests.calls.length, 1);
+  assert.deepEqual(pullRequests.calls[0], { head: canonicalBranch });
+});
+
 test("more than one open pull request is rejected as a conflict rather than silently choosing one", async () => {
   const engine = makeEngine({ pullRequests: new FakePrPort({ existing: [pullRequest({ number: 1 }), pullRequest({ number: 2 })] }) });
   await expectCode(engine.evaluate({ taskId: "BOOT-024" }), "PR_STATE_CONFLICT");
@@ -383,6 +485,7 @@ test("normalizes an approval-status failure into EVIDENCE_UNAVAILABLE", async ()
 });
 
 test("normalizes an evidence-store failure while reading blocking findings into EVIDENCE_UNAVAILABLE", async () => {
+  const lifecycleState = new FakeLifecycleStatePort(new Map([["BOOT-024", "QA_FAILED"]]));
   const approvals = new FakeApprovalsPort(
     approvalResult({
       roles: Object.freeze([
@@ -393,7 +496,7 @@ test("normalizes an evidence-store failure while reading blocking findings into 
       ]),
     }),
   );
-  const engine = makeEngine({ approvals, evidence: new FakeEvidencePort(new Map(), { fail: true }) });
+  const engine = makeEngine({ approvals, lifecycleState, evidence: new FakeEvidencePort(new Map(), { fail: true }) });
   await expectCode(engine.evaluate({ taskId: "BOOT-024" }), "EVIDENCE_UNAVAILABLE");
 });
 
@@ -404,8 +507,7 @@ test("rejects a branch revision that changed while approval evidence was being r
 });
 
 test("normalizes a lifecycle-state read failure into LIFECYCLE_STATE_UNAVAILABLE", async () => {
-  const t = task({ dependencies: ["BOOT-009"] });
-  const engine = makeEngine({ tasks: [t], lifecycleState: new FakeLifecycleStatePort(new Map(), { fail: true }) });
+  const engine = makeEngine({ lifecycleState: new FakeLifecycleStatePort(new Map(), { fail: true }) });
   await expectCode(engine.evaluate({ taskId: "BOOT-024" }), "LIFECYCLE_STATE_UNAVAILABLE");
 });
 
@@ -439,7 +541,7 @@ function githubCiOperations(fetchImpl) {
   return new GitHubCiStatusOperations({ owner: "Brain-Crumbs", repo: "IPTFantasyFootball", token: "fixture-token", fetchImpl });
 }
 
-test("GitHubCiStatusOperations sends an authenticated GET and parses check runs", async () => {
+test("GitHubCiStatusOperations sends an authenticated GET filtered by check_name and parses check runs", async () => {
   let seenUrl = null;
   let seenInit = null;
   const fetchImpl = async (url, init) => {
@@ -449,15 +551,25 @@ test("GitHubCiStatusOperations sends an authenticated GET and parses check runs"
   };
   const operations = githubCiOperations(fetchImpl);
 
-  const result = await operations.listCheckRuns(revision);
+  const result = await operations.listCheckRuns(revision, "Build and test (Node)");
 
   assert.equal(seenInit.method, "GET");
   assert.equal(seenInit.headers.Authorization, "Bearer fixture-token");
   assert.match(seenUrl, new RegExp(`/commits/${revision}/check-runs`));
+  assert.match(seenUrl, /check_name=Build%20and%20test%20\(Node\)/);
   assert.equal(result.length, 1);
   assert.equal(result[0].name, "Build and test (Node)");
   assert.equal(result[0].status, "completed");
   assert.equal(result[0].conclusion, "success");
+});
+
+test("GitHubCiStatusOperations accepts a non-terminal status such as 'waiting'", async () => {
+  const fetchImpl = async () =>
+    jsonResponse(200, { check_runs: [{ name: "Build and test (Node)", status: "waiting", conclusion: null, started_at: "2026-01-01T00:00:00Z" }] });
+  const operations = githubCiOperations(fetchImpl);
+
+  const result = await operations.listCheckRuns(revision, "Build and test (Node)");
+  assert.equal(result[0].status, "waiting");
 });
 
 for (const [status, code] of [
@@ -470,7 +582,7 @@ for (const [status, code] of [
     const fetchImpl = async () => jsonResponse(status, { message: "fixture failure" });
     const operations = githubCiOperations(fetchImpl);
     await assert.rejects(
-      operations.listCheckRuns(revision),
+      operations.listCheckRuns(revision, "Build and test (Node)"),
       (error) => error instanceof CiStatusProviderError && error.code === code && error.status === status,
     );
   });
@@ -480,7 +592,7 @@ test("GitHubCiStatusOperations maps a rate-limit HTTP 403 to RATE_LIMITED", asyn
   const fetchImpl = async () => jsonResponse(403, { message: "API rate limit exceeded for installation." });
   const operations = githubCiOperations(fetchImpl);
   await assert.rejects(
-    operations.listCheckRuns(revision),
+    operations.listCheckRuns(revision, "Build and test (Node)"),
     (error) => error instanceof CiStatusProviderError && error.code === "RATE_LIMITED",
   );
 });
@@ -489,7 +601,7 @@ test("GitHubCiStatusOperations maps a genuine HTTP 403 to AUTH_FAILED", async ()
   const fetchImpl = async () => jsonResponse(403, { message: "Must have admin rights to this repository." });
   const operations = githubCiOperations(fetchImpl);
   await assert.rejects(
-    operations.listCheckRuns(revision),
+    operations.listCheckRuns(revision, "Build and test (Node)"),
     (error) => error instanceof CiStatusProviderError && error.code === "AUTH_FAILED",
   );
 });
@@ -500,7 +612,7 @@ test("GitHubCiStatusOperations maps a fetch rejection to NETWORK_FAILED", async 
   };
   const operations = githubCiOperations(fetchImpl);
   await assert.rejects(
-    operations.listCheckRuns(revision),
+    operations.listCheckRuns(revision, "Build and test (Node)"),
     (error) => error instanceof CiStatusProviderError && error.code === "NETWORK_FAILED",
   );
 });
@@ -509,7 +621,7 @@ test("GitHubCiStatusOperations rejects a response missing the check_runs array",
   const fetchImpl = async () => jsonResponse(200, { not_check_runs: [] });
   const operations = githubCiOperations(fetchImpl);
   await assert.rejects(
-    operations.listCheckRuns(revision),
+    operations.listCheckRuns(revision, "Build and test (Node)"),
     (error) => error instanceof CiStatusProviderError && error.code === "PROVIDER_ERROR",
   );
 });
@@ -518,7 +630,7 @@ test("GitHubCiStatusOperations rejects a check-run entry missing required fields
   const fetchImpl = async () => jsonResponse(200, { check_runs: [{ name: "Build and test (Node)" }] });
   const operations = githubCiOperations(fetchImpl);
   await assert.rejects(
-    operations.listCheckRuns(revision),
+    operations.listCheckRuns(revision, "Build and test (Node)"),
     (error) => error instanceof CiStatusProviderError && error.code === "PROVIDER_ERROR",
   );
 });
@@ -527,4 +639,99 @@ test("GitHubCiStatusOperations rejects empty owner/repo/token", () => {
   assert.throws(() => new GitHubCiStatusOperations({ owner: "", repo: "r", token: "t" }), RangeError);
   assert.throws(() => new GitHubCiStatusOperations({ owner: "o", repo: "", token: "t" }), RangeError);
   assert.throws(() => new GitHubCiStatusOperations({ owner: "o", repo: "r", token: "" }), RangeError);
+});
+
+/* ------------------------------------------------------------------------ */
+/* GitHubMergeReadinessPullRequestOperations                                */
+/* ------------------------------------------------------------------------ */
+
+function pull(overrides = {}) {
+  return {
+    number: 24,
+    html_url: "https://github.com/Brain-Crumbs/IPTFantasyFootball/pull/24",
+    head: { ref: canonicalBranch, sha: revision },
+    base: { ref: "main" },
+    title: "BOOT-024: Merge-readiness policy engine",
+    body: "body",
+    state: "open",
+    ...overrides,
+  };
+}
+
+function githubPrOperations(fetchImpl) {
+  return new GitHubMergeReadinessPullRequestOperations({ owner: "Brain-Crumbs", repo: "IPTFantasyFootball", token: "fixture-token", fetchImpl });
+}
+
+test("GitHubMergeReadinessPullRequestOperations sends an authenticated GET filtered by head only, not base", async () => {
+  let seenUrl = null;
+  let seenInit = null;
+  const fetchImpl = async (url, init) => {
+    seenUrl = url;
+    seenInit = init;
+    return jsonResponse(200, [pull()]);
+  };
+  const operations = githubPrOperations(fetchImpl);
+
+  const result = await operations.findOpenPullRequests({ head: canonicalBranch });
+
+  assert.equal(seenInit.method, "GET");
+  assert.equal(seenInit.headers.Authorization, "Bearer fixture-token");
+  assert.match(seenUrl, /state=open/);
+  assert.match(seenUrl, /head=Brain-Crumbs%3Abootstrap%2Fboot-024-merge-policy/);
+  assert.doesNotMatch(seenUrl, /base=/);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].number, 24);
+  assert.equal(result[0].baseRef, "main");
+});
+
+for (const [status, code] of [
+  [401, "AUTH_FAILED"],
+  [404, "NOT_FOUND"],
+  [422, "VALIDATION_FAILED"],
+  [429, "RATE_LIMITED"],
+  [500, "PROVIDER_ERROR"],
+]) {
+  test(`GitHubMergeReadinessPullRequestOperations maps HTTP ${status} to ${code}`, async () => {
+    const fetchImpl = async () => jsonResponse(status, { message: "fixture failure" });
+    const operations = githubPrOperations(fetchImpl);
+    await assert.rejects(
+      operations.findOpenPullRequests({ head: canonicalBranch }),
+      (error) => error instanceof PullRequestProviderError && error.code === code && error.status === status,
+    );
+  });
+}
+
+test("GitHubMergeReadinessPullRequestOperations maps a fetch rejection to NETWORK_FAILED", async () => {
+  const fetchImpl = async () => {
+    throw new Error("connection reset");
+  };
+  const operations = githubPrOperations(fetchImpl);
+  await assert.rejects(
+    operations.findOpenPullRequests({ head: canonicalBranch }),
+    (error) => error instanceof PullRequestProviderError && error.code === "NETWORK_FAILED",
+  );
+});
+
+test("GitHubMergeReadinessPullRequestOperations rejects a malformed success response", async () => {
+  const fetchImpl = async () => jsonResponse(200, { not: "an array" });
+  const operations = githubPrOperations(fetchImpl);
+  await assert.rejects(
+    operations.findOpenPullRequests({ head: canonicalBranch }),
+    (error) => error instanceof PullRequestProviderError && error.code === "PROVIDER_ERROR",
+  );
+});
+
+test("GitHubMergeReadinessPullRequestOperations rejects a success response missing the head commit sha", async () => {
+  const fetchImpl = async () => jsonResponse(200, [pull({ head: { ref: canonicalBranch } })]);
+  const operations = githubPrOperations(fetchImpl);
+  await assert.rejects(
+    operations.findOpenPullRequests({ head: canonicalBranch }),
+    (error) => error instanceof PullRequestProviderError && error.code === "PROVIDER_ERROR",
+  );
+});
+
+test("GitHubMergeReadinessPullRequestOperations rejects empty owner/repo/token", () => {
+  assert.throws(() => new GitHubMergeReadinessPullRequestOperations({ owner: "", repo: "r", token: "t" }), RangeError);
+  assert.throws(() => new GitHubMergeReadinessPullRequestOperations({ owner: "o", repo: "", token: "t" }), RangeError);
+  assert.throws(() => new GitHubMergeReadinessPullRequestOperations({ owner: "o", repo: "r", token: "" }), RangeError);
 });
