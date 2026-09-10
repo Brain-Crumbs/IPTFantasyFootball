@@ -37,6 +37,7 @@
       "permanent-review-history-auditability",
       "whole-transaction-lock-based-mutual-exclusion",
       "ownership-safe-abandoned-lock-reclaim",
+      "atomic-reservation-guarded-release-and-reclaim-shared-with-sibling-lifecycle-locks-on-the-same-path",
       "lock-io-failure-distinguished-from-contention"
     ],
     "behavioralConstraints": [
@@ -54,7 +55,7 @@
       "getApprovalStatus() reports NONE when a role's lineage has no record, CURRENT when its current record's revisionIdentity equals the task's exact current revision, and STALE otherwise -- with no distinction made between a code, contract, or metadata-only change that produced the new revision",
       "getApprovalStatus()'s historyCount reports the full length of a role's evidence lineage (every CURRENT and SUPERSEDED record), so multiple rework cycles remain visible as a growing, fully-ordered history",
       "enterRework()/resumeDevelopment() hold an exclusive per-task lock (ReviewReworkTaskLock) across their entire re-verification and lifecycle-transition sequence; a concurrent call for the same task is rejected as STATE_CONFLICT rather than interleaving reads and writes with the lock holder",
-      "a task-lock file older than five minutes is treated as abandoned and reclaimed via an atomic rename-based compare-and-take that re-verifies it captured the stale instance rather than a fresh lock acquired in between; release only removes the lock file when it still holds this holder's own per-acquisition token",
+      "a task-lock file older than five minutes is treated as abandoned and reclaimed via an atomic rename-based compare-and-take that re-verifies it captured the stale instance rather than a fresh lock acquired in between; release only removes the lock file when it still holds this holder's own per-acquisition token. This exact lock path is also managed by four sibling task-lock classes in other bootstrap modules (control-plane.qa-review, control-plane.architecture-review, control-plane.uat-review, control-plane.controlled-merge) at different lifecycle phases for the same task, so both release() and reclaimIfStale() additionally take a shared, fixed-path reservation marker before claiming the lock path itself, keeping ordinary lock creation blocked for the whole window the path is claimed away — without it, a sibling class's own reclaim could otherwise land in that window and run its critical section concurrently with this one's. Restoring a mismatched or abandoned claim uses an exclusive-create write, never a plain rename (which POSIX allows to silently overwrite an existing destination), so a fresh concurrent lock is never clobbered; a reservation itself abandoned by a crashed release()/reclaimIfStale() is recovered the same way an abandoned lock file is",
       "a lock-file-creation failure other than ordinary contention (EEXIST) is surfaced as STATE_IO_FAILED rather than misreported as a concurrent caller holding the task"
     ],
     "invariants": [

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -675,6 +675,65 @@ test("FileQaReviewTaskLock does not reclaim a lock file that is merely recent", 
       () => lock.withLock("BOOT-018", () => {}),
       (error) => error instanceof QaReviewError && error.code === "STATE_CONFLICT",
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileQaReviewTaskLock treats an in-flight release() reservation as an active holder rather than letting a claimed-away lock path appear free", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-qa-review-lock-reservation-"));
+  try {
+    const lock = new FileQaReviewTaskLock(root);
+    const lockPath = join(root, "BOOT-018.lifecycle.lock");
+    // Simulates the window release()/reclaimIfStale() holds open between
+    // claiming the lock path away for inspection and restoring or discarding
+    // it: without the reservation, a concurrent tryCreate() could succeed
+    // inside that window even though a live replacement holder's own lock is
+    // still being decided upon.
+    const reservationPath = `${lockPath}.release-reservation`;
+    writeFileSync(reservationPath, "", { encoding: "utf8" });
+
+    assert.throws(
+      () => lock.withLock("BOOT-018", () => {}),
+      (error) => error instanceof QaReviewError && error.code === "STATE_CONFLICT",
+    );
+
+    rmSync(reservationPath);
+    let ran = false;
+    lock.withLock("BOOT-018", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected an ordinary acquisition to succeed once the reservation is gone");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileQaReviewTaskLock reclaims an abandoned release reservation (process crashed mid-release), restoring the orphaned lock so it re-enters the normal stale-lock lifecycle", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-qa-review-lock-abandoned-reservation-"));
+  try {
+    const lock = new FileQaReviewTaskLock(root);
+    const lockPath = join(root, "BOOT-018.lifecycle.lock");
+    const claimPath = `${lockPath}.release-claim`;
+    const reservationPath = `${lockPath}.release-reservation`;
+
+    // Simulate a crash immediately after release() renamed the held lock away
+    // to its fixed claim path, but before it restored or discarded it:
+    // nothing in-process is left to clean up either file.
+    writeFileSync(lockPath, String(Date.now() - 10 * 60 * 1000), { encoding: "utf8" });
+    renameSync(lockPath, claimPath);
+    writeFileSync(reservationPath, "", { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(reservationPath, old, old);
+    utimesSync(claimPath, old, old);
+
+    let ran = false;
+    lock.withLock("BOOT-018", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the abandoned reservation to be reclaimed rather than wedging the task forever");
+    assert.equal(existsSync(reservationPath), false);
+    assert.equal(existsSync(claimPath), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

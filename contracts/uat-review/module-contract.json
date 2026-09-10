@@ -42,6 +42,7 @@
       "stale-revision-reentry-rejection",
       "whole-transaction-lock-based-mutual-exclusion",
       "ownership-safe-abandoned-lock-reclaim",
+      "atomic-reservation-guarded-release-and-reclaim-shared-with-sibling-lifecycle-locks-on-the-same-path",
       "lock-io-failure-distinguished-from-contention",
       "supplied-context-identity-verification"
     ],
@@ -63,7 +64,7 @@
       "on outcome FAIL or BLOCKED, the lifecycle advances UAT_REVIEW -> UAT_FAILED",
       "every lifecycle transition carries the exact reviewed revision as revisionIdentity",
       "a task that already advanced past UAT_REVIEW rejects a further review() call as TASK_STATE_NOT_REVIEWABLE rather than silently reusing a stale revision",
-      "a task-lock file older than five minutes is treated as abandoned and reclaimed via an atomic rename-based compare-and-take, so at most one of several callers that concurrently observe the same stale lock ever wins the reclaim; release only removes the lock file when it still holds this holder's own per-acquisition token, so a holder that merely ran past the staleness threshold (without crashing) can never delete a different holder's freshly reclaimed lock",
+      "a task-lock file older than five minutes is treated as abandoned and reclaimed via an atomic rename-based compare-and-take, so at most one of several callers that concurrently observe the same stale lock ever wins the reclaim; release only removes the lock file when it still holds this holder's own per-acquisition token, so a holder that merely ran past the staleness threshold (without crashing) can never delete a different holder's freshly reclaimed lock. This exact lock path is also managed by four sibling task-lock classes in other bootstrap modules (control-plane.qa-review, control-plane.architecture-review, control-plane.review-rework, control-plane.controlled-merge) at different lifecycle phases for the same task, so both release() and reclaimIfStale() additionally take a shared, fixed-path reservation marker before claiming the lock path itself, keeping ordinary lock creation blocked for the whole window the path is claimed away — without it, a sibling class's own reclaim could otherwise land in that window and run its critical section concurrently with this one's. Restoring a mismatched or abandoned claim uses an exclusive-create write, never a plain rename (which POSIX allows to silently overwrite an existing destination), so a fresh concurrent lock is never clobbered; a reservation itself abandoned by a crashed release()/reclaimIfStale() is recovered the same way an abandoned lock file is",
       "a lock-file-creation failure other than ordinary contention (EEXIST) -- a permission error, a read-only state directory, exhausted disk -- is surfaced as STATE_IO_FAILED rather than misreported as a concurrent reviewer holding the task",
       "RepositoryUatContextSource performs no Git revision resolution because the UAT/Product role requires no requirement/contract/diff artifact; it discovers no scenario artifacts today because no repository convention for them exists yet"
     ],
