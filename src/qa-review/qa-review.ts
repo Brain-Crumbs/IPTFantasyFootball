@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   ContextCompilationError,
@@ -61,6 +61,34 @@ const MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024;
 // was killed between acquiring it and releasing it in the `finally`) and is
 // reclaimed by the next caller rather than wedging the task indefinitely.
 const STALE_LOCK_MS = 5 * 60 * 1000;
+
+// release() retries claiming its own release reservation, spaced this far
+// apart, when another release()/reclaimIfStale() call currently holds it —
+// a genuinely separate OS process, not merely a different call in this one.
+// A tight busy loop of failing syscalls is not a reliable substitute for an
+// actual wait: this process could exhaust its entire retry budget within
+// one scheduler timeslice while that other process has not even been
+// scheduled yet, long before it frees the reservation. withLock() here is
+// synchronous end to end (unlike control-plane.controlled-merge's own async
+// variant, which awaits a real delay between attempts), so this sleeps via
+// Atomics.wait — a genuine, bounded, wall-clock block — rather than an
+// awaited one.
+const RELEASE_RESERVATION_RETRY_DELAY_MS = 5;
+
+// A bound on how many times release() retries claiming its own reservation.
+// The other holder's own critical section (claim, compare, restore-or-
+// discard, unlink) is a handful of fast synchronous filesystem operations,
+// so this budget — combined with the delay above — exists to absorb real
+// OS scheduling jitter, not to model any expected long wait.
+const RELEASE_RESERVATION_CONTENTION_RETRIES = 40;
+
+// A genuine, bounded wall-clock sleep: Atomics.wait blocks this thread for
+// real elapsed time (confirmed by its own timeout, not by counting
+// iterations), unlike a busy-retry loop whose only "wait" is however long
+// its own fast, failing syscalls happen to take.
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 // After QA_REVIEW passes, the next required stage follows the same
 // QA -> Architect -> UAT/Product ordering the BOOT-009 lifecycle engine
@@ -686,51 +714,704 @@ export class FileQaReviewTaskLock implements QaReviewTaskLock {
 
   withLock<T>(taskId: string, fn: () => T): T {
     const lockPath = this.lockPathFor(taskId);
-    this.acquire(lockPath, taskId);
+    const stamp = this.acquire(lockPath, taskId);
     try {
       return fn();
     } finally {
-      try {
-        unlinkSync(lockPath);
-      } catch {
-        // Already gone, or reclaimed by another process as stale; either
-        // way there is nothing left for this holder to clean up.
-      }
+      this.release(lockPath, stamp);
     }
   }
 
-  private acquire(lockPath: string, taskId: string): void {
-    if (this.tryCreate(lockPath)) return;
-    if (this.reclaimIfStale(lockPath) && this.tryCreate(lockPath)) return;
+  private acquire(lockPath: string, taskId: string): string {
+    // The stamp this holder writes is both the lock's staleness signal (an
+    // epoch-millisecond timestamp, exactly the content format this class has
+    // always written and `reclaimIfStale` has always parsed) and the identity
+    // `release()` verifies before discarding anything.
+    const stamp = String(Date.now());
+    if (this.tryCreate(lockPath, stamp)) return stamp;
+    if (this.reclaimIfStale(lockPath)) {
+      const retried = String(Date.now());
+      if (this.tryCreate(lockPath, retried)) return retried;
+    }
     throw new QaReviewError(
       "STATE_CONFLICT",
       `Task '${taskId}' QA review commit is already in progress by a concurrent caller; retry once it finishes.`,
     );
   }
 
-  private tryCreate(lockPath: string): boolean {
+  // All five lifecycle task locks (QA, Architecture, UAT, rework, controlled
+  // merge) manage this exact same lock path for a given task, so their
+  // release/reclaim steps must be atomic against each other, not merely
+  // against other instances of this one class. This mirrors
+  // control-plane.controlled-merge's own hardened
+  // `FileControlledMergeTaskLock` release/reclaim/tryCreate design.
+  //
+  // A plain read-then-unlink (the original implementation, which did not even
+  // check ownership) is not atomic: if a stale reclaimer renames the old lock
+  // away, verifies it and writes a fresh replacement back in the gap between
+  // this call's read and its unlink, that unlink deletes the *replacement's*
+  // lock, letting a third caller acquire the task while the replacement's own
+  // critical section is still running. Claiming the path via an atomic rename
+  // first, then verifying the captured content, closes that gap; the
+  // reservation marker keeps ordinary creation blocked for the whole window in
+  // which lockPath is claimed away and therefore transiently absent.
+  private release(lockPath: string, stamp: string): void {
+    this.reclaimAbandonedReservation(lockPath);
+
+    const reservationPath = this.releaseReservationPath(lockPath);
+    // A stale former holder's own release() and its replacement's release()
+    // can legitimately land here concurrently (the replacement reclaimed
+    // the lock while the former holder was already mid-callback and only
+    // finishes afterward). Backing off unconditionally the moment this
+    // write loses that race — the original behavior — would let whichever
+    // side loses simply abandon its own release: if the loser's stamp is
+    // still genuinely current, it is never actually cleaned up, even
+    // though its own callback has already finished, wedging ordinary
+    // acquisition behind a full STALE_LOCK_MS wait for no reason. Retry a
+    // bounded number of times instead of backing off on the first loss.
+    let claimed = false;
+    for (let attempt = 0; attempt < RELEASE_RESERVATION_CONTENTION_RETRIES; attempt += 1) {
+      try {
+        writeFileSync(reservationPath, "", { encoding: "utf8", flag: "wx" });
+        claimed = true;
+        break;
+      } catch {
+        // Another release()/reclaimIfStale() call currently holds the
+        // reservation; wait a real, bounded amount of wall-clock time
+        // rather than abandoning this release() outright.
+        sleepSync(RELEASE_RESERVATION_RETRY_DELAY_MS);
+      }
+    }
+    if (!claimed) {
+      // Contention has outlasted the bounded retry window — an unusually
+      // slow concurrent holder, or genuine starvation. Back off rather
+      // than block indefinitely; the ordinary stale-reclaim path remains
+      // the eventual fallback.
+      return;
+    }
     try {
-      writeFileSync(lockPath, String(Date.now()), { encoding: "utf8", flag: "wx" });
-      return true;
-    } catch {
-      return false;
+      this.releaseClaimed(lockPath, stamp);
+    } finally {
+      try {
+        unlinkSync(reservationPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
     }
   }
 
+  private releaseClaimed(lockPath: string, stamp: string): void {
+    // Fixed, not randomized: the reservation above already guarantees only
+    // one release()/reclaimIfStale() attempt is in flight for this path, so
+    // there is no collision risk, and a fixed name is what makes an orphaned
+    // claim (left by a process killed mid-release) recoverable later by
+    // reclaimAbandonedReservation.
+    const claimPath = this.releaseClaimedPath(lockPath);
+    try {
+      renameSync(lockPath, claimPath);
+    } catch {
+      return; // Already gone; nothing left to release.
+    }
+
+    let observed: string;
+    try {
+      observed = readFileSync(claimPath, "utf8");
+    } catch {
+      // An unreadable claim (a transient I/O error, not "genuinely gone" —
+      // the rename just above guarantees claimPath exists) must never be
+      // treated as safe to discard: the content could belong to a live
+      // holder's own fresh replacement lock (a reclaimer's), and discarding
+      // it would let that holder's critical section keep running after its
+      // lock was silently deleted, with a third caller free to also enter
+      // it. Give the content back to lockPath, whatever it actually is,
+      // rather than risk losing it — the reservation this call already
+      // holds keeps ordinary tryCreate() blocked the entire time, so
+      // lockPath is guaranteed still vacant to restore onto.
+      try {
+        renameSync(claimPath, lockPath);
+      } catch {
+        // Someone else has since restored or replaced it; nothing further
+        // to do.
+      }
+      return;
+    }
+    if (observed !== stamp) {
+      // Not this holder's own lock (a reclaimer's fresh replacement, most
+      // likely) — restore it rather than discarding it. `writeFileSync` with
+      // flag:"wx", never `renameSync`: POSIX rename silently replaces an
+      // existing destination, which would clobber a third caller's own fresh
+      // lock; an exclusive create correctly fails instead.
+      try {
+        writeFileSync(lockPath, observed, { encoding: "utf8", flag: "wx" });
+      } catch {
+        // A fresh lock now exists at lockPath; nothing to restore onto.
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return;
+    }
+    try {
+      unlinkSync(claimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+  }
+
+  private releaseReservationPath(lockPath: string): string {
+    return `${lockPath}.release-reservation`;
+  }
+
+  private releaseClaimedPath(lockPath: string): string {
+    return `${lockPath}.release-claim`;
+  }
+
+  private reclaimClaimedPath(lockPath: string): string {
+    return `${lockPath}.reclaim-claim`;
+  }
+
+  private tryCreateRollbackClaimPath(lockPath: string): string {
+    return `${lockPath}.try-create-rollback-claim`;
+  }
+
+  // Recovers a reservation marker (and whichever claim file it was guarding)
+  // abandoned by a process killed mid-release or mid-reclaim: without this,
+  // the marker would block every future tryCreate() forever and the claimed
+  // content would sit orphaned at a path nothing else revisits. Mirrors
+  // control-plane.controlled-merge's own
+  // `FileControlledMergeTaskLock.reclaimAbandonedReservation`, including its
+  // two-level "claim the marker before trusting its own staleness" step: a
+  // plain stat-then-unlink could strip a freshly recreated, genuinely live
+  // reservation of its protection mid-flight, so the marker is itself claimed
+  // by rename and its captured age re-checked (rename preserves mtime). The
+  // marker has no content of its own, so its staleness is judged from mtime
+  // even though the lock file's own staleness is content-embedded here.
+  private reclaimAbandonedReservation(lockPath: string): void {
+    const reservationPath = this.releaseReservationPath(lockPath);
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+
+    let stats: { readonly mtimeMs: number } | null;
+    try {
+      stats = statSync(reservationPath);
+    } catch {
+      stats = null;
+    }
+
+    if (stats !== null) {
+      if (Date.now() - stats.mtimeMs <= STALE_LOCK_MS) return;
+      try {
+        renameSync(reservationPath, reclaimMarkerPath);
+      } catch {
+        // Already gone; fall through to check reclaimMarkerPath directly —
+        // another caller may have already claimed it in this exact gap.
+      }
+    } else if (!existsSync(reclaimMarkerPath)) {
+      // No reservation, and no orphaned claim left behind by a process that
+      // crashed mid-reclaim either: nothing to do.
+      return;
+    }
+    // reclaimMarkerPath may now exist either because this call just claimed it
+    // above, or because it was already sitting there — which can only mean a
+    // *previous* call crashed between renaming the original reservation away
+    // and finishing this same recovery (a rename is never observed half-done).
+    // Either way the marker's own mtime, preserved by the rename, still
+    // reflects the original reservation's true age, so it is recovered
+    // identically from here whether freshly claimed just now or found already
+    // abandoned: without this, a crash landing in that exact one-line gap
+    // would leave the marker blocking every future tryCreate() check forever,
+    // since nothing else would ever revisit it once the original reservation
+    // path is gone for good.
+
+    let claimedStats: { readonly mtimeMs: number } | null;
+    try {
+      claimedStats = statSync(reclaimMarkerPath);
+    } catch {
+      claimedStats = null;
+    }
+    if (claimedStats === null) return;
+    if (Date.now() - claimedStats.mtimeMs <= STALE_LOCK_MS) {
+      // Not actually stale: a live call created a fresh marker here after the
+      // check above but before this claim landed. Restore it untouched.
+      try {
+        renameSync(reclaimMarkerPath, reservationPath);
+      } catch {
+        // A third operation has since created its own fresh marker; nothing
+        // further to restore onto.
+      }
+      return;
+    }
+
+    // Nothing so far has actually *claimed* sole ownership of the
+    // now-confirmed-stale reclaimMarkerPath — only observed and re-verified
+    // that it exists and is old. Left at a bare observation, every
+    // concurrent caller reaching here would race each other through the
+    // restore logic below on the very same fixed claim paths. Claim
+    // exclusive ownership of this recovery attempt first: capture the
+    // marker's content and mtime, then re-establish both at a dedicated,
+    // private claim path via an exclusive-create write. This path is
+    // deliberately distinct from reservationPath itself — a completely
+    // unrelated, brand-new release()/reclaimIfStale() call never checks it,
+    // so it cannot be mistaken for a stale *public* reservation and raced via
+    // the same renameSync(reservationPath, reclaimMarkerPath) above.
+    // reclaimMarkerPath itself is left completely untouched until this claim
+    // fully lands, so it keeps blocking tryCreate() and this function's own
+    // primary branch for the entire recovery, exactly as it already did
+    // before this claim began. Exactly one concurrent caller can win the
+    // exclusive create; every other caller's own attempt fails and it backs
+    // off untouched.
+    const recoveryClaimPath = `${reclaimMarkerPath}.recovery-claim`;
+    let markerContent: string;
+    try {
+      markerContent = readFileSync(reclaimMarkerPath, "utf8");
+    } catch {
+      return; // Already gone; another caller already claimed or finished it.
+    }
+    try {
+      writeFileSync(recoveryClaimPath, markerContent, { encoding: "utf8", flag: "wx" });
+      // Deliberately NOT stamped with reclaimMarkerPath's own (already
+      // stale) mtime: this write's own natural "now" timestamp is what
+      // makes recoveryClaimPath itself correctly read as fresh for as long
+      // as this call is still actively working the recovery below. Backdating
+      // it here would make a live, in-progress claim immediately look
+      // abandoned to a concurrent caller hitting EEXIST just below — the
+      // exact race this whole claim exists to prevent, just moved one level
+      // deeper.
+    } catch (error: unknown) {
+      // EEXIST can mean two different things: a genuinely concurrent
+      // caller currently racing this exact claim right now (a live claim,
+      // back off and let it finish), or an earlier caller's own claim that
+      // itself crashed before finishing — recoveryClaimPath is private and
+      // the only code that ever writes to it is this exact block, so if one
+      // is already sitting there and old enough to be considered abandoned
+      // by the same STALE_LOCK_MS threshold as everything else in this
+      // method, this generation never completed and would otherwise wedge
+      // reclaimMarkerPath (still present, per the read above) as a
+      // permanent block on tryCreate() forever, with nothing left to ever
+      // revisit it. There is nothing left to *claim* in that case: this
+      // caller simply resumes the very same recovery using the orphaned
+      // copy already there (its content is necessarily identical to what
+      // was just read from reclaimMarkerPath above, since nothing ever
+      // mutates either file's content after creation).
+      if (errorCode(error) !== "EEXIST") return;
+      let existingClaimStats: { readonly mtimeMs: number } | null;
+      try {
+        existingClaimStats = statSync(recoveryClaimPath);
+      } catch {
+        existingClaimStats = null;
+      }
+      if (existingClaimStats === null || Date.now() - existingClaimStats.mtimeMs <= STALE_LOCK_MS) {
+        // Either it just vanished (another caller already finished this
+        // exact recovery — nothing left to do), or it is still genuinely
+        // fresh (a live, concurrent claim in flight right now) — back off
+        // either way rather than race it.
+        return;
+      }
+    }
+
+    for (const claimPath of [this.releaseClaimedPath(lockPath), this.reclaimClaimedPath(lockPath)]) {
+      let orphaned: string;
+      let orphanedMtime: Date;
+      try {
+        orphaned = readFileSync(claimPath, "utf8");
+        orphanedMtime = new Date(statSync(claimPath).mtimeMs);
+      } catch {
+        continue; // Not present here; try the other candidate location.
+      }
+      try {
+        writeFileSync(lockPath, orphaned, { encoding: "utf8", flag: "wx" });
+        // Staleness for this class is read from the restored content's own
+        // embedded timestamp, so the orphan re-enters the stale-lock
+        // lifecycle regardless; restoring its original mtime as well keeps
+        // this method identical to the controlled-merge original it mirrors.
+        try {
+          utimesSync(lockPath, orphanedMtime, orphanedMtime);
+        } catch {
+          // Lost ownership in an extremely narrow window; harmless.
+        }
+      } catch {
+        // lockPath already holds a fresh lock — a concurrent, legitimate
+        // tryCreate() won the race; leave it untouched.
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      break;
+    }
+    try {
+      unlinkSync(reclaimMarkerPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    try {
+      unlinkSync(recoveryClaimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+  }
+
+  // The rollback claim in tryCreate()'s own "someone else reserved this
+  // path" branch below is a private detail of that method alone —
+  // recognized by nothing else, including reclaimAbandonedReservation()
+  // itself. A process killed between claiming lockPath away into it and
+  // finishing that same rollback would otherwise leave the displaced
+  // holder's content stranded there forever, with nothing left to ever
+  // recover it, while lockPath itself sits vacant for any later tryCreate()
+  // to happily recreate — a genuine double-entry race. Mirrors
+  // control-plane.controlled-merge's own
+  // `FileControlledMergeTaskLock.recoverOrDeferToRollbackClaim`. Returns
+  // false when this call should back off entirely (a live rollback is still
+  // genuinely in flight, or an abandoned one was just recovered and
+  // lockPath is no longer vacant to create into); true when it is safe to
+  // proceed with tryCreate()'s own normal logic.
+  private recoverOrDeferToRollbackClaim(lockPath: string): boolean {
+    const rollbackClaimPath = this.tryCreateRollbackClaimPath(lockPath);
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+
+    let stats: { readonly mtimeMs: number } | null;
+    try {
+      stats = statSync(rollbackClaimPath);
+    } catch (error: unknown) {
+      // ENOENT genuinely means nothing is there. Any other failure (a
+      // permission error, a transient I/O error) must not be treated the
+      // same way: the claim might still hold a displaced holder's token,
+      // so back off conservatively rather than let tryCreate() proceed as
+      // though nothing were here.
+      if (errorCode(error) !== "ENOENT") return false;
+      stats = null;
+    }
+
+    if (stats !== null) {
+      if (Date.now() - stats.mtimeMs <= STALE_LOCK_MS) return false; // Still genuinely in flight; back off.
+
+      // Confirmed stale by this observation alone, but nothing so far has
+      // actually *claimed* rollbackClaimPath's own current generation — a
+      // caller that only reads its content and copies the bytes elsewhere
+      // (the earlier version of this method) leaves rollbackClaimPath
+      // itself unclaimed: a concurrent caller could recover and remove
+      // this exact generation, and a brand-new rollback could then place
+      // a live, unrelated generation at this same fixed path before this
+      // call's own later unconditional cleanup — which would then destroy
+      // that live generation's content without ever having read or
+      // accounted for it. linkSync captures whichever generation
+      // genuinely still occupies rollbackClaimPath at this instant
+      // atomically: unlike renameSync (which would silently replace an
+      // earlier, still-orphaned claim sitting at rollbackRecoveryClaimPath
+      // from a separate crash cycle), link() fails with EEXIST if the
+      // destination already exists, so an existing orphan is never
+      // silently clobbered either.
+      try {
+        linkSync(rollbackClaimPath, rollbackRecoveryClaimPath);
+        try {
+          unlinkSync(rollbackClaimPath);
+        } catch {
+          // Already gone; harmless — our own link is independently valid.
+        }
+      } catch (error: unknown) {
+        if (errorCode(error) === "ENOENT") return true; // Already gone entirely.
+        if (errorCode(error) !== "EEXIST") return false; // Some other failure: defer.
+        // EEXIST: rollbackRecoveryClaimPath already holds an earlier
+        // attempt's own capture — a live one still being worked, or one
+        // abandoned by a crash between its own link and unlink above.
+        // rollbackClaimPath itself was never touched by this attempt
+        // either way, so it may now hold a completely different,
+        // unrelated generation this call must not disturb.
+        let existingClaimStats: { readonly mtimeMs: number } | null;
+        try {
+          existingClaimStats = statSync(rollbackRecoveryClaimPath);
+        } catch {
+          existingClaimStats = null;
+        }
+        if (existingClaimStats === null || Date.now() - existingClaimStats.mtimeMs <= STALE_LOCK_MS) {
+          // Either it just vanished (another caller already finished this
+          // exact recovery), or it is still genuinely fresh (a live,
+          // concurrent claim in flight right now) — back off either way.
+          return false;
+        }
+        // Confirmed stale: fall through and resume using the orphaned
+        // capture already sitting there.
+      }
+    } else {
+      // Nothing at the primary path right now. An earlier claim could
+      // still be sitting, unresumed, at rollbackRecoveryClaimPath if a
+      // previous caller's own link-then-unlink sequence above was
+      // interrupted by a crash after the link landed but before it
+      // reached the restore/cleanup below.
+      let recoveryStats: { readonly mtimeMs: number } | null;
+      try {
+        recoveryStats = statSync(rollbackRecoveryClaimPath);
+      } catch (error: unknown) {
+        if (errorCode(error) !== "ENOENT") return false;
+        return true; // Nothing at either path.
+      }
+      if (Date.now() - recoveryStats.mtimeMs <= STALE_LOCK_MS) return false; // A live claim's own capture.
+    }
+
+    // Either this call just claimed rollbackRecoveryClaimPath above, or an
+    // earlier crash left it there already confirmed stale. Nothing so far
+    // has actually *claimed* sole ownership of finishing off this exact
+    // generation, though: reading its content and only later unlinking the
+    // same fixed path (the earlier version of this method) leaves a
+    // caller that pauses between the two exposed to the fixed path being
+    // reused for an unrelated, later generation in the meantime — the
+    // lagging caller would then restore its own stale, cached content and
+    // unlink that unrelated later generation, potentially destroying a
+    // live replacement lock's own displaced token while its holder is
+    // still executing. Claim this exact generation atomically via
+    // linkSync first, exactly like the claim above: this immediately
+    // vacates rollbackRecoveryClaimPath (the unlink below), so any later,
+    // unrelated generation can safely reoccupy that fixed path without
+    // ever colliding with what this call has already claimed away.
+    const finalizeClaimPath = `${rollbackRecoveryClaimPath}.finalize-claim`;
+    try {
+      linkSync(rollbackRecoveryClaimPath, finalizeClaimPath);
+      try {
+        unlinkSync(rollbackRecoveryClaimPath);
+      } catch {
+        // Already gone; harmless — our own link is independently valid.
+      }
+    } catch (error: unknown) {
+      if (errorCode(error) === "ENOENT") return true; // Already gone entirely.
+      if (errorCode(error) !== "EEXIST") return false; // Some other failure: defer.
+      // EEXIST: finalizeClaimPath already holds an earlier attempt's own
+      // capture — a live one still being finished, or one abandoned by a
+      // crash between its own link and unlink above. Once this generation
+      // is confirmed stale, resuming via the orphaned capture already
+      // sitting there is safe even if another caller reaches this same
+      // conclusion concurrently: finalizeClaimPath's content is immutable
+      // once written (only this exact claim step ever creates it), the
+      // restore below is an exclusive-create (only one concurrent
+      // resumer's write can ever land), and the final unlink is
+      // idempotent — so racing resumers duplicate harmless work rather
+      // than corrupting anything.
+      let existingFinalizeStats: { readonly mtimeMs: number } | null;
+      try {
+        existingFinalizeStats = statSync(finalizeClaimPath);
+      } catch {
+        existingFinalizeStats = null;
+      }
+      if (existingFinalizeStats === null || Date.now() - existingFinalizeStats.mtimeMs <= STALE_LOCK_MS) {
+        // Either it just vanished (another caller already finished this
+        // exact generation), or it is still genuinely fresh (a live,
+        // concurrent claim in flight right now) — back off either way.
+        return false;
+      }
+      // Confirmed stale: fall through and resume using the orphaned
+      // capture already sitting there.
+    }
+
+    let finalizeStats: { readonly mtimeMs: number } | null;
+    try {
+      finalizeStats = statSync(finalizeClaimPath);
+    } catch (error: unknown) {
+      if (errorCode(error) !== "ENOENT") return false; // Transient failure: defer.
+      return true; // Already gone — another caller resumed it first.
+    }
+
+    let orphaned: string;
+    try {
+      orphaned = readFileSync(finalizeClaimPath, "utf8");
+    } catch (error: unknown) {
+      // ENOENT genuinely means another caller already resumed and finished
+      // this exact generation. Any other failure must not be treated the
+      // same way: this content might still be a displaced holder's token,
+      // so back off rather than proceed as though it were absent.
+      return errorCode(error) === "ENOENT";
+    }
+    const orphanedMtime = new Date(finalizeStats.mtimeMs);
+    try {
+      writeFileSync(lockPath, orphaned, { encoding: "utf8", flag: "wx" });
+      try {
+        utimesSync(lockPath, orphanedMtime, orphanedMtime);
+      } catch {
+        // Lost ownership of the just-written file in an extremely narrow
+        // window; the lock will simply need to age out again.
+      }
+    } catch {
+      // lockPath already holds a fresh lock — a concurrent, legitimate
+      // tryCreate() won the race; leave it untouched.
+    }
+    try {
+      unlinkSync(finalizeClaimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    return false;
+  }
+
+  private tryCreate(lockPath: string, stamp: string): boolean {
+    // A rollback claim (below) can itself be interrupted by a crash between
+    // claiming lockPath away and finishing that same rollback — recognized
+    // by nothing else in this class, since it is a private detail of this
+    // method's own rollback path, not the public reservation/reclaim-marker
+    // mechanism. Recover or defer to it first, before any of this call's
+    // own logic runs, so an abandoned one never wedges the displaced
+    // holder's content forever and a still-live one is never raced.
+    if (!this.recoverOrDeferToRollbackClaim(lockPath)) return false;
+
+    // A release()/reclaimIfStale() in flight for this exact lock path has
+    // claimed it away for inspection: ordinary creation must stay blocked for
+    // that whole window rather than merely observing the path as transiently
+    // vacant, or a still-live replacement lock would appear unlocked. The
+    // ".reclaim" marker is recognized too, since reclaimAbandonedReservation
+    // briefly moves the reservation aside while judging it.
+    this.reclaimAbandonedReservation(lockPath);
+    const reservationPath = this.releaseReservationPath(lockPath);
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+    if (existsSync(reservationPath) || existsSync(reclaimMarkerPath)) return false;
+    try {
+      writeFileSync(lockPath, stamp, { encoding: "utf8", flag: "wx" });
+    } catch {
+      return false;
+    }
+    if (existsSync(reservationPath) || existsSync(reclaimMarkerPath)) {
+      // A release()/reclaimIfStale() reserved this path in the narrow gap
+      // between the pre-write check and this write landing; roll back rather
+      // than let this lock stand in for real ownership while that call is
+      // still deciding what to do with the content it claimed. An
+      // unconditional unlink here is not safe, though: by the time it runs,
+      // a reclaimer could already have renamed this exact stamp away, found
+      // it did not match what it expected (the reclaimer's own stale-content
+      // check), and restored it — and, separately, a fresh tryCreate()
+      // elsewhere could since have exclusively created a brand-new stamp of
+      // its own at this same path once that reclaimer's reservation was
+      // cleaned up. Blindly unlinking at that point would delete that later,
+      // unrelated holder's lock instead of this attempt's own, leaving
+      // lockPath vacant while that holder's critical section is still
+      // actively running and free for yet another caller to also win. Claim
+      // whatever currently sits at lockPath via the same atomic-rename-then-
+      // verify pattern used everywhere else in this class, and only ever
+      // discard it if it is still genuinely this attempt's own stamp.
+      const rollbackClaimPath = this.tryCreateRollbackClaimPath(lockPath);
+      let claimed: string | null;
+      try {
+        renameSync(lockPath, rollbackClaimPath);
+      } catch {
+        // Already gone — reclaimed, or rolled back by this same logic on a
+        // concurrent call; nothing left to roll back.
+        return false;
+      }
+      try {
+        claimed = readFileSync(rollbackClaimPath, "utf8");
+      } catch {
+        claimed = null;
+      }
+      if (claimed !== stamp && claimed !== null) {
+        // Not this attempt's own stamp — a reclaimer's legitimate
+        // replacement landed here first. Restore it untouched rather than
+        // discarding someone else's live lock; a plain rename is not safe
+        // here either, since a third, independent tryCreate() could have
+        // exclusively created yet another fresh stamp at lockPath in this
+        // same gap.
+        try {
+          writeFileSync(lockPath, claimed, { encoding: "utf8", flag: "wx" });
+        } catch {
+          // lockPath already holds a fresher lock of its own; nothing to
+          // restore onto.
+        }
+      }
+      try {
+        unlinkSync(rollbackClaimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return false;
+    }
+    return true;
+  }
+
+  // Staleness itself is judged exactly as before — from the epoch-millisecond
+  // timestamp this class writes as the lock file's content — but the
+  // claim-and-discard is now atomic: a bare unlink (the original
+  // implementation) cannot distinguish "I am discarding the stale lock I
+  // read" from "the stale holder released normally and I am discarding a
+  // different caller's brand-new lock." The content the claiming rename
+  // actually captured is re-read and compared against what was observed as
+  // stale before it is discarded, under the same reservation release() holds.
   private reclaimIfStale(lockPath: string): boolean {
-    let heldSince = Number.NaN;
+    this.reclaimAbandonedReservation(lockPath);
+
+    // This single read is both the staleness signal (this class's timestamp is
+    // embedded in the content, not carried by mtime) and the comparison
+    // baseline handed to reclaimClaimed() below — deliberately not two separate
+    // reads. If a legitimate holder releases this exact stale lock and a fresh
+    // holder B acquires it in the gap between this check and the reservation
+    // being taken below, a later read inside reclaimClaimed() would just be B's
+    // own live content, and comparing it against itself would trivially "match"
+    // (nothing else touched it in between), discarding B's live lock without
+    // ever actually having observed it to be stale. Pinning the baseline to the
+    // exact content read at staleness-check time closes that gap: a legitimate
+    // replacement's different stamp is then correctly seen as a mismatch.
+    let observedAtStaleCheck: string;
     try {
-      heldSince = Number(readFileSync(lockPath, "utf8"));
+      observedAtStaleCheck = readFileSync(lockPath, "utf8");
     } catch {
       return false;
     }
+    const heldSince = Number(observedAtStaleCheck);
     if (!Number.isFinite(heldSince) || Date.now() - heldSince <= STALE_LOCK_MS) return false;
+
+    const reservationPath = this.releaseReservationPath(lockPath);
     try {
-      unlinkSync(lockPath);
-      return true;
+      writeFileSync(reservationPath, "", { encoding: "utf8", flag: "wx" });
+    } catch {
+      // A release() or another reclaimIfStale() is already in flight for this
+      // exact lock path; back off rather than race it.
+      return false;
+    }
+    try {
+      return this.reclaimClaimed(lockPath, observedAtStaleCheck);
+    } finally {
+      try {
+        unlinkSync(reservationPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+    }
+  }
+
+  private reclaimClaimed(lockPath: string, observed: string): boolean {
+    const claimPath = this.reclaimClaimedPath(lockPath);
+    try {
+      renameSync(lockPath, claimPath);
     } catch {
       return false;
     }
+
+    let claimed: string | null;
+    try {
+      claimed = readFileSync(claimPath, "utf8");
+    } catch {
+      claimed = null;
+    }
+    if (claimed !== observed) {
+      // A live holder's fresh replacement raced in; restore it (wx, never
+      // rename — see releaseClaimed) and report no reclaim.
+      if (claimed !== null) {
+        try {
+          writeFileSync(lockPath, claimed, { encoding: "utf8", flag: "wx" });
+        } catch {
+          // A third caller has since created its own fresh lock at lockPath;
+          // there is nothing to restore onto.
+        }
+      }
+      try {
+        unlinkSync(claimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
+      }
+      return false;
+    }
+
+    try {
+      unlinkSync(claimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    return true;
   }
 
   private lockPathFor(taskId: string): string {
@@ -981,4 +1662,10 @@ function validateRequest(request: QaReviewRequest): void {
   if (typeof request.context !== "object" || request.context === null) {
     throw new QaReviewError("INVALID_REQUEST", "QA review context must be a prepared ContextPackage.", false);
   }
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
 }

@@ -157,7 +157,13 @@ const REVIEW_STATE_BY_ROLE = new Map<ReviewRole, TaskLifecycleState>([
 const REVIEW_ORDER: readonly ReviewRole[] = ["QA", "Architect", "UAT/Product"];
 const VALID_REVIEW_ROLES: readonly ReviewRole[] = ["Developer", "QA", "Architect", "UAT/Product", "MergeController"];
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
-const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const RFC3339_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/i;
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
 
 export function createLifecycleRecord(taskId: string): LifecycleRecord {
   if (!TASK_ID_PATTERN.test(taskId)) {
@@ -291,8 +297,69 @@ function validateRequest(request: TransitionRequest): string | null {
     if (value !== undefined && value.trim().length === 0) return `Transition ${name}, when supplied, must be a non-empty string.`;
   }
 
-  if (!RFC3339_PATTERN.test(request.occurredAt) || Number.isNaN(Date.parse(request.occurredAt))) {
+  const match = RFC3339_PATTERN.exec(request.occurredAt);
+  if (!match) {
     return "Transition occurredAt must be a valid RFC 3339 date-time.";
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  // The regex plus a Date.parse() sanity check alone cannot reject an
+  // out-of-range calendar component: Date.parse() silently *rolls forward*
+  // an invalid date (e.g. "2026-02-30" normalizes to March 2) rather than
+  // rejecting it, the same gap control-plane.controlled-merge's and
+  // control-plane.evidence-store's own isValidRfc3339DateTime validators
+  // are already hardened against — this mirrors those component-range
+  // checks exactly so this public lifecycle boundary is not semantically
+  // weaker than either of them.
+  if (month < 1 || month > 12) {
+    return "Transition occurredAt must be a valid RFC 3339 date-time.";
+  }
+  const maxDay = month === 2 && isLeapYear(year) ? 29 : (DAYS_IN_MONTH[month - 1] as number);
+  if (day < 1 || day > maxDay) {
+    return "Transition occurredAt must be a valid RFC 3339 date-time.";
+  }
+  if (hour > 23 || minute > 59) {
+    return "Transition occurredAt must be a valid RFC 3339 date-time.";
+  }
+  // RFC 3339's grammar allows a seconds value of 60 for a leap second, but
+  // only ever at the instant 23:59:60 UTC — never any other minute/hour —
+  // so a bare `second > 59` upper bound would either reject every real
+  // leap-second timestamp (too strict) or, if simply raised to 60
+  // everywhere, accept "12:00:60" as if any minute could run long (too
+  // loose).
+  if (second > 60) {
+    return "Transition occurredAt must be a valid RFC 3339 date-time.";
+  }
+  let offsetMinutesTotal = 0;
+  if (match[7] !== undefined) {
+    const offsetHour = Number(match[8]);
+    const offsetMinute = Number(match[9]);
+    if (offsetHour > 23 || offsetMinute > 59) {
+      return "Transition occurredAt must be a valid RFC 3339 date-time.";
+    }
+    offsetMinutesTotal = (match[7] === "-" ? -1 : 1) * (offsetHour * 60 + offsetMinute);
+  }
+  // Date.parse() has no concept of an RFC 3339 leap second at all and
+  // unconditionally returns NaN for one — a real concern here specifically
+  // because an upstream caller (control-plane.controlled-merge,
+  // control-plane.evidence-store) already accepts a leap-second occurredAt
+  // at its own entry validation, and by the time that same value reaches a
+  // lifecycle transition, an irreversible action (a confirmed merge,
+  // recorded evidence) has already happened; rejecting it only here, this
+  // late, would strand that otherwise-successful operation in a state whose
+  // own history event could never be recorded. Placement is checked against
+  // the UTC-equivalent hour/minute (a leap second carrying a nonzero offset
+  // need not read local 23:59: RFC 3339's own equivalent form
+  // "1990-12-31T15:59:60-08:00" is the same instant as "...T23:59:60Z").
+  if (second === 60) {
+    const utcMinutesOfDay = (((hour * 60 + minute - offsetMinutesTotal) % 1440) + 1440) % 1440;
+    if (Math.floor(utcMinutesOfDay / 60) !== 23 || utcMinutesOfDay % 60 !== 59) {
+      return "Transition occurredAt must be a valid RFC 3339 date-time.";
+    }
   }
 
   if (request.requiredReviewRoles.some((role) => !VALID_REVIEW_ROLES.includes(role))) {

@@ -6,6 +6,7 @@ type JsonObject = Record<string, unknown>;
 const SUPPORTED_SCHEMAS = {
   "ipt.validation-evidence": "1.0.0",
   "ipt.review-result": "1.1.0",
+  "ipt.merge-evidence": "1.0.0",
 } as const;
 
 export type SupportedEvidenceSchemaId = keyof typeof SUPPORTED_SCHEMAS;
@@ -16,11 +17,12 @@ export const EVIDENCE_STORE_SUPPORTED_SCHEMAS: Readonly<Record<SupportedEvidence
 const DEFAULT_SCHEMA_RELATIVE_PATHS: Readonly<Record<SupportedEvidenceSchemaId, string>> = Object.freeze({
   "ipt.validation-evidence": "schemas/v1/validation-evidence.schema.json",
   "ipt.review-result": "schemas/v1/review-result.schema.json",
+  "ipt.merge-evidence": "schemas/v1/merge-evidence.schema.json",
 });
 
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
 const RFC3339_DATE_TIME_PATTERN =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/i;
 const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const SEQUENCE_WIDTH = 7;
 
@@ -47,6 +49,10 @@ export type RecordResult =
   | { readonly ok: true; readonly record: StoredEvidenceRecord }
   | { readonly ok: false; readonly rejection: EvidenceRejection };
 
+export type ValidateResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly rejection: EvidenceRejection };
+
 export type RevisionCheckResult =
   | { readonly status: "CURRENT"; readonly record: StoredEvidenceRecord }
   | { readonly status: "REVISION_MISMATCH"; readonly record: StoredEvidenceRecord; readonly expectedRevisionIdentity: string }
@@ -60,6 +66,16 @@ export type RevisionCheckResult =
  */
 export interface EvidenceStore {
   record(payload: unknown): RecordResult;
+  // A pure, read-only check: runs the exact same validation record() itself
+  // applies before ever writing anything (payload shape, schemaId,
+  // schemaVersion, full schema-document validation, taskId pattern, lineage
+  // derivability), without persisting a record either way. Lets a consumer
+  // that already has a *stored* payload in hand (for example a candidate for
+  // reuse, rather than a fresh payload it is about to submit) confirm it is
+  // still a fully schema-valid record — including fields record()'s own
+  // three-loosely-compared-field callers might otherwise never re-check —
+  // without duplicating this store's own validation logic elsewhere.
+  validate(payload: unknown): ValidateResult;
   getCurrent(lineageId: string): StoredEvidenceRecord | null;
   getHistory(lineageId: string): readonly StoredEvidenceRecord[];
   checkRevision(lineageId: string, expectedRevisionIdentity: string): RevisionCheckResult;
@@ -71,6 +87,10 @@ export function validationEvidenceLineageId(taskId: string, validatorId: string)
 
 export function reviewResultLineageId(taskId: string, role: string): string {
   return `${taskId}::role::${role}`;
+}
+
+export function mergeEvidenceLineageId(taskId: string): string {
+  return `${taskId}::merge`;
 }
 
 interface LoadedSchema {
@@ -97,48 +117,12 @@ export class FileEvidenceStore implements EvidenceStore {
   }
 
   record(payload: unknown): RecordResult {
-    if (!isObject(payload)) {
-      return reject("INVALID_PAYLOAD", ["$: evidence payload must be a JSON object"]);
-    }
-
-    const schemaId = payload.schemaId;
-    if (typeof schemaId !== "string" || !isSupportedSchemaId(schemaId)) {
-      return reject("UNSUPPORTED_SCHEMA_ID", [
-        `$.schemaId: expected one of ${Object.keys(SUPPORTED_SCHEMAS).join(", ")}, received '${String(schemaId)}'`,
-      ]);
-    }
-
-    const loaded = this.#schemas.get(schemaId);
-    if (!loaded) {
-      return reject("UNSUPPORTED_SCHEMA_ID", [`$.schemaId: '${schemaId}' is not a supported evidence schema`]);
-    }
-
-    if (payload.schemaVersion !== loaded.schemaVersion) {
-      return reject("UNSUPPORTED_SCHEMA_VERSION", [
-        `$.schemaVersion: reader supports '${loaded.schemaVersion}' for '${schemaId}', received '${String(payload.schemaVersion)}'`,
-      ]);
-    }
-
-    const reasons = validateValue(payload, loaded.document, loaded.document).sort(compareText);
-    if (reasons.length > 0) {
-      return reject("SCHEMA_VALIDATION_FAILED", reasons);
-    }
-
-    if (typeof payload.taskId !== "string" || !TASK_ID_PATTERN.test(payload.taskId)) {
-      return reject("SCHEMA_VALIDATION_FAILED", [`$.taskId: '${String(payload.taskId)}' is not a valid task identifier`]);
-    }
-
-    const lineageId = lineageIdFor(schemaId, payload);
-    if (lineageId === null) {
-      return reject("SCHEMA_VALIDATION_FAILED", [
-        schemaId === "ipt.validation-evidence"
-          ? "$.validatorId: required to derive an evidence lineage"
-          : "$.role: required to derive a review lineage",
-      ]);
-    }
+    const validated = this.#validatePayload(payload);
+    if (!validated.ok) return validated.result;
+    const { payload: validPayload, lineageId } = validated;
 
     const storedAt = new Date().toISOString();
-    const frozenPayload = deepFreeze(clone(payload));
+    const frozenPayload = deepFreeze(clone(validPayload));
     const sequence = this.#writeNextSlot(lineageId, (attempt) =>
       `${JSON.stringify({ lineageId, sequence: attempt, storedAt, payload: frozenPayload }, null, 2)}\n`,
     );
@@ -151,6 +135,76 @@ export class FileEvidenceStore implements EvidenceStore {
     });
 
     return Object.freeze({ ok: true, record });
+  }
+
+  validate(payload: unknown): ValidateResult {
+    const validated = this.#validatePayload(payload);
+    return validated.ok ? Object.freeze({ ok: true }) : validated.result;
+  }
+
+  // Shared by record() and validate() so both apply the exact same checks in
+  // the exact same order — a payload record() would accept is always exactly
+  // the set validate() reports as ok, and vice versa, by construction rather
+  // than by keeping two implementations in sync by hand.
+  #validatePayload(
+    payload: unknown,
+  ): { readonly ok: true; readonly payload: JsonObject; readonly lineageId: string } | { readonly ok: false; readonly result: RecordResult } {
+    if (!isObject(payload)) {
+      return { ok: false, result: reject("INVALID_PAYLOAD", ["$: evidence payload must be a JSON object"]) };
+    }
+
+    const schemaId = payload.schemaId;
+    if (typeof schemaId !== "string" || !isSupportedSchemaId(schemaId)) {
+      return {
+        ok: false,
+        result: reject("UNSUPPORTED_SCHEMA_ID", [
+          `$.schemaId: expected one of ${Object.keys(SUPPORTED_SCHEMAS).join(", ")}, received '${String(schemaId)}'`,
+        ]),
+      };
+    }
+
+    const loaded = this.#schemas.get(schemaId);
+    if (!loaded) {
+      return {
+        ok: false,
+        result: reject("UNSUPPORTED_SCHEMA_ID", [`$.schemaId: '${schemaId}' is not a supported evidence schema`]),
+      };
+    }
+
+    if (payload.schemaVersion !== loaded.schemaVersion) {
+      return {
+        ok: false,
+        result: reject("UNSUPPORTED_SCHEMA_VERSION", [
+          `$.schemaVersion: reader supports '${loaded.schemaVersion}' for '${schemaId}', received '${String(payload.schemaVersion)}'`,
+        ]),
+      };
+    }
+
+    const reasons = validateValue(payload, loaded.document, loaded.document).sort(compareText);
+    if (reasons.length > 0) {
+      return { ok: false, result: reject("SCHEMA_VALIDATION_FAILED", reasons) };
+    }
+
+    if (typeof payload.taskId !== "string" || !TASK_ID_PATTERN.test(payload.taskId)) {
+      return {
+        ok: false,
+        result: reject("SCHEMA_VALIDATION_FAILED", [`$.taskId: '${String(payload.taskId)}' is not a valid task identifier`]),
+      };
+    }
+
+    const lineageId = lineageIdFor(schemaId, payload);
+    if (lineageId === null) {
+      return {
+        ok: false,
+        result: reject("SCHEMA_VALIDATION_FAILED", [
+          schemaId === "ipt.validation-evidence"
+            ? "$.validatorId: required to derive an evidence lineage"
+            : "$.role: required to derive a review lineage",
+        ]),
+      };
+    }
+
+    return { ok: true, payload, lineageId };
   }
 
   getCurrent(lineageId: string): StoredEvidenceRecord | null {
@@ -265,6 +319,9 @@ function lineageIdFor(schemaId: SupportedEvidenceSchemaId, payload: JsonObject):
       ? validationEvidenceLineageId(taskId, validatorId)
       : null;
   }
+  if (schemaId === "ipt.merge-evidence") {
+    return mergeEvidenceLineageId(taskId);
+  }
   const role = payload.role;
   return typeof role === "string" && role.trim().length > 0 ? reviewResultLineageId(taskId, role) : null;
 }
@@ -338,10 +395,13 @@ function matchesCondition(value: unknown, condition: JsonObject): boolean {
 }
 
 // Minimal, self-contained validator for the JSON Schema subset used by
-// schemas/v1/validation-evidence.schema.json and schemas/v1/review-result.schema.json:
-// type/const/enum/minLength/pattern/format(date-time)/minItems/uniqueItems/items,
-// object properties/required/additionalProperties, $ref into local $defs, and
-// allOf entries expressed as { if, then } role/outcome-conditioned fragments.
+// schemas/v1/validation-evidence.schema.json, schemas/v1/review-result.schema.json,
+// and schemas/v1/merge-evidence.schema.json:
+// type (a single string, or an array of alternatives such as ["object", "null"]
+// for a nullable field, including "integer")/const/enum/minLength/pattern/
+// format(date-time)/minimum/maximum/minItems/uniqueItems/items, object
+// properties/required/additionalProperties, $ref into local $defs, and allOf
+// entries expressed as { if, then } role/outcome-conditioned fragments.
 function validateValue(value: unknown, schema: JsonObject, root: JsonObject, instancePath = "$"): string[] {
   if (typeof schema.$ref === "string") {
     const resolved = resolveRef(schema.$ref, root);
@@ -360,13 +420,30 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
     if (!matches) reasons.push(`${instancePath}: value is not in the allowed enum`);
   }
 
-  const expectedType = typeof schema.type === "string" ? schema.type : null;
-  if (expectedType !== null && jsonType(value) !== expectedType) {
-    reasons.push(`${instancePath}: expected ${expectedType}, received ${jsonType(value)}`);
+  const declaredTypes: readonly string[] | null = Array.isArray(schema.type)
+    ? schema.type.filter((entry): entry is string => typeof entry === "string")
+    : typeof schema.type === "string"
+      ? [schema.type]
+      : null;
+  const hasType = (type: string): boolean => declaredTypes !== null && declaredTypes.includes(type);
+  const matchesAnyDeclaredType =
+    declaredTypes === null ||
+    declaredTypes.some((type) => (type === "integer" ? jsonType(value) === "number" && Number.isInteger(value) : jsonType(value) === type));
+  if (!matchesAnyDeclaredType) {
+    reasons.push(`${instancePath}: expected ${(declaredTypes as readonly string[]).join(" or ")}, received ${jsonType(value)}`);
     return reasons;
   }
 
-  if (expectedType === "string" && typeof value === "string") {
+  if ((hasType("number") || hasType("integer")) && typeof value === "number") {
+    if (typeof schema.minimum === "number" && value < schema.minimum) {
+      reasons.push(`${instancePath}: number must be >= ${schema.minimum}`);
+    }
+    if (typeof schema.maximum === "number" && value > schema.maximum) {
+      reasons.push(`${instancePath}: number must be <= ${schema.maximum}`);
+    }
+  }
+
+  if (hasType("string") && typeof value === "string") {
     if (typeof schema.minLength === "number" && value.length < schema.minLength) {
       reasons.push(`${instancePath}: string length must be at least ${schema.minLength}`);
     }
@@ -378,7 +455,7 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
     }
   }
 
-  if (expectedType === "array" && Array.isArray(value)) {
+  if (hasType("array") && Array.isArray(value)) {
     if (typeof schema.minItems === "number" && value.length < schema.minItems) {
       reasons.push(`${instancePath}: array must contain at least ${schema.minItems} item(s)`);
     }
@@ -403,7 +480,7 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
   // Schema fragments used inside `then` (e.g. { required: ["nonPass"] }) omit an
   // explicit "type", so an object-shaped instance is still checked against any
   // properties/required/additionalProperties the fragment declares.
-  if (isObject(value) && (expectedType === "object" || expectedType === null)) {
+  if (isObject(value) && (declaredTypes === null || hasType("object"))) {
     const properties = isObject(schema.properties) ? (schema.properties as JsonObject) : {};
     const required = Array.isArray(schema.required)
       ? schema.required.filter((item): item is string => typeof item === "string").sort(compareText)
@@ -444,9 +521,11 @@ function validateValue(value: unknown, schema: JsonObject, root: JsonObject, ins
 }
 
 // The regex alone (and Date.parse, which silently rolls an invalid calendar
-// date like Feb 30 forward into March) is not enough to reject an
-// out-of-range date-time: component ranges are checked explicitly so a
-// schema-invalid recordedAt is never accepted as a valid audit timestamp.
+// date like Feb 30 forward into March, or an out-of-range offset like
+// "+24:00" into an adjacent day) is not enough to reject an out-of-range
+// date-time: component ranges are checked explicitly — for the date, local
+// time, and any numeric timezone offset alike — so a schema-invalid
+// recordedAt is never accepted as a valid audit timestamp.
 function isValidRfc3339DateTime(value: string): boolean {
   const match = RFC3339_DATE_TIME_PATTERN.exec(value);
   if (!match) return false;
@@ -462,7 +541,33 @@ function isValidRfc3339DateTime(value: string): boolean {
   if (day < 1 || day > maxDay) return false;
   if (hour > 23) return false;
   if (minute > 59) return false;
-  if (second > 59) return false;
+  // RFC 3339's grammar allows a seconds value of 60 for a leap second, but
+  // only ever at the instant 23:59:60 UTC — never any other minute/hour — so
+  // a bare `second > 59` upper bound would either reject every real
+  // leap-second timestamp (too strict) or, if simply raised to 60
+  // everywhere, accept "12:00:60" as if any minute could run long (too
+  // loose). This checks both without needing an actual historical
+  // leap-second calendar.
+  if (second > 60) return false;
+
+  let offsetMinutesTotal = 0;
+  if (match[7] !== undefined) {
+    const offsetHour = Number(match[8]);
+    const offsetMinute = Number(match[9]);
+    if (offsetHour > 23) return false;
+    if (offsetMinute > 59) return false;
+    offsetMinutesTotal = (match[7] === "-" ? -1 : 1) * (offsetHour * 60 + offsetMinute);
+  }
+
+  if (second === 60) {
+    // A leap second carrying a nonzero offset need not read local 23:59:
+    // RFC 3339's own equivalent form "1990-12-31T15:59:60-08:00" is the
+    // same instant as "1990-12-31T23:59:60Z", so placement is checked
+    // against the UTC-equivalent hour/minute, not the local one.
+    const utcMinutesOfDay = (((hour * 60 + minute - offsetMinutesTotal) % 1440) + 1440) % 1440;
+    if (Math.floor(utcMinutesOfDay / 60) !== 23 || utcMinutesOfDay % 60 !== 59) return false;
+  }
+
   return true;
 }
 

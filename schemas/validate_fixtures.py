@@ -6,7 +6,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 ROOT = Path(__file__).resolve().parent
 SCHEMA_DIR = ROOT / "v1"
 FIXTURE_DIR = ROOT / "fixtures" / "v1"
-FAMILIES = ["task","requirement","lifecycle-state","assignment-lock","validation-evidence","review-result","module-contract"]
+FAMILIES = ["task","requirement","lifecycle-state","assignment-lock","validation-evidence","review-result","module-contract","merge-evidence"]
 failures = []
 
 for family in FAMILIES:

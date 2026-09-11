@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -739,6 +740,353 @@ test("FileReviewReworkTaskLock rejects a concurrent acquisition for the same tas
     // The lock is released after the outer withLock returns, so a fresh
     // acquisition now succeeds.
     lock.withLock("BOOT-021", () => {});
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock treats an in-flight release() reservation as an active holder rather than letting a claimed-away lock path appear free", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-reservation-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    // Simulates the window release()/reclaimIfStale() holds open between
+    // claiming the lock path away for inspection and restoring or discarding
+    // it: without the reservation, a concurrent tryCreate() could succeed
+    // inside that window even though a live replacement holder's own lock is
+    // still being decided upon.
+    const reservationPath = `${lockPath}.release-reservation`;
+    writeFileSync(reservationPath, "", { encoding: "utf8" });
+
+    assert.throws(
+      () => lock.withLock("BOOT-021", () => {}),
+      (error) => error instanceof ReviewReworkError && error.code === "STATE_CONFLICT",
+    );
+
+    rmSync(reservationPath);
+    let ran = false;
+    lock.withLock("BOOT-021", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected an ordinary acquisition to succeed once the reservation is gone");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock's release() waits real wall-clock time for a competing reservation holder, not merely a bounded syscall count", () => {
+  // A tight retry loop with no real delay could exhaust its entire budget
+  // within one scheduler timeslice while the competing holder — a
+  // genuinely separate OS process here, not just a different call in this
+  // one — has not even been scheduled yet. Removing the reservation from
+  // an actual child process after a real delay proves release()'s wait is
+  // real wall-clock time (via Atomics.wait), not a syscall-count proxy for
+  // it: a fake proxy would give up long before 20ms of real time passes.
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-real-time-reservation-wait-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const reservationPath = `${lockPath}.release-reservation`;
+
+    let ran = false;
+    lock.withLock("BOOT-021", () => {
+      ran = true;
+      // Simulate a concurrent release()/reclaimIfStale() call already
+      // holding the reservation, cleared by a genuinely separate OS
+      // process after a real delay — standing in for that call's own
+      // (fast, but not instant) critical section. withLock()'s own
+      // release() runs after this callback returns and must wait this out.
+      writeFileSync(reservationPath, "", { encoding: "utf8", flag: "wx" });
+      const childScript = `setTimeout(() => { try { require("node:fs").unlinkSync(${JSON.stringify(reservationPath)}); } catch {} }, 20);`;
+      const child = spawn(process.execPath, ["-e", childScript], { detached: true, stdio: "ignore" });
+      child.unref();
+    });
+    assert.ok(ran, "expected the callback to run");
+    assert.equal(existsSync(reservationPath), false, "the reservation must end up released, not abandoned mid-contention");
+    assert.equal(existsSync(lockPath), false, "the lock itself must actually be released, not left held");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock reclaims an abandoned release reservation (process crashed mid-release), restoring the orphaned lock so it re-enters the normal stale-lock lifecycle", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-abandoned-reservation-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const claimPath = `${lockPath}.release-claim`;
+    const reservationPath = `${lockPath}.release-reservation`;
+
+    // Simulate a crash immediately after release() renamed the held lock away
+    // to its fixed claim path, but before it restored or discarded it:
+    // nothing in-process is left to clean up either file.
+    writeFileSync(lockPath, `${Date.now() - 10 * 60 * 1000}:abandoned-token`, { encoding: "utf8" });
+    renameSync(lockPath, claimPath);
+    writeFileSync(reservationPath, "", { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(reservationPath, old, old);
+    utimesSync(claimPath, old, old);
+
+    let ran = false;
+    lock.withLock("BOOT-021", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the abandoned reservation to be reclaimed rather than wedging the task forever");
+    assert.equal(existsSync(reservationPath), false);
+    assert.equal(existsSync(claimPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock reclaims a release reservation that already crashed mid-recovery (its .reclaim marker orphaned) rather than leaving it blocking forever", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-orphaned-reclaim-marker-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const claimPath = `${lockPath}.release-claim`;
+    const reservationPath = `${lockPath}.release-reservation`;
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+
+    // Simulate a crash immediately after a *previous* reclaim attempt had
+    // already renamed the reservation marker to its ".reclaim" claim path, but
+    // before that attempt finished restoring the orphaned lock or dropping the
+    // marker: nothing sits at the plain ".release-reservation" path anymore,
+    // only at ".release-reservation.reclaim".
+    writeFileSync(lockPath, `${Date.now() - 10 * 60 * 1000}:abandoned-token`, { encoding: "utf8" });
+    renameSync(lockPath, claimPath);
+    writeFileSync(reclaimMarkerPath, "", { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(reclaimMarkerPath, old, old);
+    utimesSync(claimPath, old, old);
+
+    let ran = false;
+    lock.withLock("BOOT-021", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the orphaned .reclaim marker to be recovered rather than wedging the task forever");
+    assert.equal(existsSync(reclaimMarkerPath), false);
+    assert.equal(existsSync(claimPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock recovers even when a process crashed right after claiming the private recovery-claim path (but before finishing)", () => {
+  // The private recovery-claim path is created via an exclusive-create
+  // write, not a rename — so unlike reclaimMarkerPath, a crash immediately
+  // after that write leaves both reclaimMarkerPath AND the orphaned
+  // recovery-claim sitting there together. Without recovering the orphaned
+  // claim too, every later caller's own exclusive-create attempt would fail
+  // with EEXIST and back off without ever removing reclaimMarkerPath,
+  // permanently blocking tryCreate() forever.
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-orphaned-recovery-claim-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const claimPath = `${lockPath}.release-claim`;
+    const reservationPath = `${lockPath}.release-reservation`;
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+    const recoveryClaimPath = `${reclaimMarkerPath}.recovery-claim`;
+
+    writeFileSync(lockPath, `${Date.now() - 10 * 60 * 1000}:abandoned-token`, { encoding: "utf8" });
+    renameSync(lockPath, claimPath);
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(claimPath, old, old);
+
+    writeFileSync(reclaimMarkerPath, "", { encoding: "utf8" });
+    utimesSync(reclaimMarkerPath, old, old);
+    writeFileSync(recoveryClaimPath, "", { encoding: "utf8" });
+    utimesSync(recoveryClaimPath, old, old);
+
+    let ran = false;
+    lock.withLock("BOOT-021", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the double-orphaned recovery to still complete rather than wedging the task forever");
+    assert.equal(existsSync(reclaimMarkerPath), false);
+    assert.equal(existsSync(recoveryClaimPath), false);
+    assert.equal(existsSync(claimPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock recovers an orphaned tryCreate() rollback claim (process crashed mid-rollback) rather than permanently displacing its owner", () => {
+  // tryCreate()'s own rollback path claims lockPath away into a private,
+  // fixed rollback-claim path before deciding whether to restore or
+  // discard it. A crash right after that claiming rename — but before the
+  // restore-or-discard finishes — leaves the displaced holder's content
+  // stranded there forever: nothing else (not reclaimAbandonedReservation,
+  // not tryCreate()'s own reservation/reclaim-marker checks) recognizes
+  // this path at all, so a later tryCreate() would see lockPath as vacant
+  // and happily create a brand-new token while the displaced content is
+  // never recovered.
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-orphaned-rollback-claim-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+
+    // lockPath itself is vacant (as it would be right after the claiming
+    // rename), and the displaced holder's own genuinely-stale token sits
+    // orphaned at the rollback-claim path.
+    writeFileSync(rollbackClaimPath, `${Date.now() - 10 * 60 * 1000}:displaced-token`, { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+
+    let ran = false;
+    lock.withLock("BOOT-021", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the lock to be acquired after the orphaned rollback claim was recovered");
+    assert.equal(existsSync(rollbackClaimPath), false, "the orphaned rollback claim must be cleaned up, not left stranded");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock never mistakes a live (fresh) tryCreate() rollback claim for an abandoned one", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-live-rollback-claim-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+
+    // Freshly created (no backdating): a live, in-progress rollback, not an
+    // abandoned one.
+    writeFileSync(rollbackClaimPath, "displaced-token", { encoding: "utf8" });
+
+    assert.throws(
+      () => lock.withLock("BOOT-021", () => {}),
+      (error) => error instanceof ReviewReworkError && error.code === "STATE_CONFLICT",
+    );
+    assert.equal(existsSync(rollbackClaimPath), true);
+    assert.equal(readFileSync(rollbackClaimPath, "utf8"), "displaced-token");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock never races a second caller reaching the same stale conclusion against a still-live rollback-recovery claim", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-live-rollback-recovery-claim-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+
+    writeFileSync(rollbackClaimPath, "displaced-token", { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+    // A different, still-live caller already claimed this exact recovery
+    // moments ago (fresh mtime, not backdated).
+    writeFileSync(rollbackRecoveryClaimPath, "displaced-token", { encoding: "utf8" });
+
+    let ran = false;
+    assert.throws(
+      () => lock.withLock("BOOT-021", () => {
+        ran = true;
+      }),
+      (error) => error instanceof ReviewReworkError && error.code === "STATE_CONFLICT",
+    );
+    assert.equal(ran, false, "must defer to the live recovery claim rather than race it");
+    assert.equal(existsSync(rollbackClaimPath), true, "the original marker must stay put for the live claimant to finish with");
+    assert.equal(existsSync(rollbackRecoveryClaimPath), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock resumes an abandoned rollback-recovery claim (crashed after claiming, before finishing) rather than wedging the task forever", () => {
+  // rollbackClaimPath is already gone at this point (an earlier caller's
+  // own linkSync-then-unlink succeeded) — only the orphaned recovery-claim
+  // remains, simulating a crash right after that unlink but before the
+  // restore-to-lockPath completed.
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-abandoned-rollback-recovery-claim-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+
+    // A stamp old enough for reclaimIfStale to recognize the restored
+    // lockPath content as stale and finish reclaiming it on the same
+    // withLock() attempt's retry.
+    const displacedToken = `${Date.now() - 10 * 60 * 1000}:displaced-token`;
+    writeFileSync(rollbackRecoveryClaimPath, displacedToken, { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackRecoveryClaimPath, old, old);
+
+    let ran = false;
+    lock.withLock("BOOT-021", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the lock to be acquired after the abandoned rollback-recovery claim was resumed");
+    assert.equal(existsSync(rollbackClaimPath), false);
+    assert.equal(existsSync(rollbackRecoveryClaimPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock fully drains a double-orphaned rollback claim (crashed between linking and removing the original) across successive acquisitions, never losing the displaced content", () => {
+  // The narrower crash window where the original claim's own unlink never
+  // ran (both rollbackClaimPath and its recovery-claim briefly coexist)
+  // resolves the recovery-claim first and leaves the now-superseded
+  // original for a later pass to clean up, rather than ever unconditionally
+  // destroying whichever generation happens to occupy rollbackClaimPath by
+  // then. One acquisition attempt may therefore still report contention,
+  // but the very next one completes the drain.
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-double-orphaned-rollback-claim-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+
+    const displacedToken = `${Date.now() - 10 * 60 * 1000}:displaced-token`;
+    writeFileSync(rollbackClaimPath, displacedToken, { encoding: "utf8" });
+    writeFileSync(rollbackRecoveryClaimPath, displacedToken, { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+    utimesSync(rollbackRecoveryClaimPath, old, old);
+
+    assert.throws(() => lock.withLock("BOOT-021", () => "should-not-run"));
+    assert.equal(existsSync(rollbackRecoveryClaimPath), false, "the recovery-claim itself must be resolved by the first attempt");
+
+    let ran = false;
+    lock.withLock("BOOT-021", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the second attempt to fully drain the double-orphaned claim");
+    assert.equal(existsSync(rollbackClaimPath), false);
+    assert.equal(existsSync(rollbackRecoveryClaimPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock defers rather than proceeding as though nothing were there when reading the rollback claim fails transiently", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-rollback-claim-read-failure-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    mkdirSync(rollbackClaimPath);
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+
+    let ran = false;
+    assert.throws(
+      () => lock.withLock("BOOT-021", () => {
+        ran = true;
+      }),
+      (error) => error instanceof ReviewReworkError && error.code === "STATE_CONFLICT",
+    );
+    assert.equal(ran, false, "must not proceed to create a fresh lock while the read failure is unexplained");
+    assert.equal(existsSync(lockPath), false);
+    assert.equal(existsSync(rollbackClaimPath), true, "the unreadable marker must be left in place, not discarded");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

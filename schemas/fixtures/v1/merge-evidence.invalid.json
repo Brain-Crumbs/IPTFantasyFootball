@@ -1,0 +1,10 @@
+{
+  "schemaId": "ipt.merge-evidence",
+  "schemaVersion": "1.0.0",
+  "evidenceId": "BOOT-025:merge:abcdef1234567890abcdef1234567890abcdef12:2026-09-10T12:00:00Z",
+  "taskId": "BOOT-025",
+  "revisionIdentity": "abcdef1234567890abcdef1234567890abcdef12",
+  "pullRequestNumber": 0,
+  "policyDecisionReference": "control-plane.merge-readiness:BOOT-025@abcdef1234567890abcdef1234567890abcdef12:ready",
+  "recordedAt": "not-a-date"
+}

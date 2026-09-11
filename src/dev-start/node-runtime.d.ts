@@ -6,7 +6,7 @@ declare module "node:fs" {
   export function unlinkSync(path: string): void;
   export function existsSync(path: string): boolean;
   export function readdirSync(path: string): string[];
-  export function statSync(path: string): { isDirectory(): boolean; isFile(): boolean };
+  export function statSync(path: string): { isDirectory(): boolean; isFile(): boolean; readonly mtimeMs: number };
 }
 
 declare module "node:path" {

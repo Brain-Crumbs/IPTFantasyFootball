@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   EVIDENCE_STORE_SUPPORTED_SCHEMAS,
   FileEvidenceStore,
+  mergeEvidenceLineageId,
   reviewResultLineageId,
   validationEvidenceLineageId,
 } from "../dist/evidence-store/index.js";
@@ -41,10 +42,85 @@ function validationEvidence(overrides = {}) {
   };
 }
 
-test("supported schema registry names validation-evidence at v1.0.0 and review-result at v1.1.0", () => {
+test("supported schema registry names validation-evidence at v1.0.0, review-result at v1.1.0, and merge-evidence at v1.0.0", () => {
   assert.deepEqual(EVIDENCE_STORE_SUPPORTED_SCHEMAS, {
     "ipt.validation-evidence": "1.0.0",
     "ipt.review-result": "1.1.0",
+    "ipt.merge-evidence": "1.0.0",
+  });
+});
+
+test("merge-evidence records derive a per-task merge lineage distinct from validator/role lineages", () => {
+  withStore((store) => {
+    const payload = {
+      schemaId: "ipt.merge-evidence",
+      schemaVersion: "1.0.0",
+      evidenceId: "evidence-merge-1",
+      taskId: "BOOT-025",
+      revisionIdentity: "sha-aaa111",
+      pullRequestNumber: 63,
+      mergeCommitSha: "sha-merge-1",
+      policyDecisionReference: "control-plane.merge-readiness:BOOT-025@sha-aaa111:ready",
+      recordedAt: "2026-09-10T00:00:00Z",
+    };
+
+    const result = store.record(payload);
+    assert.equal(result.ok, true);
+
+    const lineageId = mergeEvidenceLineageId("BOOT-025");
+    assert.equal(result.record.lineageId, lineageId);
+    assert.notEqual(lineageId, validationEvidenceLineageId("BOOT-025", "npm-test"));
+    assert.notEqual(lineageId, reviewResultLineageId("BOOT-025", "MergeController"));
+
+    const current = store.getCurrent(lineageId);
+    assert.equal(current.payload.mergeCommitSha, "sha-merge-1");
+  });
+});
+
+test("merge-evidence accepts a well-formed assignmentLockAtMerge object or an explicit null", () => {
+  withStore((store) => {
+    const base = {
+      schemaId: "ipt.merge-evidence",
+      schemaVersion: "1.0.0",
+      evidenceId: "evidence-merge-lock-1",
+      taskId: "BOOT-025",
+      revisionIdentity: "sha-aaa111",
+      pullRequestNumber: 63,
+      mergeCommitSha: "sha-merge-1",
+      policyDecisionReference: "control-plane.merge-readiness:BOOT-025@sha-aaa111:ready",
+      recordedAt: "2026-09-10T00:00:00Z",
+    };
+
+    const withLock = store.record({
+      ...base,
+      assignmentLockAtMerge: { lockId: "lock-1", ownerId: "agent-1", runId: "run-1", canonicalBranch: "claude/x" },
+    });
+    assert.equal(withLock.ok, true);
+
+    const withNull = store.record({ ...base, evidenceId: "evidence-merge-lock-2", assignmentLockAtMerge: null });
+    assert.equal(withNull.ok, true);
+  });
+});
+
+test("merge-evidence rejects an assignmentLockAtMerge value that is neither an object nor null", () => {
+  withStore((store) => {
+    const base = {
+      schemaId: "ipt.merge-evidence",
+      schemaVersion: "1.0.0",
+      evidenceId: "evidence-merge-lock-bad",
+      taskId: "BOOT-025",
+      revisionIdentity: "sha-aaa111",
+      pullRequestNumber: 63,
+      mergeCommitSha: "sha-merge-1",
+      policyDecisionReference: "control-plane.merge-readiness:BOOT-025@sha-aaa111:ready",
+      recordedAt: "2026-09-10T00:00:00Z",
+    };
+
+    for (const malformed of ["not-an-object", 42, ["array", "not", "object"], true]) {
+      const result = store.record({ ...base, assignmentLockAtMerge: malformed });
+      assert.equal(result.ok, false, `expected assignmentLockAtMerge=${JSON.stringify(malformed)} to be rejected`);
+      assert.equal(result.rejection.code, "SCHEMA_VALIDATION_FAILED");
+    }
   });
 });
 
@@ -315,6 +391,31 @@ test("rejects an out-of-range hour/month in recordedAt", () => {
   withStore((store) => {
     assert.equal(store.record(validationEvidence({ recordedAt: "2026-09-09T24:00:00Z" })).ok, false);
     assert.equal(store.record(validationEvidence({ recordedAt: "2026-13-01T00:00:00Z" })).ok, false);
+  });
+});
+
+test("accepts a genuine RFC 3339 leap-second recordedAt (23:59:60) but rejects second 60 at any other time", () => {
+  withStore((store) => {
+    const leap = store.record(validationEvidence({ recordedAt: "2026-09-09T23:59:60Z" }));
+    assert.equal(leap.ok, true);
+
+    const notLeap = store.record(validationEvidence({ recordedAt: "2026-09-09T12:00:60Z" }));
+    assert.equal(notLeap.ok, false);
+    assert.equal(notLeap.rejection.code, "SCHEMA_VALIDATION_FAILED");
+  });
+});
+
+test("accepts a leap-second recordedAt under a nonzero UTC offset even when its local time is not 23:59", () => {
+  // RFC 3339's "1990-12-31T15:59:60-08:00" is the same instant as
+  // "1990-12-31T23:59:60Z"; placement must be checked against the
+  // UTC-equivalent hour/minute, not the local one.
+  withStore((store) => {
+    const leap = store.record(validationEvidence({ recordedAt: "1990-12-31T15:59:60-08:00" }));
+    assert.equal(leap.ok, true);
+
+    const notLeap = store.record(validationEvidence({ recordedAt: "1990-12-31T12:00:60-08:00" }));
+    assert.equal(notLeap.ok, false);
+    assert.equal(notLeap.rejection.code, "SCHEMA_VALIDATION_FAILED");
   });
 });
 

@@ -37,7 +37,8 @@
       "qa-failure-routing-without-skipping-stages",
       "stale-revision-reentry-rejection",
       "whole-transaction-lock-based-mutual-exclusion",
-      "abandoned-lock-reclaim"
+      "abandoned-lock-reclaim",
+      "atomic-ownership-verified-release-and-reclaim-shared-with-sibling-lifecycle-locks-on-the-same-path"
     ],
     "behavioralConstraints": [
       "prepareContext() only accepts a task whose current lifecycle state is exactly DEV_VALIDATED; every other state is rejected as TASK_STATE_NOT_REVIEWABLE before branch identity is checked",
@@ -53,7 +54,7 @@
       "on outcome FAIL or BLOCKED, the lifecycle advances DEV_VALIDATED -> QA_REVIEW -> QA_FAILED",
       "every lifecycle transition carries the exact reviewed revision as revisionIdentity",
       "a task that already advanced past DEV_VALIDATED (including past a prior QA PASS) rejects a further review() call as TASK_STATE_NOT_REVIEWABLE rather than silently reusing a stale revision",
-      "a task-lock file older than five minutes is treated as abandoned by a crashed holder and reclaimed by the next caller rather than wedging the task indefinitely",
+      "a task-lock file older than five minutes is treated as abandoned by a crashed holder and reclaimed by the next caller rather than wedging the task indefinitely. This exact lock path (.agent/state/lifecycle/<taskId>.lifecycle.lock) is also managed by four sibling task-lock classes in other bootstrap modules (control-plane.architecture-review, control-plane.uat-review, control-plane.review-rework, control-plane.controlled-merge) at different lifecycle phases for the same task, so release() and reclaimIfStale() are atomic against those siblings too, not only against other instances of this class: both take a shared, fixed-path reservation marker (an exclusive-create file) before claiming the lock path itself via an atomic rename, verify the captured content against this holder's own identity/what was observed as stale before discarding or restoring it (an exclusive-create write, never a plain rename, so a fresh concurrent lock is never silently overwritten), and recover an abandoned reservation left by a process that crashed mid-release/mid-reclaim the same way an abandoned lock file itself is recovered",
       "RepositoryQaContextSource unions each registered dependency task's own affectedContracts into the fetched contract set, so a Developer-role context compiled from the same catalog does not fail with CONTRACT_ARTIFACT_MISSING",
       "RepositoryQaContextSource git invocations set an explicit large (16 MiB) maxBuffer, comfortably covering realistic bootstrap-phase revisions without claiming to be unbounded; a revision whose diff or file listing exceeds it still fails deterministically as CONTEXT_REJECTED"
     ],
