@@ -340,6 +340,48 @@ test("a leap second, with or without a fraction, always compares strictly before
   assert.equal(fractionalLeap.ok, true, fractionalLeap.ok ? undefined : fractionalLeap.rejection.reason);
 }));
 
+test("a leap second compares strictly later than every fractional value of the :59 second before it, including :59.999", () => withStore((store) => {
+  // A whole-millisecond placement (even a flat +999ms) is not enough: it
+  // collides exactly with ":59.999", the latest possible instant within
+  // the ":59" second, which the leap second must still compare after.
+  const acquired = store.acquire(acquire({
+    acquiredAt: "1990-12-31T23:59:59.999Z",
+    expiresAt: "1990-12-31T23:59:60Z",
+  }));
+  assert.equal(acquired.ok, true, acquired.ok ? undefined : acquired.rejection.reason);
+}));
+
+test("an abandoned release reservation that already crashed mid-recovery (its .reclaim marker orphaned) is still reclaimed, not left blocking forever", () => withStore((store, root) => {
+  const acquired = store.acquire(acquire());
+  assert.equal(acquired.ok, true);
+  const original = store.get("BOOT-010");
+
+  // Simulate a crash immediately after a *previous* reclaim attempt had
+  // already renamed the reservation marker to its ".reclaim" claim path,
+  // but before that attempt finished restoring the orphaned record or
+  // dropping the marker: there is no longer any file at the plain
+  // ".release.json" reservation path at all, only at ".release.json.reclaim".
+  const activePath = join(root, "BOOT-010.lock.json");
+  const claimedRecordPath = `${activePath}.release-claim`;
+  const reservationPath = join(root, ".claims", "BOOT-010.release.json");
+  const reclaimMarkerPath = `${reservationPath}.reclaim`;
+  renameSync(activePath, claimedRecordPath);
+  writeFileSync(reclaimMarkerPath, `${JSON.stringify({ lockId: "lock-a" })}\n`, { encoding: "utf8", flag: "wx" });
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(reclaimMarkerPath, old, old);
+  utimesSync(claimedRecordPath, old, old);
+
+  // A fresh acquire() attempt must still recover this abandoned state
+  // rather than treating the orphaned ".reclaim" marker as a permanently
+  // active reservation: without recovering it directly (since the plain
+  // reservation path is gone for good), nothing would ever revisit it.
+  const attempted = store.acquire(acquire({ ownerId: "agent-c", runId: "run-c", lockId: "lock-c" }));
+  assert.equal(attempted.ok, false);
+  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
+  assert.deepEqual(store.get("BOOT-010"), original);
+  assert.equal(existsSync(reclaimMarkerPath), false);
+}));
+
 test("an abandoned release reclaim never clobbers a fresh, concurrently-created assignment (a plain renameSync would silently overwrite it)", () => withStore((store, root) => {
   const acquired = store.acquire(acquire());
   assert.equal(acquired.ok, true);

@@ -12,7 +12,7 @@
       "ControlledMergeError { code, recoverable }",
       "ControlledMergeBranchAdapter.canonicalBranch/assertCurrentTaskBranch/currentRevision boundary onto control-plane.git-branch-lifecycle",
       "ControlledMergeReadinessPort.evaluate({ taskId }): Promise<EvaluateMergeReadinessResult> boundary onto control-plane.merge-readiness",
-      "ControlledMergeEvidenceStore.record(payload)/getCurrent(lineageId)/getHistory(lineageId) boundary onto control-plane.evidence-store",
+      "ControlledMergeEvidenceStore.record(payload)/validate(payload)/getCurrent(lineageId)/getHistory(lineageId) boundary onto control-plane.evidence-store",
       "ControlledMergeLockStore.get(taskId)/release(request) boundary onto control-plane.assignment-lock",
       "LockIdentity { lockId, ownerId, runId, canonicalBranch }, the full assignment identity captured at merge() entry and compared in full before release",
       "ControlledMergePullRequestPort.findPullRequestsByHead(head): Promise<readonly ControlledMergePullRequestRecord[]>, every matching PR for the branch, any state, not only the most recent",

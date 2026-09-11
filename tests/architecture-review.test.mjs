@@ -925,6 +925,39 @@ test("FileArchitectureReviewTaskLock reclaims an abandoned release reservation (
   }
 });
 
+test("FileArchitectureReviewTaskLock reclaims a release reservation that already crashed mid-recovery (its .reclaim marker orphaned) rather than leaving it blocking forever", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-architecture-review-lock-orphaned-reclaim-marker-"));
+  try {
+    const lock = new FileArchitectureReviewTaskLock(root);
+    const lockPath = join(root, "BOOT-019.lifecycle.lock");
+    const claimPath = `${lockPath}.release-claim`;
+    const reservationPath = `${lockPath}.release-reservation`;
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+
+    // Simulate a crash immediately after a *previous* reclaim attempt had
+    // already renamed the reservation marker to its ".reclaim" claim path, but
+    // before that attempt finished restoring the orphaned lock or dropping the
+    // marker: nothing sits at the plain ".release-reservation" path anymore,
+    // only at ".release-reservation.reclaim".
+    writeFileSync(lockPath, `${Date.now() - 10 * 60 * 1000}:abandoned-token`, { encoding: "utf8" });
+    renameSync(lockPath, claimPath);
+    writeFileSync(reclaimMarkerPath, "", { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(reclaimMarkerPath, old, old);
+    utimesSync(claimPath, old, old);
+
+    let ran = false;
+    lock.withLock("BOOT-019", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the orphaned .reclaim marker to be recovered rather than wedging the task forever");
+    assert.equal(existsSync(reclaimMarkerPath), false);
+    assert.equal(existsSync(claimPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("RepositoryArchitectureContextSource includes a dependency task's affected contract, un-redacted, and an exact-revision diff", () => {
   const dependency = task({ taskId: "BOOT-017", dependencies: [], affectedContracts: ["control-plane.review-framework"] });
   const primary = task({ taskId: "BOOT-019", dependencies: ["BOOT-017"], affectedContracts: [] });

@@ -537,17 +537,11 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
   // and only then drops the stale marker itself.
   #reclaimAbandonedRelease(taskId: string): void {
     const releaseClaimPath = this.#releaseClaimPath(taskId);
-    let stats: { readonly mtimeMs: number };
-    try {
-      stats = statSync(releaseClaimPath);
-    } catch {
-      return;
-    }
-    if (Date.now() - stats.mtimeMs <= RELEASE_CLAIM_STALE_MS) return;
+    const reclaimMarkerPath = `${releaseClaimPath}.reclaim`;
 
     // A plain stat-then-unlink (the original implementation) is not
     // actually atomic: another caller could, in the gap between the
-    // staleness check above and the removal below, *itself* finish
+    // staleness check below and the removal further down, *itself* finish
     // reclaiming this exact stale marker and start its own fresh, live
     // release() (writing a brand-new marker at this same path). Blindly
     // unlinking at that point would strip that fresh, in-flight release()
@@ -559,12 +553,37 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     // cases apart: whichever caller's rename lands first captures whatever
     // is genuinely at this path at that instant, and only a capture that is
     // still old enough is ever treated as abandoned.
-    const reclaimMarkerPath = `${releaseClaimPath}.reclaim`;
+    let stats: { readonly mtimeMs: number } | null;
     try {
-      renameSync(releaseClaimPath, reclaimMarkerPath);
+      stats = statSync(releaseClaimPath);
     } catch {
-      return; // Already gone; another caller already reclaimed or cleared it.
+      stats = null;
     }
+
+    if (stats !== null) {
+      if (Date.now() - stats.mtimeMs <= RELEASE_CLAIM_STALE_MS) return;
+      try {
+        renameSync(releaseClaimPath, reclaimMarkerPath);
+      } catch {
+        // Already gone; fall through to check reclaimMarkerPath directly —
+        // another caller may have already claimed it in this exact gap.
+      }
+    } else if (!existsSync(reclaimMarkerPath)) {
+      // No reservation, and no orphaned claim left behind by a process
+      // that crashed mid-reclaim either: nothing to do.
+      return;
+    }
+    // reclaimMarkerPath may now exist either because this call just claimed
+    // it above, or because it was already sitting there — which can only
+    // mean a *previous* call crashed between renaming the original
+    // reservation away and finishing this same recovery (a rename is never
+    // observed half-done). Either way the marker's own mtime, preserved by
+    // the rename, still reflects the original reservation's true age, so
+    // it is recovered identically from here whether freshly claimed just
+    // now or found already abandoned: without this, a crash landing in
+    // that exact one-line gap would leave the marker blocking every future
+    // tryCreate()/hasReleaseClaim() check forever, since nothing else would
+    // ever revisit it once the original reservation path is gone for good.
 
     let claimedStats: { readonly mtimeMs: number } | null;
     try {
@@ -707,23 +726,25 @@ function toComparableInstant(value: string): number {
   const isLeapSecond = value.length > 18 && value[17] === "6" && value[18] === "0";
   if (!isLeapSecond) return Date.parse(value);
   // Date.parse has no representation for a leap second (":60") at all, so
-  // some substitution is unavoidable — but neither "substitute the digit
-  // alone" (collapses ":59" and ":60" to the same millisecond) nor "also
-  // add back a flat +1000ms" (the leap second's own fractional part, if
-  // any, is added on top of that flat offset and can push the result past
-  // — not just up to — the following minute's own :00.000, comparing a
-  // late-fraction leap second as *later* than the next minute) places the
-  // instant correctly. This system has no need to distinguish between two
-  // different leap-second instants down to the millisecond — only to place
-  // *any* leap second, regardless of its own fraction, strictly between the
-  // ":59" second before it and the next minute — so every leap-second
-  // value maps to exactly 1ms before that next-minute boundary, computed
-  // from the whole-second ":59" form with any fraction discarded.
+  // some substitution is unavoidable — but no whole-millisecond placement
+  // can ever work: RFC 3339's own leap-second contract requires the result
+  // to compare strictly later than *every* instant in the ":59" second
+  // before it, including ":59.999", and strictly earlier than the next
+  // minute's own ":00.000" — and at whole-millisecond resolution those two
+  // bounds are numerically adjacent integers with no integer between them
+  // (":59.999" and ":00.000" of the next minute are exactly 1ms apart).
+  // A sub-millisecond epsilon is the only way to satisfy both bounds at
+  // once; this system has no need to distinguish between two different
+  // leap-second instants down to fractions of a millisecond, only to place
+  // *any* leap second, regardless of its own fraction, strictly between
+  // the ":59" second before it and the next minute — so every leap-second
+  // value maps to half a millisecond before that next-minute boundary,
+  // computed from the whole-second ":59" form with any fraction discarded.
   const suffixMatch = /(?:\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.exec(value);
   if (suffixMatch === null) return NaN;
   const wholeSecond59Form = `${value.slice(0, 17)}59${suffixMatch[1]}`;
   const base59 = Date.parse(wholeSecond59Form);
-  return Number.isNaN(base59) ? base59 : base59 + 999;
+  return Number.isNaN(base59) ? base59 : base59 + 999.5;
 }
 
 function freezeLock(lock: AssignmentLockRecord): AssignmentLockRecord {

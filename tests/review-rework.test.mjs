@@ -803,6 +803,39 @@ test("FileReviewReworkTaskLock reclaims an abandoned release reservation (proces
   }
 });
 
+test("FileReviewReworkTaskLock reclaims a release reservation that already crashed mid-recovery (its .reclaim marker orphaned) rather than leaving it blocking forever", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-orphaned-reclaim-marker-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const claimPath = `${lockPath}.release-claim`;
+    const reservationPath = `${lockPath}.release-reservation`;
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+
+    // Simulate a crash immediately after a *previous* reclaim attempt had
+    // already renamed the reservation marker to its ".reclaim" claim path, but
+    // before that attempt finished restoring the orphaned lock or dropping the
+    // marker: nothing sits at the plain ".release-reservation" path anymore,
+    // only at ".release-reservation.reclaim".
+    writeFileSync(lockPath, `${Date.now() - 10 * 60 * 1000}:abandoned-token`, { encoding: "utf8" });
+    renameSync(lockPath, claimPath);
+    writeFileSync(reclaimMarkerPath, "", { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(reclaimMarkerPath, old, old);
+    utimesSync(claimPath, old, old);
+
+    let ran = false;
+    lock.withLock("BOOT-021", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the orphaned .reclaim marker to be recovered rather than wedging the task forever");
+    assert.equal(existsSync(reclaimMarkerPath), false);
+    assert.equal(existsSync(claimPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // --- FileReviewReworkStateStore interoperability -------------------------
 
 test("FileReviewReworkStateStore reads/writes the same lifecycle JSON shape the other review gates use", () => {

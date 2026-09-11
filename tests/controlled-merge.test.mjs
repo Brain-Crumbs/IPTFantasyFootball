@@ -1072,6 +1072,38 @@ test("an abandoned task-lock release reservation (process crashed mid-release) i
   }
 });
 
+test("a release reservation that already crashed mid-recovery (its .reclaim marker orphaned) is still reclaimed, not left blocking forever", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-orphaned-reclaim-marker-"));
+  try {
+    const { writeFileSync, renameSync, utimesSync, existsSync } = await import("node:fs");
+    const lockPath = join(dir, "BOOT-025.lifecycle.lock");
+    const claimedRecordPath = `${lockPath}.release-claim`;
+    const reservationPath = `${lockPath}.release-reservation`;
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+
+    // Simulate a crash immediately after a *previous* reclaim attempt had
+    // already renamed the reservation marker to its ".reclaim" claim path,
+    // but before that attempt finished restoring the orphaned lock or
+    // dropping the marker: there is no file at the plain
+    // ".release-reservation" path at all anymore, only at
+    // ".release-reservation.reclaim".
+    writeFileSync(lockPath, "abandoned-token", { encoding: "utf8" });
+    renameSync(lockPath, claimedRecordPath);
+    writeFileSync(reclaimMarkerPath, "", { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(reclaimMarkerPath, old, old);
+    utimesSync(claimedRecordPath, old, old);
+
+    const taskLock = new FileControlledMergeTaskLock(dir, { staleLockMs: 5 * 60 * 1000 });
+    const result = await taskLock.withLock("BOOT-025", async () => "resumed-after-reclaim");
+    assert.equal(result, "resumed-after-reclaim");
+    assert.equal(existsSync(reclaimMarkerPath), false);
+    assert.equal(existsSync(claimedRecordPath), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a DONE task never touches the task lock", async () => {
   const { store: evidence } = makeEvidenceStore();
   const recorded = evidence.record({
@@ -1807,6 +1839,52 @@ test("resume pins evidence to the exact record the lifecycle history names, not 
   const result = await controller.merge(request());
 
   assert.equal(result.mergeCommitSha, "original-merge-sha", "pinned to the record the MERGED history event actually names");
+});
+
+test("resume never trusts a pinned record whose own wrapper lineageId has been corrupted, even when its payload is fully valid", async () => {
+  // The same wrapper-vs-payload trust gap as finalize()'s reuse path, but
+  // exercised through resolvePinnedEvidence()'s resume path instead: the
+  // lifecycle history's evidenceRef resolves via getHistory() to an exact
+  // record whose *payload* still matches the event's own revision, but
+  // whose *wrapper* lineageId (read directly off the stored file's own
+  // JSON, with no cross-check against the directory it was found in) has
+  // been hand-corrupted to a different lineage entirely.
+  const { store: evidence, dir: evidenceDir } = makeEvidenceStore();
+  const originalPayload = {
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:${revision}:${occurredAt}`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "original-merge-sha",
+    policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
+    recordedAt: occurredAt,
+  };
+  const original = evidence.record(originalPayload);
+  assert.equal(original.ok, true);
+
+  const { readdirSync, writeFileSync: write } = await import("node:fs");
+  const lineageDirName = readdirSync(evidenceDir)[0];
+  const lineageDir = join(evidenceDir, lineageDirName);
+  const fileName = readdirSync(lineageDir).find((name) => /^\d+\.json$/.test(name));
+  write(
+    join(lineageDir, fileName),
+    `${JSON.stringify({ lineageId: "some-other-lineage::merge", sequence: original.record.sequence, storedAt: occurredAt, payload: originalPayload })}\n`,
+    { encoding: "utf8" },
+  );
+
+  const stateStore = new MemoryStateStore([
+    [task.taskId, lifecycleRecord(task.taskId, "MERGED", [historyEventFor("MERGED", original.record)])],
+  ]);
+  const pullRequests = new FakePullRequestPort({});
+  const { controller } = makeController({ stateStore, evidenceStore: evidence, pullRequests });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "EVIDENCE_REJECTED");
+    return true;
+  });
 });
 
 test("an evidence-store I/O failure after a confirmed merge is normalized to a recoverable EVIDENCE_REJECTED", async () => {

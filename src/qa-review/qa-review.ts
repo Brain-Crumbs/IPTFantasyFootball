@@ -822,20 +822,39 @@ export class FileQaReviewTaskLock implements QaReviewTaskLock {
   // even though the lock file's own staleness is content-embedded here.
   private reclaimAbandonedReservation(lockPath: string): void {
     const reservationPath = this.releaseReservationPath(lockPath);
-    let stats: { readonly mtimeMs: number };
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+
+    let stats: { readonly mtimeMs: number } | null;
     try {
       stats = statSync(reservationPath);
     } catch {
+      stats = null;
+    }
+
+    if (stats !== null) {
+      if (Date.now() - stats.mtimeMs <= STALE_LOCK_MS) return;
+      try {
+        renameSync(reservationPath, reclaimMarkerPath);
+      } catch {
+        // Already gone; fall through to check reclaimMarkerPath directly —
+        // another caller may have already claimed it in this exact gap.
+      }
+    } else if (!existsSync(reclaimMarkerPath)) {
+      // No reservation, and no orphaned claim left behind by a process that
+      // crashed mid-reclaim either: nothing to do.
       return;
     }
-    if (Date.now() - stats.mtimeMs <= STALE_LOCK_MS) return;
-
-    const reclaimMarkerPath = `${reservationPath}.reclaim`;
-    try {
-      renameSync(reservationPath, reclaimMarkerPath);
-    } catch {
-      return; // Already gone; another caller reclaimed or cleared it.
-    }
+    // reclaimMarkerPath may now exist either because this call just claimed it
+    // above, or because it was already sitting there — which can only mean a
+    // *previous* call crashed between renaming the original reservation away
+    // and finishing this same recovery (a rename is never observed half-done).
+    // Either way the marker's own mtime, preserved by the rename, still
+    // reflects the original reservation's true age, so it is recovered
+    // identically from here whether freshly claimed just now or found already
+    // abandoned: without this, a crash landing in that exact one-line gap
+    // would leave the marker blocking every future tryCreate() check forever,
+    // since nothing else would ever revisit it once the original reservation
+    // path is gone for good.
 
     let claimedStats: { readonly mtimeMs: number } | null;
     try {
@@ -936,12 +955,24 @@ export class FileQaReviewTaskLock implements QaReviewTaskLock {
   private reclaimIfStale(lockPath: string): boolean {
     this.reclaimAbandonedReservation(lockPath);
 
-    let heldSince = Number.NaN;
+    // This single read is both the staleness signal (this class's timestamp is
+    // embedded in the content, not carried by mtime) and the comparison
+    // baseline handed to reclaimClaimed() below — deliberately not two separate
+    // reads. If a legitimate holder releases this exact stale lock and a fresh
+    // holder B acquires it in the gap between this check and the reservation
+    // being taken below, a later read inside reclaimClaimed() would just be B's
+    // own live content, and comparing it against itself would trivially "match"
+    // (nothing else touched it in between), discarding B's live lock without
+    // ever actually having observed it to be stale. Pinning the baseline to the
+    // exact content read at staleness-check time closes that gap: a legitimate
+    // replacement's different stamp is then correctly seen as a mismatch.
+    let observedAtStaleCheck: string;
     try {
-      heldSince = Number(readFileSync(lockPath, "utf8"));
+      observedAtStaleCheck = readFileSync(lockPath, "utf8");
     } catch {
       return false;
     }
+    const heldSince = Number(observedAtStaleCheck);
     if (!Number.isFinite(heldSince) || Date.now() - heldSince <= STALE_LOCK_MS) return false;
 
     const reservationPath = this.releaseReservationPath(lockPath);
@@ -953,7 +984,7 @@ export class FileQaReviewTaskLock implements QaReviewTaskLock {
       return false;
     }
     try {
-      return this.reclaimClaimed(lockPath);
+      return this.reclaimClaimed(lockPath, observedAtStaleCheck);
     } finally {
       try {
         unlinkSync(reservationPath);
@@ -963,14 +994,7 @@ export class FileQaReviewTaskLock implements QaReviewTaskLock {
     }
   }
 
-  private reclaimClaimed(lockPath: string): boolean {
-    let observed: string;
-    try {
-      observed = readFileSync(lockPath, "utf8");
-    } catch {
-      return false;
-    }
-
+  private reclaimClaimed(lockPath: string, observed: string): boolean {
     const claimPath = this.reclaimClaimedPath(lockPath);
     try {
       renameSync(lockPath, claimPath);

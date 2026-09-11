@@ -777,6 +777,22 @@ export class ControlledMergeController {
         false,
       );
     }
+    // getHistory(parsed.lineageId) already confirms this record was found in
+    // the correct lineage *directory*, but the record's own `lineageId`
+    // field is read directly off its stored file's JSON content, with no
+    // cross-check against the directory it was actually found in (see
+    // FileEvidenceStore.getHistory) — a corrupted wrapper (its content
+    // hand-edited or partially written to name a different lineage) could
+    // otherwise still be trusted here, and a later MERGED->DONE resume
+    // would then build its own new evidenceRef from that wrong lineage,
+    // leaving that next idempotent read unable to resolve its own evidence.
+    if (exact.lineageId !== expectedLineageId) {
+      throw new ControlledMergeError(
+        "EVIDENCE_REJECTED",
+        `Task '${taskId}' evidence record '${event.evidenceRef}' is stored with a corrupted wrapper lineageId '${exact.lineageId}' that does not match the expected lineage '${expectedLineageId}'.`,
+        false,
+      );
+    }
     if (!this.isMergeEvidencePayloadFor(exact.payload, taskId, event.revisionIdentity)) {
       throw new ControlledMergeError(
         "EVIDENCE_REJECTED",
@@ -1398,17 +1414,11 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
   // dropping the stale marker itself.
   private reclaimAbandonedReservation(lockPath: string): void {
     const reservationPath = this.releaseReservationPath(lockPath);
-    let stats: { readonly mtimeMs: number };
-    try {
-      stats = statSync(reservationPath);
-    } catch {
-      return;
-    }
-    if (Date.now() - stats.mtimeMs <= this.staleLockMs) return;
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
 
     // A plain stat-then-unlink (the original implementation) is not
     // actually atomic: another caller could, in the gap between the
-    // staleness check above and the removal below, *itself* finish
+    // staleness check below and the removal further down, *itself* finish
     // reclaiming this exact stale marker and start its own fresh, live
     // release()/reclaimIfStale() call (writing a brand-new marker at this
     // same path). Blindly unlinking at that point would strip that fresh,
@@ -1419,12 +1429,37 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     // whichever caller's rename lands first captures whatever is genuinely
     // at this path at that instant, and only a capture that is still old
     // enough is ever treated as abandoned.
-    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+    let stats: { readonly mtimeMs: number } | null;
     try {
-      renameSync(reservationPath, reclaimMarkerPath);
+      stats = statSync(reservationPath);
     } catch {
-      return; // Already gone; another caller already reclaimed or cleared it.
+      stats = null;
     }
+
+    if (stats !== null) {
+      if (Date.now() - stats.mtimeMs <= this.staleLockMs) return;
+      try {
+        renameSync(reservationPath, reclaimMarkerPath);
+      } catch {
+        // Already gone; fall through to check reclaimMarkerPath directly —
+        // another caller may have already claimed it in this exact gap.
+      }
+    } else if (!existsSync(reclaimMarkerPath)) {
+      // No reservation, and no orphaned claim left behind by a process
+      // that crashed mid-reclaim either: nothing to do.
+      return;
+    }
+    // reclaimMarkerPath may now exist either because this call just claimed
+    // it above, or because it was already sitting there — which can only
+    // mean a *previous* call crashed between renaming the original
+    // reservation away and finishing this same recovery (a rename is never
+    // observed half-done). Either way the marker's own mtime, preserved by
+    // the rename, still reflects the original reservation's true age, so
+    // it is recovered identically from here whether freshly claimed just
+    // now or found already abandoned: without this, a crash landing in
+    // that exact one-line gap would leave the marker blocking every future
+    // tryCreate() check forever, since nothing else would ever revisit it
+    // once the original reservation path is gone for good.
 
     let claimedStats: { readonly mtimeMs: number } | null;
     try {
@@ -1571,6 +1606,24 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     }
     if (Date.now() - stats.mtimeMs <= this.staleLockMs) return false;
 
+    // Captured in the same breath as the staleness check above, not by a
+    // fresh read later inside reclaimClaimed(): if a legitimate holder
+    // releases this exact stale lock and a fresh holder B acquires it in
+    // the gap between this staleness check and the reservation being taken
+    // below, a later read at that point would just be B's own live content
+    // — comparing it against itself inside reclaimClaimed() would then
+    // trivially "match" (nothing else touched it in between), discarding
+    // B's live lock without ever actually having observed it to be stale.
+    // Pinning the comparison baseline to the exact content read at
+    // staleness-check time closes that gap: a legitimate replacement's
+    // different token/content is then correctly seen as a mismatch.
+    let observedAtStaleCheck: string;
+    try {
+      observedAtStaleCheck = readFileSync(lockPath, "utf8");
+    } catch {
+      return false;
+    }
+
     // Claiming the path away below leaves it briefly absent while this call
     // decides whether the captured content is genuinely still the stale
     // lock it observed — the same window release() closes with the
@@ -1589,7 +1642,7 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       return false;
     }
     try {
-      return this.reclaimClaimed(lockPath);
+      return this.reclaimClaimed(lockPath, observedAtStaleCheck);
     } finally {
       try {
         unlinkSync(reservationPath);
@@ -1599,14 +1652,7 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     }
   }
 
-  private reclaimClaimed(lockPath: string): boolean {
-    let observed: string;
-    try {
-      observed = readFileSync(lockPath, "utf8");
-    } catch {
-      return false;
-    }
-
+  private reclaimClaimed(lockPath: string, observed: string): boolean {
     // Fixed, not randomized: see releaseClaimed's own comment — the
     // reservation held above guarantees exclusivity, and a fixed, well-known
     // name is what makes an orphaned claim recoverable after a crash.
