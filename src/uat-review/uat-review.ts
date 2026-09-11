@@ -1001,6 +1001,46 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
       return;
     }
 
+    // Nothing so far has actually *claimed* sole ownership of the
+    // now-confirmed-stale reclaimMarkerPath — only observed and re-verified
+    // that it exists and is old. Left at a bare observation, every
+    // concurrent caller reaching here would race each other through the
+    // restore logic below on the very same fixed claim paths. Claim
+    // exclusive ownership of this recovery attempt first: capture the
+    // marker's content and mtime, then re-establish both at a dedicated,
+    // private claim path via an exclusive-create write. This path is
+    // deliberately distinct from reservationPath itself — a completely
+    // unrelated, brand-new release()/reclaimIfStale() call never checks it,
+    // so it cannot be mistaken for a stale *public* reservation and raced via
+    // the same renameSync(reservationPath, reclaimMarkerPath) above.
+    // reclaimMarkerPath itself is left completely untouched until this claim
+    // fully lands, so it keeps blocking tryCreate() and this function's own
+    // primary branch for the entire recovery, exactly as it already did
+    // before this claim began. Exactly one concurrent caller can win the
+    // exclusive create; every other caller's own attempt fails and it backs
+    // off untouched.
+    const recoveryClaimPath = `${reclaimMarkerPath}.recovery-claim`;
+    let markerContent: string;
+    let markerMtime: Date;
+    try {
+      markerContent = readFileSync(reclaimMarkerPath, "utf8");
+      markerMtime = new Date(statSync(reclaimMarkerPath).mtimeMs);
+    } catch {
+      return; // Already gone; another caller already claimed or finished it.
+    }
+    try {
+      writeFileSync(recoveryClaimPath, markerContent, { encoding: "utf8", flag: "wx" });
+    } catch {
+      return; // Another caller already won this exact claim.
+    }
+    try {
+      utimesSync(recoveryClaimPath, markerMtime, markerMtime);
+    } catch {
+      // Lost ownership of the just-written file in an extremely narrow
+      // window; harmless — nothing downstream depends on this copy's own
+      // mtime once ownership is established.
+    }
+
     for (const claimPath of [this.releaseClaimedPath(lockPath), this.reclaimClaimedPath(lockPath)]) {
       let orphaned: string;
       let orphanedMtime: Date;
@@ -1034,6 +1074,11 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
     }
     try {
       unlinkSync(reclaimMarkerPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    try {
+      unlinkSync(recoveryClaimPath);
     } catch {
       // Already gone; nothing left to clean up.
     }
