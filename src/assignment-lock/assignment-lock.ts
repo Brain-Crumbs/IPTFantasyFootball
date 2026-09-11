@@ -243,15 +243,64 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     }
 
     // Either this call just claimed rollbackRecoveryClaimPath above, or an
-    // earlier crash left it there already confirmed stale. Restore its
-    // content back to activePath, then drop the claim — self-healing past
-    // the crash.
+    // earlier crash left it there already confirmed stale. Nothing so far
+    // has actually *claimed* sole ownership of finishing off this exact
+    // generation, though: reading its content and only later unlinking the
+    // same fixed path (the earlier version of this method) leaves a
+    // caller that pauses between the two exposed to the fixed path being
+    // reused for an unrelated, later generation in the meantime — the
+    // lagging caller would then restore its own stale, cached content and
+    // unlink that unrelated later generation, potentially destroying a
+    // live replacement assignment's own displaced record while its holder
+    // is still executing. Claim this exact generation atomically via
+    // linkSync first, exactly like the claim above: this immediately
+    // vacates rollbackRecoveryClaimPath (the unlink below), so any later,
+    // unrelated generation can safely reoccupy that fixed path without
+    // ever colliding with what this call has already claimed away.
+    const finalizeClaimPath = `${rollbackRecoveryClaimPath}.finalize-claim`;
+    try {
+      linkSync(rollbackRecoveryClaimPath, finalizeClaimPath);
+      try {
+        unlinkSync(rollbackRecoveryClaimPath);
+      } catch {
+        // Already gone; harmless — our own link is independently valid.
+      }
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return true; // Already gone entirely.
+      if (errorCode(error) !== "EEXIST") return false; // Some other failure: defer.
+      // EEXIST: finalizeClaimPath already holds an earlier attempt's own
+      // capture — a live one still being finished, or one abandoned by a
+      // crash between its own link and unlink above. Once this generation
+      // is confirmed stale, resuming via the orphaned capture already
+      // sitting there is safe even if another caller reaches this same
+      // conclusion concurrently: finalizeClaimPath's content is immutable
+      // once written (only this exact claim step ever creates it), the
+      // restore below is an exclusive-create (only one concurrent
+      // resumer's write can ever land), and the final unlink is
+      // idempotent — so racing resumers duplicate harmless work rather
+      // than corrupting anything.
+      let existingFinalizeStats: { readonly mtimeMs: number } | null;
+      try {
+        existingFinalizeStats = statSync(finalizeClaimPath);
+      } catch {
+        existingFinalizeStats = null;
+      }
+      if (existingFinalizeStats === null || Date.now() - existingFinalizeStats.mtimeMs <= RELEASE_CLAIM_STALE_MS) {
+        // Either it just vanished (another caller already finished this
+        // exact generation), or it is still genuinely fresh (a live,
+        // concurrent claim in flight right now) — back off either way.
+        return false;
+      }
+      // Confirmed stale: fall through and resume using the orphaned
+      // capture already sitting there.
+    }
+
     let orphaned: string;
     try {
-      orphaned = readFileSync(rollbackRecoveryClaimPath, "utf8");
+      orphaned = readFileSync(finalizeClaimPath, "utf8");
     } catch (error) {
       // ENOENT genuinely means another caller already resumed and finished
-      // this exact recovery. Any other failure must not be treated the
+      // this exact generation. Any other failure must not be treated the
       // same way: this content might still be a displaced holder's token,
       // so back off rather than proceed as though it were absent.
       return errorCode(error) === "ENOENT";
@@ -263,7 +312,7 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
       // acquire() won the race; leave it untouched.
     }
     try {
-      unlinkSync(rollbackRecoveryClaimPath);
+      unlinkSync(finalizeClaimPath);
     } catch {
       // Already gone; nothing left to clean up.
     }

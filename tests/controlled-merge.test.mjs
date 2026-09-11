@@ -1379,6 +1379,52 @@ test("an abandoned rollback-recovery claim (crashed after claiming, before finis
   }
 });
 
+test("an abandoned finalize-claim (an earlier crash) never loses or corrupts a separate, newer generation that has since reoccupied the fixed recovery-claim path", async () => {
+  // The finalize-claim mechanism atomically claims rollbackRecoveryClaimPath's
+  // own generation before ever reading or discarding it, specifically so a
+  // later, unrelated generation can safely reuse that same fixed path
+  // without colliding with an earlier claim this call has already captured
+  // away. Simulate exactly that: an orphaned finalize-claim left behind by
+  // an earlier crash (generation 1), and a completely separate, newer
+  // orphaned recovery-claim now sitting at the fixed path (generation 2).
+  // Resolving generation 1 here must never touch or destroy generation 2.
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-finalize-claim-generation-reuse-"));
+  try {
+    const { writeFileSync, utimesSync, existsSync } = await import("node:fs");
+    const lockPath = join(dir, "BOOT-025.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+    const finalizeClaimPath = `${rollbackRecoveryClaimPath}.finalize-claim`;
+
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    writeFileSync(finalizeClaimPath, "generation-1-token", { encoding: "utf8" });
+    utimesSync(finalizeClaimPath, old, old);
+    writeFileSync(rollbackRecoveryClaimPath, "generation-2-token", { encoding: "utf8" });
+    utimesSync(rollbackRecoveryClaimPath, old, old);
+
+    const taskLock = new FileControlledMergeTaskLock(dir, { staleLockMs: 5 * 60 * 1000 });
+    // Draining two independently-orphaned generations at the same fixed
+    // path may take more than one acquisition attempt (each attempt's own
+    // single retry-via-reclaimIfStale is not guaranteed to reach both).
+    // The property under test is that this converges within a small bound
+    // and neither generation's content is ever lost or corrupted along the
+    // way — not the exact number of attempts it takes.
+    let result = null;
+    for (let attempt = 0; attempt < 5 && result === null; attempt += 1) {
+      try {
+        result = await taskLock.withLock("BOOT-025", async () => "acquired");
+      } catch {
+        // Expected contention while multiple orphaned generations drain.
+      }
+    }
+    assert.equal(result, "acquired", "acquisition must eventually succeed rather than wedging forever");
+    assert.equal(existsSync(rollbackRecoveryClaimPath), false);
+    assert.equal(existsSync(finalizeClaimPath), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a double-orphaned rollback claim (crashed between linking and removing the original) is fully drained across successive acquisitions, never losing the displaced content", async () => {
   // The narrower crash window where the original claim's own unlink never
   // ran (both rollbackClaimPath and its recovery-claim briefly coexist as

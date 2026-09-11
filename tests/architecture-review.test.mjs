@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -890,6 +891,41 @@ test("FileArchitectureReviewTaskLock treats an in-flight release() reservation a
       ran = true;
     });
     assert.ok(ran, "expected an ordinary acquisition to succeed once the reservation is gone");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileArchitectureReviewTaskLock's release() waits real wall-clock time for a competing reservation holder, not merely a bounded syscall count", () => {
+  // A tight retry loop with no real delay could exhaust its entire budget
+  // within one scheduler timeslice while the competing holder — a
+  // genuinely separate OS process here, not just a different call in this
+  // one — has not even been scheduled yet. Removing the reservation from
+  // an actual child process after a real delay proves release()'s wait is
+  // real wall-clock time (via Atomics.wait), not a syscall-count proxy for
+  // it: a fake proxy would give up long before 20ms of real time passes.
+  const root = mkdtempSync(join(tmpdir(), "ipt-architecture-review-lock-real-time-reservation-wait-"));
+  try {
+    const lock = new FileArchitectureReviewTaskLock(root);
+    const lockPath = join(root, "BOOT-019.lifecycle.lock");
+    const reservationPath = `${lockPath}.release-reservation`;
+
+    let ran = false;
+    lock.withLock("BOOT-019", () => {
+      ran = true;
+      // Simulate a concurrent release()/reclaimIfStale() call already
+      // holding the reservation, cleared by a genuinely separate OS
+      // process after a real delay — standing in for that call's own
+      // (fast, but not instant) critical section. withLock()'s own
+      // release() runs after this callback returns and must wait this out.
+      writeFileSync(reservationPath, "", { encoding: "utf8", flag: "wx" });
+      const childScript = `setTimeout(() => { try { require("node:fs").unlinkSync(${JSON.stringify(reservationPath)}); } catch {} }, 20);`;
+      const child = spawn(process.execPath, ["-e", childScript], { detached: true, stdio: "ignore" });
+      child.unref();
+    });
+    assert.ok(ran, "expected the callback to run");
+    assert.equal(existsSync(reservationPath), false, "the reservation must end up released, not abandoned mid-contention");
+    assert.equal(existsSync(lockPath), false, "the lock itself must actually be released, not left held");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

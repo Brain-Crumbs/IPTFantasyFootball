@@ -66,19 +66,33 @@ const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
 // Matches BOOT-018's/BOOT-019's own task-lock thresholds.
 const STALE_LOCK_MS = 5 * 60 * 1000;
 
-// A bound on how many times release() retries claiming its own release
-// reservation when another release()/reclaimIfStale() call currently holds
-// it — a genuinely separate OS process, not merely a different call in this
-// one. Each attempt is a real, if fast, failing filesystem syscall, so this
-// loop consumes real wall-clock time (not merely JS tick count) even
-// without an artificial delay between attempts; the bound exists to absorb
-// real OS scheduling jitter around the other holder's own critical section
-// (claim, compare, restore-or-discard, unlink — a handful of fast
-// synchronous filesystem operations), not to model any expected long wait.
-// withLock() here is synchronous end to end (unlike control-plane.
-// controlled-merge's own async variant), so this retries via a bounded
-// busy loop rather than an awaited delay.
-const RELEASE_RESERVATION_CONTENTION_RETRIES = 500;
+// release() retries claiming its own release reservation, spaced this far
+// apart, when another release()/reclaimIfStale() call currently holds it —
+// a genuinely separate OS process, not merely a different call in this one.
+// A tight busy loop of failing syscalls is not a reliable substitute for an
+// actual wait: this process could exhaust its entire retry budget within
+// one scheduler timeslice while that other process has not even been
+// scheduled yet, long before it frees the reservation. withLock() here is
+// synchronous end to end (unlike control-plane.controlled-merge's own async
+// variant, which awaits a real delay between attempts), so this sleeps via
+// Atomics.wait — a genuine, bounded, wall-clock block — rather than an
+// awaited one.
+const RELEASE_RESERVATION_RETRY_DELAY_MS = 5;
+
+// A bound on how many times release() retries claiming its own reservation.
+// The other holder's own critical section (claim, compare, restore-or-
+// discard, unlink) is a handful of fast synchronous filesystem operations,
+// so this budget — combined with the delay above — exists to absorb real
+// OS scheduling jitter, not to model any expected long wait.
+const RELEASE_RESERVATION_CONTENTION_RETRIES = 40;
+
+// A genuine, bounded wall-clock sleep: Atomics.wait blocks this thread for
+// real elapsed time (confirmed by its own timeout, not by counting
+// iterations), unlike a busy-retry loop whose only "wait" is however long
+// its own fast, failing syscalls happen to take.
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 // UAT/Product is always the last role in the BOOT-009 state machine's own
 // REVIEW_ORDER, so a UAT PASS has exactly one possible next lifecycle state.
@@ -888,7 +902,9 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
         break;
       } catch {
         // Another release()/reclaimIfStale() call currently holds the
-        // reservation; retry rather than abandoning this release() outright.
+        // reservation; wait a real, bounded amount of wall-clock time
+        // rather than abandoning this release() outright.
+        sleepSync(RELEASE_RESERVATION_RETRY_DELAY_MS);
       }
     }
     if (!claimed) {
@@ -1264,13 +1280,61 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
     }
 
     // Either this call just claimed rollbackRecoveryClaimPath above, or an
-    // earlier crash left it there already confirmed stale. Restore its
-    // content back to lockPath, preserving the orphan's own original
-    // mtime the same way reclaimAbandonedReservation's own restore does,
-    // then drop the claim — self-healing past the crash.
-    let claimStats: { readonly mtimeMs: number } | null;
+    // earlier crash left it there already confirmed stale. Nothing so far
+    // has actually *claimed* sole ownership of finishing off this exact
+    // generation, though: reading its content and only later unlinking the
+    // same fixed path (the earlier version of this method) leaves a
+    // caller that pauses between the two exposed to the fixed path being
+    // reused for an unrelated, later generation in the meantime — the
+    // lagging caller would then restore its own stale, cached content and
+    // unlink that unrelated later generation, potentially destroying a
+    // live replacement lock's own displaced token while its holder is
+    // still executing. Claim this exact generation atomically via
+    // linkSync first, exactly like the claim above: this immediately
+    // vacates rollbackRecoveryClaimPath (the unlink below), so any later,
+    // unrelated generation can safely reoccupy that fixed path without
+    // ever colliding with what this call has already claimed away.
+    const finalizeClaimPath = `${rollbackRecoveryClaimPath}.finalize-claim`;
     try {
-      claimStats = statSync(rollbackRecoveryClaimPath);
+      linkSync(rollbackRecoveryClaimPath, finalizeClaimPath);
+      try {
+        unlinkSync(rollbackRecoveryClaimPath);
+      } catch {
+        // Already gone; harmless — our own link is independently valid.
+      }
+    } catch (error: unknown) {
+      if (errorCode(error) === "ENOENT") return true; // Already gone entirely.
+      if (errorCode(error) !== "EEXIST") return false; // Some other failure: defer.
+      // EEXIST: finalizeClaimPath already holds an earlier attempt's own
+      // capture — a live one still being finished, or one abandoned by a
+      // crash between its own link and unlink above. Once this generation
+      // is confirmed stale, resuming via the orphaned capture already
+      // sitting there is safe even if another caller reaches this same
+      // conclusion concurrently: finalizeClaimPath's content is immutable
+      // once written (only this exact claim step ever creates it), the
+      // restore below is an exclusive-create (only one concurrent
+      // resumer's write can ever land), and the final unlink is
+      // idempotent — so racing resumers duplicate harmless work rather
+      // than corrupting anything.
+      let existingFinalizeStats: { readonly mtimeMs: number } | null;
+      try {
+        existingFinalizeStats = statSync(finalizeClaimPath);
+      } catch {
+        existingFinalizeStats = null;
+      }
+      if (existingFinalizeStats === null || Date.now() - existingFinalizeStats.mtimeMs <= STALE_LOCK_MS) {
+        // Either it just vanished (another caller already finished this
+        // exact generation), or it is still genuinely fresh (a live,
+        // concurrent claim in flight right now) — back off either way.
+        return false;
+      }
+      // Confirmed stale: fall through and resume using the orphaned
+      // capture already sitting there.
+    }
+
+    let finalizeStats: { readonly mtimeMs: number } | null;
+    try {
+      finalizeStats = statSync(finalizeClaimPath);
     } catch (error: unknown) {
       if (errorCode(error) !== "ENOENT") return false; // Transient failure: defer.
       return true; // Already gone — another caller resumed it first.
@@ -1278,15 +1342,15 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
 
     let orphaned: string;
     try {
-      orphaned = readFileSync(rollbackRecoveryClaimPath, "utf8");
+      orphaned = readFileSync(finalizeClaimPath, "utf8");
     } catch (error: unknown) {
       // ENOENT genuinely means another caller already resumed and finished
-      // this exact recovery. Any other failure must not be treated the
+      // this exact generation. Any other failure must not be treated the
       // same way: this content might still be a displaced holder's token,
       // so back off rather than proceed as though it were absent.
       return errorCode(error) === "ENOENT";
     }
-    const orphanedMtime = new Date(claimStats.mtimeMs);
+    const orphanedMtime = new Date(finalizeStats.mtimeMs);
     try {
       writeFileSync(lockPath, orphaned, { encoding: "utf8", flag: "wx" });
       try {
@@ -1300,7 +1364,7 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
       // tryCreate() won the race; leave it untouched.
     }
     try {
-      unlinkSync(rollbackRecoveryClaimPath);
+      unlinkSync(finalizeClaimPath);
     } catch {
       // Already gone; nothing left to clean up.
     }

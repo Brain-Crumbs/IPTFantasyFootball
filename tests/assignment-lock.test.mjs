@@ -367,6 +367,57 @@ test("an abandoned acquire() rollback-recovery claim (crashed after claiming, be
   assert.equal(store.get("BOOT-010").lockId, "lock-orphaned");
 }));
 
+test("an abandoned finalize-claim (an earlier crash) never loses or corrupts a separate, newer generation that has since reoccupied the fixed recovery-claim path", () => withStore((store, root) => {
+  // The finalize-claim mechanism atomically claims rollbackRecoveryClaimPath's
+  // own generation before ever reading or discarding it, specifically so a
+  // later, unrelated generation can safely reuse that same fixed path
+  // without colliding with an earlier claim this call has already captured
+  // away. Simulate exactly that: an orphaned finalize-claim left behind by
+  // an earlier crash (generation 1), and a completely separate, newer
+  // orphaned recovery-claim now sitting at the fixed path (generation 2).
+  const activePath = join(root, "BOOT-010.lock.json");
+  const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+  const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+  const finalizeClaimPath = `${rollbackRecoveryClaimPath}.finalize-claim`;
+  const generation1 = {
+    schemaId: "ipt.assignment-lock",
+    schemaVersion: "1.1.0",
+    lockId: "lock-generation-1",
+    taskId: "BOOT-010",
+    canonicalBranch: "bootstrap/boot-010-assignment-locks",
+    ownerId: "agent-generation-1",
+    runId: "run-generation-1",
+    status: "ACTIVE",
+    acquiredAt: "2026-09-03T22:00:00Z",
+  };
+  const generation2 = { ...generation1, lockId: "lock-generation-2", ownerId: "agent-generation-2", runId: "run-generation-2" };
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  writeFileSync(finalizeClaimPath, `${JSON.stringify(generation1, null, 2)}\n`, { encoding: "utf8" });
+  utimesSync(finalizeClaimPath, old, old);
+  writeFileSync(rollbackRecoveryClaimPath, `${JSON.stringify(generation2, null, 2)}\n`, { encoding: "utf8" });
+  utimesSync(rollbackRecoveryClaimPath, old, old);
+
+  // First acquire() resolves generation 1 via the finalize-claim's
+  // EEXIST-but-stale fallback, restoring it to activePath — generation 2
+  // must be left completely untouched at this point.
+  const first = store.acquire(acquire({ ownerId: "agent-z", runId: "run-z", lockId: "lock-z" }));
+  assert.equal(first.ok, false);
+  assert.equal(first.rejection.code, "LOCK_CONFLICT");
+  assert.equal(existsSync(finalizeClaimPath), false, "generation 1's finalize-claim must be resolved");
+  assert.equal(existsSync(rollbackRecoveryClaimPath), true, "generation 2 must be left untouched, not destroyed");
+  assert.equal(store.get("BOOT-010").lockId, "lock-generation-1");
+
+  // A second acquire() then processes generation 2 in turn; since
+  // activePath is already occupied by generation 1, generation 2 is
+  // correctly discarded rather than overwriting it or being lost silently.
+  const second = store.acquire(acquire({ ownerId: "agent-y", runId: "run-y", lockId: "lock-y" }));
+  assert.equal(second.ok, false);
+  assert.equal(second.rejection.code, "LOCK_CONFLICT");
+  assert.equal(existsSync(rollbackRecoveryClaimPath), false);
+  assert.equal(existsSync(finalizeClaimPath), false);
+  assert.equal(store.get("BOOT-010").lockId, "lock-generation-1", "generation 1 must remain intact and untouched by generation 2's resolution");
+}));
+
 test("a double-orphaned acquire() rollback claim (crashed between linking and removing the original) never loses the displaced content, even though one attempt may still report contention", () => withStore((store, root) => {
   // The narrower crash window where the original claim's own unlink never
   // ran (both rollbackClaimPath and its recovery-claim briefly coexist)
