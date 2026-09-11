@@ -370,6 +370,6 @@ Later tasks own:
 - validation/evidence storage (BOOT-014 through BOOT-016);
 - executable review workflows and structured findings machinery (BOOT-017 through BOOT-021);
 - PR integration, CI enforcement, merge policy, and controlled completion (BOOT-022 through BOOT-025);
-- agent runner/provider adapters and orchestration (BOOT-026 onward).
+- agent runner/provider adapters (BOOT-026) and sequential orchestration (BOOT-027); real vendor adapters, resilience/resume behavior, and CLI wiring remain BOOT-028 onward.
 
 Those implementations must preserve these authority boundaries unless an explicit reviewed constitutional change says otherwise.

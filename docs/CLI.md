@@ -48,6 +48,7 @@ Reserved commands deliberately fail until their owning task supplies behavior:
 - `review` — BOOT-017+
 - `status` — BOOT-030
 - `rework` — BOOT-021 (behavior implemented as `ReviewReworkGate`; CLI wiring owned by BOOT-026+)
+- `orchestrate` — BOOT-027 (behavior implemented as `SequentialOrchestrationEngine`; CLI wiring deferred until a real agent-provider adapter exists — see BOOT-029)
 
 ## Manual-bootstrap authority
 
