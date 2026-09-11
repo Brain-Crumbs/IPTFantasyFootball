@@ -908,18 +908,68 @@ export class FileReviewReworkTaskLock implements ReviewReworkTaskLock {
     }
     if (Date.now() - stats.mtimeMs <= STALE_LOCK_MS) return false; // Still genuinely in flight; back off.
 
-    // Stale: restore its content back to lockPath, preserving the orphan's
-    // own original mtime the same way reclaimAbandonedReservation's own
-    // restore does, then drop the marker — self-healing past the crash.
-    let orphaned: string;
+    // Confirmed stale by this observation alone, but nothing so far has
+    // actually *claimed* sole ownership of this recovery attempt — every
+    // concurrent caller reaching the same conclusion would otherwise race
+    // each other through the restore below on this same fixed
+    // rollbackClaimPath, and a caller lagging between this observation and
+    // that restore could consume a fresh, unrelated claim a different,
+    // legitimately live rollback created against rollbackClaimPath in the
+    // meantime. Claim exclusive ownership of *this* recovery attempt first,
+    // via a dedicated, private sub-path, mirroring
+    // reclaimAbandonedReservation's own recoveryClaimPath pattern.
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+    let claimedContent: string;
     try {
-      orphaned = readFileSync(rollbackClaimPath, "utf8");
-    } catch {
-      return true; // Already gone — another caller already recovered it.
+      claimedContent = readFileSync(rollbackClaimPath, "utf8");
+    } catch (error: unknown) {
+      // ENOENT genuinely means another caller already finished this exact
+      // recovery. Any other failure (a permission error, a transient I/O
+      // error) must not be treated the same way: the orphaned content
+      // might still be sitting there holding a displaced holder's token,
+      // so back off conservatively rather than let tryCreate() proceed as
+      // though nothing were here.
+      return errorCode(error) === "ENOENT";
     }
+    try {
+      writeFileSync(rollbackRecoveryClaimPath, claimedContent, { encoding: "utf8", flag: "wx" });
+    } catch (error: unknown) {
+      if (errorCode(error) !== "EEXIST") return false;
+      // EEXIST can mean two different things: a genuinely concurrent
+      // caller currently racing this exact claim right now (a live claim,
+      // back off and let it finish), or an earlier caller's own claim that
+      // itself crashed before finishing — rollbackRecoveryClaimPath is
+      // private and the only code that ever writes to it is this exact
+      // block, so if one is already sitting there and old enough to be
+      // considered abandoned by the same STALE_LOCK_MS threshold as
+      // everything else here, this generation never completed. There is
+      // nothing left to *claim* in that case: this caller simply resumes
+      // the very same recovery using the orphaned copy already there —
+      // its content is necessarily identical to what was just read from
+      // rollbackClaimPath above, since nothing ever mutates either file's
+      // content after creation.
+      let existingClaimStats: { readonly mtimeMs: number } | null;
+      try {
+        existingClaimStats = statSync(rollbackRecoveryClaimPath);
+      } catch {
+        existingClaimStats = null;
+      }
+      if (existingClaimStats === null || Date.now() - existingClaimStats.mtimeMs <= STALE_LOCK_MS) {
+        // Either it just vanished (another caller already finished this
+        // exact recovery — nothing left to do), or it is still genuinely
+        // fresh (a live, concurrent claim in flight right now) — back off
+        // either way rather than race it.
+        return false;
+      }
+    }
+
+    // Restore its content back to lockPath, preserving the orphan's own
+    // original mtime the same way reclaimAbandonedReservation's own
+    // restore does, then drop both the claim and the original marker —
+    // self-healing past the crash.
     const orphanedMtime = new Date(stats.mtimeMs);
     try {
-      writeFileSync(lockPath, orphaned, { encoding: "utf8", flag: "wx" });
+      writeFileSync(lockPath, claimedContent, { encoding: "utf8", flag: "wx" });
       try {
         utimesSync(lockPath, orphanedMtime, orphanedMtime);
       } catch {
@@ -932,6 +982,11 @@ export class FileReviewReworkTaskLock implements ReviewReworkTaskLock {
     }
     try {
       unlinkSync(rollbackClaimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    try {
+      unlinkSync(rollbackRecoveryClaimPath);
     } catch {
       // Already gone; nothing left to clean up.
     }

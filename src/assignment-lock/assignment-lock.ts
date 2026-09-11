@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const ASSIGNMENT_LOCK_SCHEMA_ID = "ipt.assignment-lock" as const;
@@ -146,6 +146,92 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     return this.#acquire(request, false);
   }
 
+  // #acquire()'s own rollback path (further below) claims activePath away
+  // into a private, fixed ".acquire-rollback-claim" path before deciding
+  // whether to restore or discard it. A crash right after that claiming
+  // rename but before the restore-or-discard finishes leaves the displaced
+  // holder's content stranded there forever: nothing else recognizes this
+  // path, so a later acquire() would see activePath as vacant and happily
+  // create a brand-new lock while a legitimate displaced record — one this
+  // exact call had determined it must NOT discard — is never recovered.
+  // Mirrors #reclaimAbandonedRelease's own recoveryClaimPath pattern,
+  // including the same nested ownership claim: multiple concurrent callers
+  // could otherwise all observe this same rollback claim as stale and race
+  // each other through the restore below on the same fixed path.
+  #recoverOrDeferToAcquireRollbackClaim(taskId: string): boolean {
+    const activePath = this.#activePath(taskId);
+    const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+    let stats: { readonly mtimeMs: number } | null;
+    try {
+      stats = statSync(rollbackClaimPath);
+    } catch {
+      return true; // Nothing there; proceed normally.
+    }
+    if (Date.now() - stats.mtimeMs <= RELEASE_CLAIM_STALE_MS) return false; // Still genuinely in flight; back off.
+
+    // Confirmed stale by this observation alone, but nothing so far has
+    // actually *claimed* sole ownership of this recovery attempt. Claim
+    // exclusive ownership via a dedicated, private sub-path first, exactly
+    // as #reclaimAbandonedRelease's own recoveryClaimPath does.
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+    let claimedContent: string;
+    try {
+      claimedContent = readFileSync(rollbackClaimPath, "utf8");
+    } catch (error) {
+      // ENOENT genuinely means another caller already finished this exact
+      // recovery. Any other failure must not be treated the same way: the
+      // orphaned content might still be holding a displaced holder's
+      // token, so back off conservatively rather than proceed as though
+      // nothing were here.
+      return errorCode(error) === "ENOENT";
+    }
+    try {
+      writeFileSync(rollbackRecoveryClaimPath, claimedContent, { encoding: "utf8", flag: "wx" });
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") return false;
+      // EEXIST can mean a genuinely concurrent caller racing this exact
+      // claim right now (a live claim, back off and let it finish), or an
+      // earlier caller's own claim that itself crashed before finishing —
+      // rollbackRecoveryClaimPath is private and the only code that ever
+      // writes to it is this exact block, so an existing one old enough to
+      // be considered abandoned by the same threshold means this
+      // generation never completed, and this caller simply resumes it
+      // using the orphaned copy already there (its content is necessarily
+      // identical to what was just read from rollbackClaimPath above,
+      // since nothing ever mutates either file's content after creation).
+      let existingClaimStats: { readonly mtimeMs: number } | null;
+      try {
+        existingClaimStats = statSync(rollbackRecoveryClaimPath);
+      } catch {
+        existingClaimStats = null;
+      }
+      if (existingClaimStats === null || Date.now() - existingClaimStats.mtimeMs <= RELEASE_CLAIM_STALE_MS) {
+        // Either it just vanished (another caller already finished this
+        // exact recovery), or it is still genuinely fresh (a live claim in
+        // flight right now) — back off either way rather than race it.
+        return false;
+      }
+    }
+
+    try {
+      writeFileSync(activePath, claimedContent, { encoding: "utf8", flag: "wx" });
+    } catch {
+      // activePath already holds a fresh record — a concurrent, legitimate
+      // acquire() won the race; leave it untouched.
+    }
+    try {
+      unlinkSync(rollbackClaimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    try {
+      unlinkSync(rollbackRecoveryClaimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    return false;
+  }
+
   #acquire(request: AcquireAssignmentRequest, allowRecoveryClaim: boolean): LockResult {
     const invalid = validateAcquire(request);
     if (invalid) return reject("INVALID_REQUEST", invalid);
@@ -154,6 +240,19 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
         "BRANCH_MISMATCH",
         `Task '${request.taskId}' requires canonical branch '${request.expectedCanonicalBranch}', not '${request.canonicalBranch}'.`,
       );
+    }
+
+    // This method's own rollback path further below (triggered when a
+    // recovery/release claim appears mid-acquisition) can itself be
+    // interrupted by a crash between claiming activePath away and finishing
+    // that same rollback — recognized by nothing else in this class, since
+    // it is a private detail of that rollback path, not the public
+    // release-reservation/recovery-claim mechanisms checked below. Recover
+    // or defer to it first, before any of this call's own logic runs, so an
+    // abandoned one never strands a displaced holder's content forever and
+    // a still-live one is never raced.
+    if (!this.#recoverOrDeferToAcquireRollbackClaim(request.taskId)) {
+      return reject("LOCK_CONFLICT", `Task '${request.taskId}' has an interrupted acquisition rollback pending recovery; retry.`);
     }
 
     // Restore any orphaned claim left by a release() call that crashed
@@ -234,6 +333,14 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
       // content is still genuinely this attempt's own just-created record.
       const activePath = this.#activePath(request.taskId);
       const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+      // The exact serialized form this call itself wrote above — compared
+      // byte-for-byte, not merely by identity fields (lockId/ownerId/runId/
+      // canonicalBranch): a later, unrelated acquire() legitimately reusing
+      // this exact identity tuple (a retry with the same lockId, say) but
+      // with its own different acquiredAt/expiresAt would otherwise also
+      // satisfy sameIdentity() and be wrongly discarded as if it were this
+      // attempt's own record.
+      const expectedOwnRecord = `${JSON.stringify(lock, null, 2)}\n`;
       try {
         renameSync(activePath, rollbackClaimPath);
         let rawClaimed: string | null;
@@ -242,17 +349,7 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
         } catch {
           rawClaimed = null;
         }
-        let isOwnRecord = false;
-        if (rawClaimed !== null) {
-          try {
-            isOwnRecord = sameIdentity(freezeLock(JSON.parse(rawClaimed) as AssignmentLockRecord), request);
-          } catch {
-            // Unreadable/malformed content is never assumed to be this
-            // attempt's own record — treated the same as "not ours" below,
-            // restoring the raw bytes rather than losing them.
-            isOwnRecord = false;
-          }
-        }
+        const isOwnRecord = rawClaimed === expectedOwnRecord;
         if (!isOwnRecord && rawClaimed !== null) {
           try {
             writeFileSync(activePath, rawClaimed, { encoding: "utf8", flag: "wx" });
@@ -366,12 +463,16 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
       // active path untouched rather than letting it vanish along with the
       // claim file, so a future retry still finds an active assignment to
       // contend with instead of silently observing none and skipping
-      // straight to completion.
+      // straight to completion. Link rather than rename: link() fails with
+      // EEXIST if a concurrent acquire() has since published its own fresh
+      // record at activePath, where rename() would silently clobber it.
       try {
-        renameSync(claimPath, activePath);
+        linkSync(claimPath, activePath);
+        unlinkSync(claimPath);
       } catch {
-        // Another operation has since created its own fresh record at
-        // activePath; nothing further can be restored onto it.
+        // Either a fresh record already occupies activePath (nothing to
+        // restore onto), or claimPath is already gone; either way leave
+        // claimPath as-is rather than risk losing or duplicating content.
       }
       throw error;
     }

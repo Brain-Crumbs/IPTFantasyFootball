@@ -1278,6 +1278,103 @@ test("a live (fresh) tryCreate() rollback claim is never mistaken for an abandon
   }
 });
 
+test("a still-live rollback-recovery claim is never raced by a second caller reaching the same stale conclusion", async () => {
+  // Two concurrent callers can both observe rollbackClaimPath as stale and
+  // reach recoverOrDeferToRollbackClaim's restore step at the same time.
+  // Without a dedicated ownership claim over that recovery attempt itself,
+  // both would race through the same read/restore/unlink logic on the same
+  // fixed path. Simulate the winner already having claimed the recovery
+  // (a fresh rollbackRecoveryClaimPath) and confirm a second caller defers
+  // to it instead of also attempting the restore.
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-live-rollback-recovery-claim-"));
+  try {
+    const { writeFileSync, utimesSync, existsSync, readFileSync } = await import("node:fs");
+    const lockPath = join(dir, "BOOT-025.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+
+    writeFileSync(rollbackClaimPath, "displaced-token", { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+
+    // A different, still-live caller already claimed this exact recovery
+    // moments ago (fresh mtime, not backdated).
+    writeFileSync(rollbackRecoveryClaimPath, "displaced-token", { encoding: "utf8" });
+
+    const taskLock = new FileControlledMergeTaskLock(dir, { staleLockMs: 5 * 60 * 1000 });
+    let ran = false;
+    await assert.rejects(() => taskLock.withLock("BOOT-025", async () => {
+      ran = true;
+    }));
+    assert.equal(ran, false, "must defer to the live recovery claim rather than race it");
+    assert.equal(existsSync(rollbackClaimPath), true, "the original marker must stay put for the live claimant to finish with");
+    assert.equal(existsSync(rollbackRecoveryClaimPath), true);
+    assert.equal(readFileSync(rollbackRecoveryClaimPath, "utf8"), "displaced-token");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an abandoned rollback-recovery claim (crashed after claiming, before finishing) is itself resumed rather than wedging the task forever", async () => {
+  // The recovery-claim mechanism protecting rollbackClaimPath is itself
+  // crash-recoverable: an earlier caller that claimed the recovery and then
+  // crashed before restoring must not permanently block every later caller
+  // from ever finishing it.
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-abandoned-rollback-recovery-claim-"));
+  try {
+    const { writeFileSync, utimesSync, existsSync } = await import("node:fs");
+    const lockPath = join(dir, "BOOT-025.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+
+    writeFileSync(rollbackClaimPath, "displaced-token", { encoding: "utf8" });
+    writeFileSync(rollbackRecoveryClaimPath, "displaced-token", { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+    utimesSync(rollbackRecoveryClaimPath, old, old);
+
+    const taskLock = new FileControlledMergeTaskLock(dir, { staleLockMs: 5 * 60 * 1000 });
+    const result = await taskLock.withLock("BOOT-025", async () => "acquired-after-recovery");
+    assert.equal(result, "acquired-after-recovery");
+    assert.equal(existsSync(rollbackClaimPath), false);
+    assert.equal(existsSync(rollbackRecoveryClaimPath), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a transient failure reading the rollback claim (not a genuine absence) defers rather than proceeding as though nothing were there", async () => {
+  // A plain ENOENT genuinely means another caller already finished this
+  // recovery. Any other read failure must not be treated the same way: the
+  // orphaned content might still be holding a displaced holder's token, so
+  // this must back off rather than let tryCreate() proceed to create a
+  // brand-new lock while that content is still unaccounted for.
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-rollback-claim-read-failure-"));
+  try {
+    const { mkdirSync, utimesSync, existsSync } = await import("node:fs");
+    const lockPath = join(dir, "BOOT-025.lifecycle.lock");
+    // A directory at rollbackClaimPath makes readFileSync fail with EISDIR,
+    // not ENOENT, while statSync still succeeds — reproducing the "stat
+    // succeeded, read failed for some other reason" case without relying on
+    // real permission errors.
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    mkdirSync(rollbackClaimPath);
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+
+    const taskLock = new FileControlledMergeTaskLock(dir, { staleLockMs: 5 * 60 * 1000 });
+    let ran = false;
+    await assert.rejects(() => taskLock.withLock("BOOT-025", async () => {
+      ran = true;
+    }));
+    assert.equal(ran, false, "must not proceed to create a fresh lock while the read failure is unexplained");
+    assert.equal(existsSync(lockPath), false);
+    assert.equal(existsSync(rollbackClaimPath), true, "the unreadable marker must be left in place, not discarded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a DONE task never touches the task lock", async () => {
   const { store: evidence } = makeEvidenceStore();
   const recorded = evidence.record({

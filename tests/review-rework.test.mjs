@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -927,6 +927,91 @@ test("FileReviewReworkTaskLock never mistakes a live (fresh) tryCreate() rollbac
     );
     assert.equal(existsSync(rollbackClaimPath), true);
     assert.equal(readFileSync(rollbackClaimPath, "utf8"), "displaced-token");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock never races a second caller reaching the same stale conclusion against a still-live rollback-recovery claim", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-live-rollback-recovery-claim-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+
+    writeFileSync(rollbackClaimPath, "displaced-token", { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+    // A different, still-live caller already claimed this exact recovery
+    // moments ago (fresh mtime, not backdated).
+    writeFileSync(rollbackRecoveryClaimPath, "displaced-token", { encoding: "utf8" });
+
+    let ran = false;
+    assert.throws(
+      () => lock.withLock("BOOT-021", () => {
+        ran = true;
+      }),
+      (error) => error instanceof ReviewReworkError && error.code === "STATE_CONFLICT",
+    );
+    assert.equal(ran, false, "must defer to the live recovery claim rather than race it");
+    assert.equal(existsSync(rollbackClaimPath), true, "the original marker must stay put for the live claimant to finish with");
+    assert.equal(existsSync(rollbackRecoveryClaimPath), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock resumes an abandoned rollback-recovery claim (crashed after claiming, before finishing) rather than wedging the task forever", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-abandoned-rollback-recovery-claim-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+
+    // A stamp old enough for reclaimIfStale to recognize the restored
+    // lockPath content as stale and finish reclaiming it on the same
+    // withLock() attempt's retry.
+    const displacedToken = `${Date.now() - 10 * 60 * 1000}:displaced-token`;
+    writeFileSync(rollbackClaimPath, displacedToken, { encoding: "utf8" });
+    writeFileSync(rollbackRecoveryClaimPath, displacedToken, { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+    utimesSync(rollbackRecoveryClaimPath, old, old);
+
+    let ran = false;
+    lock.withLock("BOOT-021", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the lock to be acquired after the abandoned rollback-recovery claim was resumed");
+    assert.equal(existsSync(rollbackClaimPath), false);
+    assert.equal(existsSync(rollbackRecoveryClaimPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileReviewReworkTaskLock defers rather than proceeding as though nothing were there when reading the rollback claim fails transiently", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-review-rework-lock-rollback-claim-read-failure-"));
+  try {
+    const lock = new FileReviewReworkTaskLock(root);
+    const lockPath = join(root, "BOOT-021.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    mkdirSync(rollbackClaimPath);
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+
+    let ran = false;
+    assert.throws(
+      () => lock.withLock("BOOT-021", () => {
+        ran = true;
+      }),
+      (error) => error instanceof ReviewReworkError && error.code === "STATE_CONFLICT",
+    );
+    assert.equal(ran, false, "must not proceed to create a fresh lock while the read failure is unexplained");
+    assert.equal(existsSync(lockPath), false);
+    assert.equal(existsSync(rollbackClaimPath), true, "the unreadable marker must be left in place, not discarded");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

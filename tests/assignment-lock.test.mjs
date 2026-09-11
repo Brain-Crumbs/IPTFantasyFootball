@@ -248,6 +248,141 @@ test("acquire() rolls back its own just-created assignment via an atomic claim, 
   assert.equal(existsSync(join(root, "BOOT-010.lock.json.acquire-rollback-claim")), false);
 }));
 
+test("an abandoned acquire() rollback claim (process crashed mid-rollback) is recovered rather than permanently stranding displaced content", () => withStore((store, root) => {
+  // acquire()'s own rollback path claims activePath away into a private,
+  // fixed ".acquire-rollback-claim" path before deciding whether to
+  // restore or discard it. A crash right after that claiming rename —
+  // but before the restore-or-discard finishes — leaves the displaced
+  // content stranded there forever unless something recognizes and
+  // recovers it.
+  const activePath = join(root, "BOOT-010.lock.json");
+  const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+  const orphaned = {
+    schemaId: "ipt.assignment-lock",
+    schemaVersion: "1.1.0",
+    lockId: "lock-orphaned",
+    taskId: "BOOT-010",
+    canonicalBranch: "bootstrap/boot-010-assignment-locks",
+    ownerId: "agent-orphaned",
+    runId: "run-orphaned",
+    status: "ACTIVE",
+    acquiredAt: "2026-09-03T22:00:00Z",
+  };
+  writeFileSync(rollbackClaimPath, `${JSON.stringify(orphaned, null, 2)}\n`, { encoding: "utf8" });
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(rollbackClaimPath, old, old);
+
+  const attempted = store.acquire(acquire({ ownerId: "agent-z", runId: "run-z", lockId: "lock-z" }));
+  assert.equal(attempted.ok, false);
+  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
+  assert.equal(existsSync(rollbackClaimPath), false, "the orphaned rollback claim must be cleaned up, not left stranded");
+  assert.equal(store.get("BOOT-010").lockId, "lock-orphaned");
+}));
+
+test("a live (fresh) acquire() rollback claim is never mistaken for an abandoned one", () => withStore((store, root) => {
+  const activePath = join(root, "BOOT-010.lock.json");
+  const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+  const orphaned = {
+    schemaId: "ipt.assignment-lock",
+    schemaVersion: "1.1.0",
+    lockId: "lock-orphaned",
+    taskId: "BOOT-010",
+    canonicalBranch: "bootstrap/boot-010-assignment-locks",
+    ownerId: "agent-orphaned",
+    runId: "run-orphaned",
+    status: "ACTIVE",
+    acquiredAt: "2026-09-03T22:00:00Z",
+  };
+  // Freshly created (no backdating): a live, in-progress rollback, not an
+  // abandoned one.
+  writeFileSync(rollbackClaimPath, `${JSON.stringify(orphaned, null, 2)}\n`, { encoding: "utf8" });
+
+  const attempted = store.acquire(acquire());
+  assert.equal(attempted.ok, false);
+  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
+  assert.equal(store.get("BOOT-010"), null, "must back off rather than race the live rollback's owner");
+  assert.equal(existsSync(rollbackClaimPath), true);
+}));
+
+test("a still-live acquire() rollback-recovery claim is never raced by a second caller reaching the same stale conclusion", () => withStore((store, root) => {
+  const activePath = join(root, "BOOT-010.lock.json");
+  const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+  const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+  const orphaned = {
+    schemaId: "ipt.assignment-lock",
+    schemaVersion: "1.1.0",
+    lockId: "lock-orphaned",
+    taskId: "BOOT-010",
+    canonicalBranch: "bootstrap/boot-010-assignment-locks",
+    ownerId: "agent-orphaned",
+    runId: "run-orphaned",
+    status: "ACTIVE",
+    acquiredAt: "2026-09-03T22:00:00Z",
+  };
+  const serialized = `${JSON.stringify(orphaned, null, 2)}\n`;
+  writeFileSync(rollbackClaimPath, serialized, { encoding: "utf8" });
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(rollbackClaimPath, old, old);
+  // A different, still-live caller already claimed this exact recovery
+  // moments ago (fresh mtime, not backdated).
+  writeFileSync(rollbackRecoveryClaimPath, serialized, { encoding: "utf8" });
+
+  const attempted = store.acquire(acquire());
+  assert.equal(attempted.ok, false);
+  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
+  assert.equal(store.get("BOOT-010"), null, "must defer to the live recovery claim rather than race it");
+  assert.equal(existsSync(rollbackClaimPath), true, "the original marker must stay put for the live claimant to finish with");
+  assert.equal(existsSync(rollbackRecoveryClaimPath), true);
+}));
+
+test("an abandoned acquire() rollback-recovery claim (crashed after claiming, before finishing) is itself resumed rather than wedging the task forever", () => withStore((store, root) => {
+  const activePath = join(root, "BOOT-010.lock.json");
+  const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+  const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+  const orphaned = {
+    schemaId: "ipt.assignment-lock",
+    schemaVersion: "1.1.0",
+    lockId: "lock-orphaned",
+    taskId: "BOOT-010",
+    canonicalBranch: "bootstrap/boot-010-assignment-locks",
+    ownerId: "agent-orphaned",
+    runId: "run-orphaned",
+    status: "ACTIVE",
+    acquiredAt: "2026-09-03T22:00:00Z",
+  };
+  const serialized = `${JSON.stringify(orphaned, null, 2)}\n`;
+  writeFileSync(rollbackClaimPath, serialized, { encoding: "utf8" });
+  writeFileSync(rollbackRecoveryClaimPath, serialized, { encoding: "utf8" });
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(rollbackClaimPath, old, old);
+  utimesSync(rollbackRecoveryClaimPath, old, old);
+
+  const attempted = store.acquire(acquire({ ownerId: "agent-z", runId: "run-z", lockId: "lock-z" }));
+  assert.equal(attempted.ok, false);
+  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
+  assert.equal(existsSync(rollbackClaimPath), false);
+  assert.equal(existsSync(rollbackRecoveryClaimPath), false);
+  assert.equal(store.get("BOOT-010").lockId, "lock-orphaned");
+}));
+
+test("a transient failure reading the acquire() rollback claim (not a genuine absence) defers rather than proceeding as though nothing were there", () => withStore((store, root) => {
+  // A directory at rollbackClaimPath makes readFileSync fail with EISDIR,
+  // not ENOENT, while statSync still succeeds — reproducing "stat
+  // succeeded, read failed for some other reason" without relying on real
+  // permission errors.
+  const activePath = join(root, "BOOT-010.lock.json");
+  const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+  mkdirSync(rollbackClaimPath);
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(rollbackClaimPath, old, old);
+
+  const attempted = store.acquire(acquire());
+  assert.equal(attempted.ok, false);
+  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
+  assert.equal(store.get("BOOT-010"), null, "must not proceed to create a fresh lock while the read failure is unexplained");
+  assert.equal(existsSync(rollbackClaimPath), true, "the unreadable marker must be left in place, not discarded");
+}));
+
 test("atomic lock-file acquisition is not wedged by an empty legacy task directory", () => withStore((store, root) => {
   mkdirSync(join(root, "BOOT-010"));
   const result = store.acquire(acquire());
