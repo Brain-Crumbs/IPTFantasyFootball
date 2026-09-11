@@ -1,0 +1,133 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.agent-provider",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "new AgentRunner(dependencies: { provider: AgentProvider })",
+      "AgentRunner.run(request: AgentRunRequest): Promise<AgentRunResult>",
+      "AgentRunner.capabilities(): AgentProviderCapabilities",
+      "AgentProvider { providerId, capabilities(): AgentProviderCapabilities, run(request): Promise<AgentRunResult> }",
+      "AgentProviderCapabilities { providerId, supportedRoles, supportsCancellation, supportsTimeout }",
+      "AgentRunnerRole = ContextRole (control-plane.context-compiler), never redefined locally",
+      "AGENT_RUNNER_ROLES: readonly AgentRunnerRole[], reusing control-plane.review-framework's own REVIEW_ROLES runtime list",
+      "AgentToolPermissionPolicy { allowedTools, deniedTools?, networkAccess: 'none' | 'restricted' | 'full' }",
+      "AGENT_NETWORK_ACCESS_LEVELS = ['none', 'restricted', 'full']",
+      "AgentRunRequest { taskId, role, revisionIdentity, runId, actorId, contextPackage, toolPermissionPolicy, timeoutMs?, signal? }",
+      "AgentRunResult { runId, providerId, taskId, role, revisionIdentity, outcome, details, findings, evidenceRefs, nonPass?, occurredAt }",
+      "AgentProviderErrorCode = INVALID_REQUEST | CONTEXT_PACKAGE_MISMATCH | UNSUPPORTED_ROLE | TIMEOUT | CANCELLED | PROVIDER_ERROR | MALFORMED_RESULT",
+      "AgentProviderError { code, recoverable, providerId? }",
+      "FakeAgentProvider(options?: { providerId?, supportedRoles?, supportsCancellation?, supportsTimeout? }) implements AgentProvider",
+      "FakeAgentProvider.enqueueResult(result: AgentRunResult): void",
+      "FakeAgentProvider.setHandler(handler: (request: AgentRunRequest) => AgentRunResult | Promise<AgentRunResult>): void",
+      "FakeAgentProvider.queueError(error: unknown): void",
+      "FakeAgentProvider.resolveAfterDelay(ms: number): void",
+      "FakeAgentProvider.hangIndefinitely(): void",
+      "FakeAgentProvider.requests: readonly AgentRunRequest[] (every accepted request, in call order)"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "provider-neutral-run-invocation",
+      "capability-discovery",
+      "context-package-identity-binding",
+      "runner-enforced-timeout",
+      "runner-enforced-cancellation",
+      "normalized-provider-errors",
+      "result-shape-sufficient-for-review-submission",
+      "in-memory-network-free-test-provider"
+    ],
+    "behavioralConstraints": [
+      "run() rejects a request missing a schema-valid taskId, recognized role, non-empty trimmed revisionIdentity/runId/actorId, an object contextPackage with string taskId/role/sourceRevision fields, a well-formed toolPermissionPolicy (allowedTools/deniedTools as arrays of non-empty trimmed strings, networkAccess one of AGENT_NETWORK_ACCESS_LEVELS), a positive-integer timeoutMs no greater than 2147483647 (setTimeout's own 32-bit delay ceiling) when provided, or a signal exposing a boolean aborted when provided, as INVALID_REQUEST (recoverable: false) before the provider is ever called",
+      "immediately after request validation, run() freezes the request object itself (Object.freeze) before ever invoking the provider, so a provider that reassigns a top-level field (taskId, role, revisionIdentity, runId, or any other) on the exact object it was handed either throws (a strict-mode caller) or silently no-ops, and every later read of that identity — including the final result-binding check — always sees the identity this call originally validated, never a value a provider rewrote in place before resolving",
+      "run() rejects a contextPackage whose taskId, role, or sourceRevision does not exactly match the request's own taskId/role/revisionIdentity as CONTEXT_PACKAGE_MISMATCH (recoverable: false), mirroring control-plane.review-framework's ReviewFramework.submit() identical check",
+      "run() reads the wrapped provider's capabilities() and rejects a result that is not an object with an array-valued supportedRoles as PROVIDER_ERROR (recoverable: true), and separately rejects a role absent from a well-formed supportedRoles as UNSUPPORTED_ROLE (recoverable: false), before the provider's run() is called; a raw throw from capabilities() itself is normalized to PROVIDER_ERROR",
+      "run() rejects a request whose signal is already aborted as CANCELLED (recoverable: false) without ever calling the provider's run()",
+      "once called, the provider's run() promise races a real setTimeout-based timer (only created when timeoutMs is set, never .unref()ed) and a signal abort listener (only attached when signal is supplied); whichever settles first wins and both are cleaned up regardless of which side won",
+      "a timeout produces AgentProviderError { code: 'TIMEOUT', recoverable: true }; an in-flight cancellation produces AgentProviderError { code: 'CANCELLED', recoverable: false }; any other raw provider failure (including capabilities() throwing) produces AgentProviderError { code: 'PROVIDER_ERROR', recoverable: true } carrying the original error's message",
+      "a successful raw provider result is validated before being returned: it must be a non-null, non-array object whose taskId/role/revisionIdentity/runId exactly equal the request's own, whose providerId equals the provider's own providerId, whose outcome is PASS/FAIL/BLOCKED, whose details is an object, whose findings is an array of well-formed, uniquely-findingId'd ReviewFinding-shaped entries (a duplicate findingId is rejected the same way control-plane.review-framework's own ReviewFramework.submit() rejects one), whose evidenceRefs is an array of strings, whose occurredAt is a parseable date-time string containing 'T', and — when outcome is not PASS — whose nonPass carries non-empty reason/remediation strings; any violation, including a value that cannot be passed through structuredClone(), is MALFORMED_RESULT (recoverable: false)",
+      "a validated result is never returned as a shallow-frozen view over the provider's own objects/arrays: it is deep-cloned via structuredClone() and then recursively frozen before being handed back, so no later mutation of the provider's own details/findings/evidenceRefs/nonPass values (or of the returned result's own nested fields, by any caller) can retroactively change an AgentRunResult already returned from run()",
+      "AgentRunner.capabilities() returns the wrapped provider's own capabilities() result unchanged",
+      "FakeAgentProvider.run() records every accepted request in call order in .requests, then resolves from an artificial delay (resolveAfterDelay), a permanently-pending promise (hangIndefinitely), a queued error (queueError), a caller-supplied handler (setHandler), or the next queued result (enqueueResult) — in that precedence order — and throws a plain Error if none of these is configured"
+    ],
+    "invariants": [
+      "AgentRunner never calls the wrapped provider's run() for a request that fails its own structural validation, context-package identity check, or unsupported-role check",
+      "AgentRunner never calls the wrapped provider's run() at all when the request's signal is already aborted at the time run() is invoked",
+      "every error AgentRunner.run() can reject with is an AgentProviderError with a stable code and recoverable flag; no raw provider error, timeout, or cancellation ever escapes unnormalized",
+      "a successful AgentRunResult always carries taskId/role/revisionIdentity/runId exactly equal to the request that produced it, so '${taskId}:${role}:${revisionIdentity}:${runId}' always reproduces the same composite identity ReviewFramework.submit() builds for its own reviewId",
+      "this module decides no role-specific judgment, invokes no real AI vendor, performs no sequential multi-role orchestration, and calls neither control-plane.evidence-store nor control-plane.review-framework's submit() itself",
+      "AgentRunnerRole is never redefined as a separate literal union from control-plane.context-compiler's ContextRole; AgentRunResult's outcome/findings/nonPass are never redefined as separate types from control-plane.review-framework's ReviewOutcome/ReviewFinding/ReviewNonPassDetail",
+      "FakeAgentProvider performs no network access and no filesystem access",
+      "a request object's taskId/role/revisionIdentity/runId, once validated at the start of run(), can never be observed to change for the remainder of that call, whether by the wrapped provider or any other holder of the same reference",
+      "an AgentRunResult returned from run() is always independent of the provider's own objects/arrays and always deeply immutable; no caller or provider can mutate a field of an already-returned result"
+    ],
+    "examples": [
+      "a FakeAgentProvider configured with enqueueResult(result) returns that exact AgentRunResult from run(), with AgentRunner performing no mutation beyond validating it",
+      "a FakeAgentProvider configured with queueError(new Error('boom')) causes run() to reject with AgentProviderError { code: 'PROVIDER_ERROR', recoverable: true } whose message includes 'boom'",
+      "a FakeAgentProvider configured with hangIndefinitely() and a request with timeoutMs: 25 causes run() to reject with AgentProviderError { code: 'TIMEOUT', recoverable: true } after approximately 25ms, never waiting for the provider",
+      "a request whose signal aborts 10ms into a provider call configured with resolveAfterDelay(200) causes run() to reject with AgentProviderError { code: 'CANCELLED', recoverable: false } well before the 200ms delay elapses",
+      "two requests for the same task/revision but different roles (Developer and QA), each carrying a contextPackage compiled for that role, are both accepted by the same AgentRunner/AgentProvider pair, and the provider observes two distinct contextPackage.role values across its recorded requests"
+    ],
+    "edgeCases": [
+      "a request whose contextPackage.role matches the request's role but whose contextPackage.taskId or contextPackage.sourceRevision does not match is still rejected as CONTEXT_PACKAGE_MISMATCH",
+      "a provider that throws a non-Error value (a string, a plain object) from run() is still normalized to PROVIDER_ERROR rather than propagating the raw non-Error value",
+      "a provider result reporting outcome FAIL or BLOCKED without a well-formed nonPass reason/remediation is rejected as MALFORMED_RESULT, since such a result could never be submitted through ReviewFramework.submit() later without first being repaired",
+      "a provider whose capabilities() call itself throws is normalized to PROVIDER_ERROR, not left to propagate as a raw exception from inside run()",
+      "a provider whose capabilities() resolves without throwing but returns a shape missing an array-valued supportedRoles (for example omitting the field entirely) is normalized to PROVIDER_ERROR rather than throwing a raw TypeError out of run()'s own role-support check",
+      "a request whose contextPackage is missing, null, or an object missing a string taskId/role/sourceRevision field is rejected as INVALID_REQUEST before any of those fields is ever dereferenced, rather than throwing a raw TypeError",
+      "a request whose timeoutMs is a positive integer at or above 2147483648 (one past setTimeout's 32-bit ceiling) is rejected as INVALID_REQUEST rather than silently producing an almost-instant spurious TIMEOUT once passed to setTimeout",
+      "a provider result whose findings array contains two entries sharing the same findingId is rejected as MALFORMED_RESULT, since control-plane.review-framework's own ReviewFramework.submit() would otherwise reject that same result later for the identical reason",
+      "FakeAgentProvider.run() called with no queued result, handler, or error configured throws a plain Error, which AgentRunner still normalizes to PROVIDER_ERROR"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.context-compiler",
+    "control-plane.review-framework",
+    "global AbortSignal/AbortController",
+    "global setTimeout/clearTimeout"
+  ],
+  "forbiddenDependencies": [
+    "fantasy-product/*",
+    "ci-enforcement/*",
+    "evidence-store/*",
+    "lifecycle-state-machine/*",
+    "dev-start/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "future-sequential-orchestration",
+      "expectations": [
+        "AgentRunner.run() never throws an error that is not an AgentProviderError",
+        "a CANCELLED result is never retried automatically without a fresh decision to run again (recoverable: false); a TIMEOUT or PROVIDER_ERROR may be retried (recoverable: true)",
+        "calling run() for a role outside a provider's own declared supportedRoles always fails fast (UNSUPPORTED_ROLE) rather than reaching the provider and failing unpredictably there"
+      ],
+      "requiredCapabilities": [
+        "provider-neutral-run-invocation",
+        "runner-enforced-timeout",
+        "runner-enforced-cancellation",
+        "normalized-provider-errors"
+      ],
+      "acceptedRanges": [
+        "an AgentRunResult whose outcome is PASS, FAIL, or BLOCKED",
+        "a thrown AgentProviderError whose code is one of AgentProviderErrorCode's seven values"
+      ],
+      "requiredReachableRanges": [
+        "a successful PASS result is reachable for a request whose provider genuinely succeeds",
+        "every one of INVALID_REQUEST, CONTEXT_PACKAGE_MISMATCH, UNSUPPORTED_ROLE, TIMEOUT, CANCELLED, PROVIDER_ERROR, and MALFORMED_RESULT is independently reachable and distinguishable"
+      ]
+    },
+    {
+      "consumerId": "future-review-framework-submission",
+      "expectations": [
+        "every AgentRunResult field also present on ReviewSubmissionRequest (taskId, role, revisionIdentity, outcome, details, findings, evidenceRefs, nonPass, occurredAt) carries the exact same meaning and shape control-plane.review-framework already defines for that field"
+      ],
+      "requiredCapabilities": [
+        "result-shape-sufficient-for-review-submission"
+      ],
+      "acceptedRanges": [
+        "every field named above, exactly as control-plane.review-framework's own types constrain it"
+      ]
+    }
+  ]
+}
