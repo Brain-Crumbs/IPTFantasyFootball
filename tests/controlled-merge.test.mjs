@@ -1129,6 +1129,50 @@ test("a stray file at the recovery-claim's own private path never blocks ordinar
   }
 });
 
+test("a process that crashed right after claiming the private recovery-claim path (but before finishing) does not permanently wedge the task", async () => {
+  // The private recovery-claim path itself is created via an exclusive-
+  // create write, not a rename — so unlike reclaimMarkerPath, a crash
+  // immediately after that write leaves both reclaimMarkerPath AND the
+  // orphaned recovery-claim sitting there together. Without recovering the
+  // orphaned claim too, every later caller's own exclusive-create attempt
+  // would fail with EEXIST and back off without ever removing
+  // reclaimMarkerPath, permanently blocking tryCreate() forever.
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-orphaned-recovery-claim-"));
+  try {
+    const { writeFileSync, renameSync, utimesSync, existsSync } = await import("node:fs");
+    const lockPath = join(dir, "BOOT-025.lifecycle.lock");
+    const claimedRecordPath = `${lockPath}.release-claim`;
+    const reservationPath = `${lockPath}.release-reservation`;
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+    const recoveryClaimPath = `${reclaimMarkerPath}.recovery-claim`;
+
+    // The orphaned lock content from the *original* crash, sitting at the
+    // fixed release-claim path, exactly as an abandoned release() attempt
+    // would have left it.
+    writeFileSync(lockPath, "abandoned-token", { encoding: "utf8" });
+    renameSync(lockPath, claimedRecordPath);
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(claimedRecordPath, old, old);
+
+    // reclaimMarkerPath and its own recovery-claim, both still present —
+    // as they would be if a *later* recovery attempt crashed immediately
+    // after exclusively creating recoveryClaimPath but before finishing.
+    writeFileSync(reclaimMarkerPath, "", { encoding: "utf8" });
+    utimesSync(reclaimMarkerPath, old, old);
+    writeFileSync(recoveryClaimPath, "", { encoding: "utf8" });
+    utimesSync(recoveryClaimPath, old, old);
+
+    const taskLock = new FileControlledMergeTaskLock(dir, { staleLockMs: 5 * 60 * 1000 });
+    const result = await taskLock.withLock("BOOT-025", async () => "resumed-after-double-crash");
+    assert.equal(result, "resumed-after-double-crash");
+    assert.equal(existsSync(reclaimMarkerPath), false);
+    assert.equal(existsSync(recoveryClaimPath), false);
+    assert.equal(existsSync(claimedRecordPath), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a DONE task never touches the task lock", async () => {
   const { store: evidence } = makeEvidenceStore();
   const recorded = evidence.record({

@@ -167,6 +167,26 @@ test("a leap-second occurredAt under a nonzero UTC offset is accepted even when 
   assert.equal(notLeap.rejection.code, "INVALID_REQUEST");
 });
 
+test("a leap-second occurredAt on a nonexistent calendar date is rejected, not silently rolled forward by Date.parse", () => {
+  // Date.parse("2026-02-30T23:59:59Z") normalizes Feb 30 forward into March
+  // rather than rejecting it, so a bare Date.parse sanity check on the
+  // :59-substituted form would let this slip through as if it were valid —
+  // the same component-range gap control-plane.controlled-merge's and
+  // control-plane.evidence-store's own validators are already hardened
+  // against.
+  const record = createLifecycleRecord("BOOT-009");
+  const result = transitionLifecycle(record, request(record, "READY", "invalid-calendar-leap-second", { occurredAt: "2026-02-30T23:59:60Z" }));
+  assert.equal(result.ok, false);
+  assert.equal(result.rejection.code, "INVALID_REQUEST");
+});
+
+test("an ordinary (non-leap-second) occurredAt on a nonexistent calendar date is rejected", () => {
+  const record = createLifecycleRecord("BOOT-009");
+  const result = transitionLifecycle(record, request(record, "READY", "invalid-calendar", { occurredAt: "2026-02-30T12:00:00Z" }));
+  assert.equal(result.ok, false);
+  assert.equal(result.rejection.code, "INVALID_REQUEST");
+});
+
 test("occurredAt accepts RFC 3339's permitted lowercase 't'/'z' designators, matching the other validators in the pipeline", () => {
   const record = createLifecycleRecord("BOOT-009");
   const result = transitionLifecycle(record, request(record, "READY", "lowercase-designators", { occurredAt: "2026-09-10t12:00:00z" }));

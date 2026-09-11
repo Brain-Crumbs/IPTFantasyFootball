@@ -182,6 +182,37 @@ test("a competing stale recovery claim cannot replace the winning recovery", () 
   assert.equal(store.get("BOOT-010").lockId, "lock-a");
 }));
 
+test("recoverStale() is blocked while a concurrent release() reservation is active, even though it bypasses its own recovery claim", () => withStore((store, root) => {
+  assert.equal(store.acquire(acquire({ expiresAt: "2026-09-03T23:01:00Z" })).ok, true);
+
+  // Simulate a concurrent release() call that has claimed intent to release
+  // (its reservation marker is active) but has not yet finished — the
+  // exact window during which recoverStale()'s own internal
+  // #acquire(..., true) call must still back off, not only an ordinary
+  // acquire(). recoverStale() legitimately bypasses its *own* recovery
+  // claim via allowRecoveryClaim, but that bypass must never also disable
+  // the release-reservation check: if it did, recoverStale() could create
+  // and return a replacement assignment here that release()'s still-
+  // pending final archive step then archives instead of its own record,
+  // even though recoverStale() already told its caller the replacement
+  // was successfully acquired.
+  writeFileSync(
+    join(root, ".claims", "BOOT-010.release.json"),
+    `${JSON.stringify({ lockId: "lock-a", occurredAt: "2026-09-03T23:02:00Z" })}\n`,
+    { encoding: "utf8", flag: "wx" },
+  );
+
+  const result = store.recoverStale(recovery());
+  assert.equal(result.ok, false);
+  assert.equal(result.rejection.code, "LOCK_CONFLICT");
+
+  // The replacement identity recoverStale() was about to introduce must
+  // never survive at the active path while release()'s own claim is still
+  // outstanding.
+  const current = store.get("BOOT-010");
+  assert.ok(current === null || current.lockId !== "lock-b");
+}));
+
 test("atomic lock-file acquisition is not wedged by an empty legacy task directory", () => withStore((store, root) => {
   mkdirSync(join(root, "BOOT-010"));
   const result = store.acquire(acquire());
@@ -386,6 +417,19 @@ test("two leap-second instants differing only far into their fractional digits s
   assert.equal(acquired.ok, true, acquired.ok ? undefined : acquired.rejection.reason);
 }));
 
+test("leap-second fraction comparison has no fixed precision ceiling — two instants differing only past 30 fractional digits still compare correctly", () => withStore((store) => {
+  // RFC 3339's own fractional-seconds grammar is unbounded (`(?:\.\d+)?`),
+  // so any fixed-width numeric encoding of the fraction (bigint included)
+  // imposes an artificial ceiling past which distinct, validly-ordered
+  // instants collapse to the same value. Thirty-one leading zeros plus a
+  // trailing digit exercises well past a 30-digit ceiling specifically.
+  const acquired = store.acquire(acquire({
+    acquiredAt: `1990-12-31T23:59:60.${"0".repeat(31)}1Z`,
+    expiresAt: `1990-12-31T23:59:60.${"0".repeat(31)}2Z`,
+  }));
+  assert.equal(acquired.ok, true, acquired.ok ? undefined : acquired.rejection.reason);
+}));
+
 test("an abandoned release reservation that already crashed mid-recovery (its .reclaim marker orphaned) is still reclaimed, not left blocking forever", () => withStore((store, root) => {
   const acquired = store.acquire(acquire());
   assert.equal(acquired.ok, true);
@@ -415,6 +459,40 @@ test("an abandoned release reservation that already crashed mid-recovery (its .r
   assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
   assert.deepEqual(store.get("BOOT-010"), original);
   assert.equal(existsSync(reclaimMarkerPath), false);
+}));
+
+test("a process that crashed right after claiming the private recovery-claim path (but before finishing) does not permanently wedge the task", () => withStore((store, root) => {
+  const acquired = store.acquire(acquire());
+  assert.equal(acquired.ok, true);
+  const original = store.get("BOOT-010");
+
+  // The private recovery-claim path is created via an exclusive-create
+  // write, not a rename — so unlike reclaimMarkerPath, a crash immediately
+  // after that write leaves both reclaimMarkerPath AND the orphaned
+  // recovery-claim sitting there together. Without recovering the orphaned
+  // claim too, every later caller's own exclusive-create attempt would fail
+  // with EEXIST and back off without ever removing reclaimMarkerPath,
+  // permanently blocking #hasReleaseClaim() forever.
+  const activePath = join(root, "BOOT-010.lock.json");
+  const claimedRecordPath = `${activePath}.release-claim`;
+  const reservationPath = join(root, ".claims", "BOOT-010.release.json");
+  const reclaimMarkerPath = `${reservationPath}.reclaim`;
+  const recoveryClaimPath = `${reclaimMarkerPath}.recovery-claim`;
+  renameSync(activePath, claimedRecordPath);
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(claimedRecordPath, old, old);
+
+  writeFileSync(reclaimMarkerPath, `${JSON.stringify({ lockId: "lock-a" })}\n`, { encoding: "utf8", flag: "wx" });
+  utimesSync(reclaimMarkerPath, old, old);
+  writeFileSync(recoveryClaimPath, `${JSON.stringify({ lockId: "lock-a" })}\n`, { encoding: "utf8", flag: "wx" });
+  utimesSync(recoveryClaimPath, old, old);
+
+  const attempted = store.acquire(acquire({ ownerId: "agent-c", runId: "run-c", lockId: "lock-c" }));
+  assert.equal(attempted.ok, false);
+  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
+  assert.deepEqual(store.get("BOOT-010"), original);
+  assert.equal(existsSync(reclaimMarkerPath), false);
+  assert.equal(existsSync(recoveryClaimPath), false);
 }));
 
 test("an abandoned release reclaim never clobbers a fresh, concurrently-created assignment (a plain renameSync would silently overwrite it)", () => withStore((store, root) => {

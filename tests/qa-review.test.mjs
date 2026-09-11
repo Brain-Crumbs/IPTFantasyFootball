@@ -772,6 +772,46 @@ test("FileQaReviewTaskLock reclaims a release reservation that already crashed m
   }
 });
 
+test("FileQaReviewTaskLock recovers even when a process crashed right after claiming the private recovery-claim path (but before finishing)", () => {
+  // The private recovery-claim path is created via an exclusive-create
+  // write, not a rename — so unlike reclaimMarkerPath, a crash immediately
+  // after that write leaves both reclaimMarkerPath AND the orphaned
+  // recovery-claim sitting there together. Without recovering the orphaned
+  // claim too, every later caller's own exclusive-create attempt would fail
+  // with EEXIST and back off without ever removing reclaimMarkerPath,
+  // permanently blocking tryCreate() forever.
+  const root = mkdtempSync(join(tmpdir(), "ipt-qa-review-lock-orphaned-recovery-claim-"));
+  try {
+    const lock = new FileQaReviewTaskLock(root);
+    const lockPath = join(root, "BOOT-018.lifecycle.lock");
+    const claimPath = `${lockPath}.release-claim`;
+    const reservationPath = `${lockPath}.release-reservation`;
+    const reclaimMarkerPath = `${reservationPath}.reclaim`;
+    const recoveryClaimPath = `${reclaimMarkerPath}.recovery-claim`;
+
+    writeFileSync(lockPath, String(Date.now() - 10 * 60 * 1000), { encoding: "utf8" });
+    renameSync(lockPath, claimPath);
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(claimPath, old, old);
+
+    writeFileSync(reclaimMarkerPath, "", { encoding: "utf8" });
+    utimesSync(reclaimMarkerPath, old, old);
+    writeFileSync(recoveryClaimPath, "", { encoding: "utf8" });
+    utimesSync(recoveryClaimPath, old, old);
+
+    let ran = false;
+    lock.withLock("BOOT-018", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the double-orphaned recovery to still complete rather than wedging the task forever");
+    assert.equal(existsSync(reclaimMarkerPath), false);
+    assert.equal(existsSync(recoveryClaimPath), false);
+    assert.equal(existsSync(claimPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("RepositoryQaContextSource includes a dependency task's affected contract and an exact-revision diff", () => {
   const dependency = task({ taskId: "BOOT-017", dependencies: [], affectedContracts: ["control-plane.review-framework"] });
   const primary = task({ taskId: "BOOT-018", dependencies: ["BOOT-017"], affectedContracts: [] });

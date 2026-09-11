@@ -1538,15 +1538,47 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     }
     try {
       writeFileSync(recoveryClaimPath, markerContent, { encoding: "utf8", flag: "wx" });
-    } catch {
-      return; // Another caller already won this exact claim.
-    }
-    try {
-      utimesSync(recoveryClaimPath, markerMtime, markerMtime);
-    } catch {
-      // Lost ownership of the just-written file in an extremely narrow
-      // window; harmless — nothing downstream depends on this copy's own
-      // mtime once ownership is established.
+      try {
+        utimesSync(recoveryClaimPath, markerMtime, markerMtime);
+      } catch {
+        // Lost ownership of the just-written file in an extremely narrow
+        // window; harmless — nothing downstream depends on this copy's own
+        // mtime once ownership is established.
+      }
+    } catch (error: unknown) {
+      // EEXIST can mean two different things: a genuinely concurrent
+      // caller currently racing this exact claim right now (a live claim,
+      // back off and let it finish), or an earlier caller's own claim that
+      // itself crashed before finishing — recoveryClaimPath is private and
+      // the only code that ever writes to it is this exact block, so if
+      // one is already sitting there and old enough to be considered
+      // abandoned by the same staleLockMs threshold as everything else in
+      // this method, this generation never completed and would otherwise
+      // wedge reclaimMarkerPath (still present, per the read above) as a
+      // permanent block on tryCreate() forever, with nothing left to ever
+      // revisit it — the exact same recursive-crash gap already closed for
+      // reclaimMarkerPath itself, one level deeper. There is nothing left
+      // to *claim* in that case: this caller simply resumes the very same
+      // recovery using the orphaned copy already there (its content is
+      // necessarily identical to what was just read from reclaimMarkerPath
+      // above, since nothing ever mutates either file's content after
+      // creation — only this claim step writes recoveryClaimPath, and
+      // reclaimMarkerPath's own content never changes until it is finally
+      // unlinked).
+      if (errorCode(error) !== "EEXIST") return;
+      let existingClaimStats: { readonly mtimeMs: number } | null;
+      try {
+        existingClaimStats = statSync(recoveryClaimPath);
+      } catch {
+        existingClaimStats = null;
+      }
+      if (existingClaimStats === null || Date.now() - existingClaimStats.mtimeMs <= this.staleLockMs) {
+        // Either it just vanished (another caller already finished this
+        // exact recovery — nothing left to do), or it is still genuinely
+        // fresh (a live, concurrent claim in flight right now) — back off
+        // either way rather than race it.
+        return;
+      }
     }
 
     // Restoring via a plain renameSync onto lockPath would not be safe

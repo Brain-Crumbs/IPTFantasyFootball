@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const ASSIGNMENT_LOCK_SCHEMA_ID = "ipt.assignment-lock" as const;
@@ -205,7 +205,19 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     // began but before the exclusive file create succeeded. Roll back this just-
     // created assignment rather than allowing ordinary acquisition to bypass an
     // in-flight explicit stale-recovery operation.
-    if (!allowRecoveryClaim && (this.#hasRecoveryClaim(request.taskId) || this.#hasReleaseClaim(request.taskId))) {
+    //
+    // #hasRecoveryClaim() is skipped only when this call is recoverStale()'s
+    // own internal #acquire(..., true) — it would otherwise block forever on
+    // the very claim recoverStale() itself is holding. #hasReleaseClaim() is
+    // NOT skipped even then: if recoverStale() reads a stale assignment just
+    // as a concurrent release() claims it away, writes its own temporary
+    // RELEASED record, and hasn't yet reached its own final archive rename,
+    // recoverStale() resuming past this point could create and return a
+    // replacement here — only for release()'s still-pending final rename to
+    // then archive that live replacement instead of its own record, leaving
+    // recoverStale()'s caller believing it holds an assignment that has
+    // actually just been archived out from under it.
+    if ((!allowRecoveryClaim && this.#hasRecoveryClaim(request.taskId)) || this.#hasReleaseClaim(request.taskId)) {
       const current = this.get(request.taskId);
       if (current && sameIdentity(current, request)) unlinkSync(this.#activePath(request.taskId));
       return reject("LOCK_CONFLICT", `Task '${request.taskId}' has an explicit stale recovery or release in progress.`);
@@ -577,14 +589,8 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     // it above, or because it was already sitting there — which can only
     // mean a *previous* call crashed between renaming the original
     // reservation away and finishing this same recovery (a rename is never
-    // observed half-done). Either way the marker's own mtime, preserved by
-    // the rename, still reflects the original reservation's true age, so
-    // it is recovered identically from here whether freshly claimed just
-    // now or found already abandoned: without this, a crash landing in
-    // that exact one-line gap would leave the marker blocking every future
-    // tryCreate()/hasReleaseClaim() check forever, since nothing else would
-    // ever revisit it once the original reservation path is gone for good.
-
+    // observed half-done), or that a concurrent caller reached this exact
+    // point moments earlier.
     let claimedStats: { readonly mtimeMs: number } | null;
     try {
       claimedStats = statSync(reclaimMarkerPath);
@@ -603,6 +609,76 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
         // releaseClaimPath; there is nothing further to restore onto.
       }
       return;
+    }
+
+    // Nothing so far has actually *claimed* sole ownership of the
+    // now-confirmed-stale reclaimMarkerPath — only observed and re-verified
+    // that it exists and is old. Left at a bare observation, every
+    // concurrent caller reaching here would race each other through the
+    // restore logic below on the very same fixed claim path — and a caller
+    // lagging between this observation and that restore could consume a
+    // brand-new, unrelated claim a fresh release() legitimately created
+    // against releaseClaimPath in the meantime, restoring live, in-progress
+    // content as though it belonged to the old crash and leaving that
+    // release's own record behind afterward. Claim exclusive ownership of
+    // *this* recovery attempt first, using a dedicated, private claim path
+    // that no other code path ever inspects — deliberately distinct from
+    // releaseClaimPath itself, since reusing that path would let a
+    // completely unrelated, brand-new release() call mistake this call's
+    // own in-progress claim for a stale *public* reservation of its own,
+    // as neither acquire() nor release() ever checks reclaimMarkerPath
+    // before creating a fresh releaseClaimPath. reclaimMarkerPath itself is
+    // left completely untouched until this claim fully lands, so it keeps
+    // blocking #hasReleaseClaim() for the entire recovery, exactly as it
+    // already did before this claim began.
+    const recoveryClaimPath = `${reclaimMarkerPath}.recovery-claim`;
+    let markerContent: string;
+    let markerMtime: Date;
+    try {
+      markerContent = readFileSync(reclaimMarkerPath, "utf8");
+      markerMtime = new Date(statSync(reclaimMarkerPath).mtimeMs);
+    } catch {
+      return; // Already gone; another caller already claimed or finished it.
+    }
+    try {
+      writeFileSync(recoveryClaimPath, markerContent, { encoding: "utf8", flag: "wx" });
+      try {
+        utimesSync(recoveryClaimPath, markerMtime, markerMtime);
+      } catch {
+        // Lost ownership of the just-written file in an extremely narrow
+        // window; harmless — nothing downstream depends on this copy's own
+        // mtime once ownership is established.
+      }
+    } catch (error: unknown) {
+      // EEXIST can mean two different things: a genuinely concurrent
+      // caller currently racing this exact claim right now (a live claim,
+      // back off and let it finish), or an earlier caller's own claim that
+      // itself crashed before finishing — recoveryClaimPath is private and
+      // the only code that ever writes to it is this exact block, so if one
+      // is already sitting there and old enough to be considered abandoned
+      // by the same RELEASE_CLAIM_STALE_MS threshold as everything else
+      // here, this generation never completed and would otherwise wedge
+      // reclaimMarkerPath (still present, per the read above) as a
+      // permanent block on #hasReleaseClaim() forever, with nothing left to
+      // ever revisit it. There is nothing left to *claim* in that case:
+      // this caller simply resumes the very same recovery using the
+      // orphaned copy already there (its content is necessarily identical
+      // to what was just read from reclaimMarkerPath above, since nothing
+      // ever mutates either file's content after creation).
+      if (errorCode(error) !== "EEXIST") return;
+      let existingClaimStats: { readonly mtimeMs: number } | null;
+      try {
+        existingClaimStats = statSync(recoveryClaimPath);
+      } catch {
+        existingClaimStats = null;
+      }
+      if (existingClaimStats === null || Date.now() - existingClaimStats.mtimeMs <= RELEASE_CLAIM_STALE_MS) {
+        // Either it just vanished (another caller already finished this
+        // exact recovery — nothing left to do), or it is still genuinely
+        // fresh (a live, concurrent claim in flight right now) — back off
+        // either way rather than race it.
+        return;
+      }
     }
 
     // Restoring via a plain renameSync onto activePath would not be safe
@@ -638,6 +714,11 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     }
     try {
       unlinkSync(reclaimMarkerPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    try {
+      unlinkSync(recoveryClaimPath);
     } catch {
       // Already gone; nothing left to clean up.
     }
@@ -712,14 +793,14 @@ function requireDate(name: string, value: string): string | null {
   return toComparableInstant(value) === null ? `${name} must be a valid RFC 3339 date-time.` : null;
 }
 
-// `<=` between two toComparableInstant() results, treating an invalid
-// (unparseable) instant as never comparable — the two call sites here only
-// ever invoke this on strings requireDate has already validated, so null
-// is not expected in practice, but it is handled rather than assumed away.
+// a <= b, treating an invalid (unparseable) instant as never comparable —
+// the two call sites here only ever invoke this on strings requireDate has
+// already validated, so null is not expected in practice, but it is
+// handled rather than assumed away.
 function instantAtOrBefore(a: string, b: string): boolean {
   const instantA = toComparableInstant(a);
   const instantB = toComparableInstant(b);
-  return instantA !== null && instantB !== null && instantA <= instantB;
+  return instantA !== null && instantB !== null && instantsLessOrEqual(instantA, instantB);
 }
 
 // A leap second (a seconds value of exactly 60) has no representation
@@ -733,45 +814,42 @@ function instantAtOrBefore(a: string, b: string): boolean {
 // expiry that is not later than acquisition, and isStale could never
 // consider that lock expired, permanently blocking explicit recovery.
 //
-// Returns a bigint scaled at SUBDIVISIONS_PER_MS subdivisions per
-// millisecond since the epoch (null for an unparseable value), not a
-// `number` millisecond count: two different leap-second instants within
-// the very same leap second (e.g. ":60.100" acquired, ":60.900" expiring)
-// still need to compare correctly, which means placing each leap second's
-// own fraction somewhere strictly between the ":59" second before it and
-// the next minute's ":00.000" — and once that fractional placement is
-// added to an epoch-millisecond magnitude (already 12-13 significant
-// decimal digits) as a `number`, IEEE-754's ~15-17 significant-digit
-// budget leaves too little room left for the fraction, silently
-// collapsing distinct, validly-ordered instants to the same float. A
-// naive bigint fix (scale by a fixed subdivision count and *divide* the
-// fraction's digits down to fit) still loses precision the same way once
-// the fraction has enough digits to outrun that subdivision count's own
-// resolution — division is inherently lossy. The encoding below instead
-// reads the fraction's digits directly as an exact integer numerator
-// (padded/truncated to a fixed digit count, never divided), so ordering is
-// preserved exactly for any fraction up to that many digits — far beyond
-// any realistic clock's actual resolution.
-const LEAP_FRACTION_DIGITS = 30;
-const SUBDIVISIONS_PER_MS = 10n ** BigInt(LEAP_FRACTION_DIGITS + 1);
+// A plain millisecond `number` can't represent a leap second at all (see
+// below), and baking a leap second's own sub-millisecond fraction into a
+// single fixed-width `number` or `bigint` — whether via float addition or
+// bigint scale-and-divide/pad — always imposes *some* precision ceiling,
+// because RFC 3339 places no upper bound on how many fractional digits a
+// timestamp may carry (`RFC3339_PATTERN`'s `(?:\.\d+)?` is unbounded).
+// Comparing the two leap seconds' own fraction *strings* directly instead
+// — pairwise, at comparison time, right-padded to a common length rather
+// than pre-baked into any fixed-width number — has no ceiling at all: it
+// stays exact for a fraction of any length.
+interface ComparableInstant {
+  readonly ms: bigint;
+  // null for a non-leap instant (ms alone is authoritative). For a leap
+  // second, the raw, unpadded fractional digit string (possibly empty),
+  // and `ms` is anchored to the *last* representable millisecond of the
+  // ":59" second before it (see toComparableInstant) — never a genuine
+  // instant in its own right, only a comparison anchor.
+  readonly leapFraction: string | null;
+}
 
-function toComparableInstant(value: string): bigint | null {
+function toComparableInstant(value: string): ComparableInstant | null {
   const isLeapSecond = value.length > 18 && value[17] === "6" && value[18] === "0";
   if (!isLeapSecond) {
     const ms = Date.parse(value);
-    return Number.isNaN(ms) ? null : BigInt(ms) * SUBDIVISIONS_PER_MS;
+    return Number.isNaN(ms) ? null : { ms: BigInt(ms), leapFraction: null };
   }
   // Date.parse has no representation for a leap second (":60") at all, so
   // some substitution is unavoidable — but no whole-millisecond placement
   // can ever work: RFC 3339's own leap-second contract requires the result
   // to compare strictly later than *every* instant in the ":59" second
   // before it, including ":59.999", and strictly earlier than the next
-  // minute's own ":00.000". At SUBDIVISIONS_PER_MS resolution there is a
-  // full millisecond's worth of subdivisions of room between ":59.999"
-  // (999 whole subdivided-milliseconds past the whole ":59" second) and
-  // the next minute (1000 past it) — ample space, via the exact digit
-  // encoding below, for every leap-second instant to land strictly
-  // between the two, ordered by its own fraction.
+  // minute's own ":00.000". Anchoring at the ":59" second's own last
+  // representable millisecond (base59Ms + 999) and breaking every tie
+  // against a non-leap instant at that exact ms in the leap second's own
+  // favor (see instantsLessOrEqual) places it correctly without needing
+  // any sub-millisecond numeric value at all.
   const suffixMatch = /^(?:\.(\d+))?([Zz]|[+-]\d{2}:\d{2})$/.exec(value.slice(19));
   if (suffixMatch === null) return null;
   const fractionDigits = suffixMatch[1] ?? "";
@@ -779,16 +857,21 @@ function toComparableInstant(value: string): bigint | null {
   const wholeSecond59Form = `${value.slice(0, 17)}59${offset}`;
   const base59Ms = Date.parse(wholeSecond59Form);
   if (Number.isNaN(base59Ms)) return null;
-  const base59Scaled = BigInt(base59Ms) * SUBDIVISIONS_PER_MS;
-  // Padded (with trailing zeros) or truncated to exactly LEAP_FRACTION_DIGITS
-  // digits — read directly as an integer numerator, never divided, so two
-  // fractions differing anywhere within that many digits map to different
-  // integers. +1 keeps the result strictly greater than 0 even for an
-  // all-zero/absent fraction; the result ranges over [1, 10^LEAP_FRACTION_DIGITS],
-  // always strictly less than SUBDIVISIONS_PER_MS (10^(LEAP_FRACTION_DIGITS+1)).
-  const paddedFraction = `${fractionDigits}${"0".repeat(LEAP_FRACTION_DIGITS)}`.slice(0, LEAP_FRACTION_DIGITS);
-  const epsilon = BigInt(paddedFraction) + 1n;
-  return base59Scaled + 999n * SUBDIVISIONS_PER_MS + epsilon;
+  return { ms: BigInt(base59Ms) + 999n, leapFraction: fractionDigits };
+}
+
+function instantsLessOrEqual(a: ComparableInstant, b: ComparableInstant): boolean {
+  if (a.ms !== b.ms) return a.ms < b.ms;
+  if (a.leapFraction === null && b.leapFraction === null) return true; // equal, both non-leap
+  if (a.leapFraction === null) return true; // a non-leap instant always sorts before a leap second sharing its ms
+  if (b.leapFraction === null) return false;
+  // Both leap seconds anchored at the same ms: compare their own fraction
+  // digits directly as arbitrary-precision decimals. Right-padding the
+  // shorter string to the longer one's length with zeros first (":6" and
+  // ":60" both mean 0.6, not 0.6 vs 0.06) makes plain lexicographic string
+  // comparison equal numeric comparison — exact for any digit count.
+  const length = Math.max(a.leapFraction.length, b.leapFraction.length);
+  return a.leapFraction.padEnd(length, "0") <= b.leapFraction.padEnd(length, "0");
 }
 
 function freezeLock(lock: AssignmentLockRecord): AssignmentLockRecord {
