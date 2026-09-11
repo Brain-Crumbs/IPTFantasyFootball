@@ -1372,21 +1372,35 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       return; // Already gone; nothing left to release.
     }
 
-    let observed: string | null;
+    let observed: string;
     try {
       observed = readFileSync(claimPath, "utf8");
     } catch {
-      observed = null;
+      // An unreadable claim (a transient I/O error, not "genuinely gone" —
+      // the rename just above guarantees claimPath exists) must never be
+      // treated as safe to discard: the content could belong to a live
+      // holder's own fresh replacement lock (a reclaimer's), and discarding
+      // it would let that holder's callback keep running after its lock
+      // was silently deleted, with a third caller free to also enter the
+      // critical section. Give the content back to lockPath, whatever it
+      // actually is, rather than risk losing it — the reservation this
+      // call already holds keeps ordinary tryCreate() blocked the entire
+      // time, so lockPath is guaranteed still vacant to restore onto.
+      try {
+        renameSync(claimPath, lockPath);
+      } catch {
+        // Someone else has since restored or replaced it; nothing further
+        // to do.
+      }
+      return;
     }
     if (observed !== token) {
       // Not this holder's own lock (a reclaimer's fresh replacement, most
       // likely) — restore it untouched rather than discarding it.
-      if (observed !== null) {
-        try {
-          writeFileSync(lockPath, observed, { encoding: "utf8", flag: "wx" });
-        } catch {
-          // A fresh lock now exists at lockPath; nothing to restore onto.
-        }
+      try {
+        writeFileSync(lockPath, observed, { encoding: "utf8", flag: "wx" });
+      } catch {
+        // A fresh lock now exists at lockPath; nothing to restore onto.
       }
       try {
         unlinkSync(claimPath);
@@ -1529,22 +1543,21 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     // handling already protects the lock file itself.
     const recoveryClaimPath = `${reclaimMarkerPath}.recovery-claim`;
     let markerContent: string;
-    let markerMtime: Date;
     try {
       markerContent = readFileSync(reclaimMarkerPath, "utf8");
-      markerMtime = new Date(statSync(reclaimMarkerPath).mtimeMs);
     } catch {
       return; // Already gone; another caller already claimed or finished it.
     }
     try {
       writeFileSync(recoveryClaimPath, markerContent, { encoding: "utf8", flag: "wx" });
-      try {
-        utimesSync(recoveryClaimPath, markerMtime, markerMtime);
-      } catch {
-        // Lost ownership of the just-written file in an extremely narrow
-        // window; harmless — nothing downstream depends on this copy's own
-        // mtime once ownership is established.
-      }
+      // Deliberately NOT stamped with reclaimMarkerPath's own (already
+      // stale) mtime: this write's own natural "now" timestamp is what
+      // makes recoveryClaimPath itself correctly read as fresh for as long
+      // as this call is still actively working the recovery below. Backdating
+      // it here would make a live, in-progress claim immediately look
+      // abandoned to a concurrent caller hitting EEXIST just below — the
+      // exact race this whole claim exists to prevent, just moved one level
+      // deeper.
     } catch (error: unknown) {
       // EEXIST can mean two different things: a genuinely concurrent
       // caller currently racing this exact claim right now (a live claim,
@@ -1640,7 +1653,69 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     }
   }
 
+  // The rollback claim in tryCreate()'s own "someone else reserved this
+  // path" branch is a private detail of that method alone — recognized by
+  // nothing else, including reclaimAbandonedReservation() itself. A crash
+  // between claiming lockPath away into it and finishing that same
+  // rollback would otherwise leave the displaced holder's content stranded
+  // there forever, with nothing left to ever recover it, while lockPath
+  // itself sits vacant for any later tryCreate() to happily recreate — a
+  // genuine double-entry race. Returns false when this call should back
+  // off entirely (a live rollback is still genuinely in flight, or an
+  // abandoned one was just recovered and lockPath is no longer vacant to
+  // create into); true when it is safe to proceed with tryCreate()'s own
+  // normal logic.
+  private recoverOrDeferToRollbackClaim(lockPath: string): boolean {
+    const rollbackClaimPath = this.tryCreateRollbackClaimPath(lockPath);
+    let stats: { readonly mtimeMs: number } | null;
+    try {
+      stats = statSync(rollbackClaimPath);
+    } catch {
+      return true; // Nothing there; proceed normally.
+    }
+    if (Date.now() - stats.mtimeMs <= this.staleLockMs) return false; // Still genuinely in flight; back off.
+
+    // Stale: restore its content back to lockPath, preserving the
+    // orphan's own original mtime the same way
+    // reclaimAbandonedReservation's own restore does, then drop the
+    // marker — self-healing past the crash.
+    let orphaned: string;
+    try {
+      orphaned = readFileSync(rollbackClaimPath, "utf8");
+    } catch {
+      return true; // Already gone — another caller already recovered it.
+    }
+    const orphanedMtime = new Date(stats.mtimeMs);
+    try {
+      writeFileSync(lockPath, orphaned, { encoding: "utf8", flag: "wx" });
+      try {
+        utimesSync(lockPath, orphanedMtime, orphanedMtime);
+      } catch {
+        // Lost ownership of the just-written file in an extremely narrow
+        // window; the lock will simply need to age out again.
+      }
+    } catch {
+      // lockPath already holds a fresh record — a concurrent, legitimate
+      // tryCreate() won the race; leave it untouched.
+    }
+    try {
+      unlinkSync(rollbackClaimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    return false;
+  }
+
   private tryCreate(lockPath: string): string | null {
+    // A rollback claim (below) can itself be interrupted by a crash between
+    // claiming lockPath away and finishing that same rollback — recognized
+    // by nothing else in this class, since it is a private detail of this
+    // method's own rollback path, not the public reservation/reclaim-marker
+    // mechanism. Recover or defer to it first, before any of this call's
+    // own logic runs, so an abandoned one never wedges the displaced
+    // holder's content forever and a still-live one is never raced.
+    if (!this.recoverOrDeferToRollbackClaim(lockPath)) return null;
+
     // A release() or reclaimIfStale() call in flight for this exact lock
     // path has claimed it away for inspection (see their own comments):
     // ordinary creation must stay blocked for that entire window, not just

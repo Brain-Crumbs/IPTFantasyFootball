@@ -213,6 +213,41 @@ test("recoverStale() is blocked while a concurrent release() reservation is acti
   assert.ok(current === null || current.lockId !== "lock-b");
 }));
 
+test("acquire() rolls back its own just-created assignment via an atomic claim, not a blind unlink, when a recovery claim appears mid-acquisition", () => withStore((store, root) => {
+  // A recovery claim can be created by another process after this
+  // acquisition began but before its own exclusive file create succeeded.
+  // The rollback must claim (rename) whatever currently sits at the active
+  // path and verify it is genuinely this attempt's own record before
+  // discarding it — never read-then-unlink the shared pathname directly,
+  // which could otherwise delete a different, later caller's legitimate
+  // replacement if one appeared in the gap.
+  mkdirSync(join(root, ".claims"), { recursive: true });
+  writeFileSync(
+    join(root, ".claims", "BOOT-010-lock-a.recovery.json"),
+    `${JSON.stringify({
+      taskId: "BOOT-010",
+      expectedStaleLockId: "some-other-lock",
+      recoveryActorId: "operator-x",
+      recoveryRunId: "recovery-run-x",
+      recoveryReason: "Simulated concurrent recovery claim.",
+      replacementLockId: "lock-x",
+      replacementOwnerId: "agent-x",
+      replacementRunId: "run-x",
+      claimedAt: "2026-09-03T23:00:00Z",
+    })}\n`,
+    { encoding: "utf8", flag: "wx" },
+  );
+
+  const result = store.acquire(acquire());
+  assert.equal(result.ok, false);
+  assert.equal(result.rejection.code, "LOCK_CONFLICT");
+
+  // The just-created record was fully rolled back: nothing survives at the
+  // active path, and the rollback's own private claim path is cleaned up.
+  assert.equal(store.get("BOOT-010"), null);
+  assert.equal(existsSync(join(root, "BOOT-010.lock.json.acquire-rollback-claim")), false);
+}));
+
 test("atomic lock-file acquisition is not wedged by an empty legacy task directory", () => withStore((store, root) => {
   mkdirSync(join(root, "BOOT-010"));
   const result = store.acquire(acquire());
@@ -428,6 +463,22 @@ test("leap-second fraction comparison has no fixed precision ceiling — two ins
     expiresAt: `1990-12-31T23:59:60.${"0".repeat(31)}2Z`,
   }));
   assert.equal(acquired.ok, true, acquired.ok ? undefined : acquired.rejection.reason);
+}));
+
+test("a leap-second acquiredAt/expiresAt on a nonexistent calendar date is rejected, not silently rolled forward by Date.parse", () => withStore((store) => {
+  // Date.parse("2026-02-30T23:59:59Z") normalizes Feb 30 forward into March
+  // rather than rejecting it, so a bare Date.parse-based check on the
+  // :59-substituted form would let this slip through as if it were valid —
+  // the same component-range gap control-plane.controlled-merge's and
+  // control-plane.evidence-store's own validators are already hardened
+  // against, and lifecycle/state-machine's own occurredAt validator too.
+  const invalidAcquiredAt = store.acquire(acquire({ acquiredAt: "2026-02-30T23:59:60Z" }));
+  assert.equal(invalidAcquiredAt.ok, false);
+  assert.equal(invalidAcquiredAt.rejection.code, "INVALID_REQUEST");
+
+  const invalidExpiresAt = store.acquire(acquire({ expiresAt: "2026-02-30T23:59:60Z" }));
+  assert.equal(invalidExpiresAt.ok, false);
+  assert.equal(invalidExpiresAt.rejection.code, "INVALID_REQUEST");
 }));
 
 test("an abandoned release reservation that already crashed mid-recovery (its .reclaim marker orphaned) is still reclaimed, not left blocking forever", () => withStore((store, root) => {

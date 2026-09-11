@@ -115,6 +115,11 @@ interface RecoveryClaim {
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
 const RFC3339_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/i;
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
 
 // release()'s own reservation marker and claimed-record files are held only
 // for the duration of one synchronous release() call — effectively
@@ -218,8 +223,53 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     // recoverStale()'s caller believing it holds an assignment that has
     // actually just been archived out from under it.
     if ((!allowRecoveryClaim && this.#hasRecoveryClaim(request.taskId)) || this.#hasReleaseClaim(request.taskId)) {
-      const current = this.get(request.taskId);
-      if (current && sameIdentity(current, request)) unlinkSync(this.#activePath(request.taskId));
+      // A blind read-then-unlink here is not safe: between the read and
+      // the unlink, the release()/recovery this check just detected could
+      // archive this exact record, and a completely different acquire()
+      // could create its own replacement at the same path — deleting that
+      // replacement would strand its own caller believing it holds an
+      // assignment that no longer exists. Claim whatever currently sits at
+      // activePath via the same atomic-rename-then-verify pattern used
+      // elsewhere in this class, and only ever discard it if the captured
+      // content is still genuinely this attempt's own just-created record.
+      const activePath = this.#activePath(request.taskId);
+      const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+      try {
+        renameSync(activePath, rollbackClaimPath);
+        let rawClaimed: string | null;
+        try {
+          rawClaimed = readFileSync(rollbackClaimPath, "utf8");
+        } catch {
+          rawClaimed = null;
+        }
+        let isOwnRecord = false;
+        if (rawClaimed !== null) {
+          try {
+            isOwnRecord = sameIdentity(freezeLock(JSON.parse(rawClaimed) as AssignmentLockRecord), request);
+          } catch {
+            // Unreadable/malformed content is never assumed to be this
+            // attempt's own record — treated the same as "not ours" below,
+            // restoring the raw bytes rather than losing them.
+            isOwnRecord = false;
+          }
+        }
+        if (!isOwnRecord && rawClaimed !== null) {
+          try {
+            writeFileSync(activePath, rawClaimed, { encoding: "utf8", flag: "wx" });
+          } catch {
+            // A third operation has since created its own fresh record at
+            // activePath; there is nothing to restore onto.
+          }
+        }
+        try {
+          unlinkSync(rollbackClaimPath);
+        } catch {
+          // Already gone; nothing left to clean up.
+        }
+      } catch {
+        // Already gone — reclaimed, released, or rolled back by this same
+        // logic on a concurrent call; nothing left to roll back.
+      }
       return reject("LOCK_CONFLICT", `Task '${request.taskId}' has an explicit stale recovery or release in progress.`);
     }
 
@@ -633,22 +683,21 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
     // already did before this claim began.
     const recoveryClaimPath = `${reclaimMarkerPath}.recovery-claim`;
     let markerContent: string;
-    let markerMtime: Date;
     try {
       markerContent = readFileSync(reclaimMarkerPath, "utf8");
-      markerMtime = new Date(statSync(reclaimMarkerPath).mtimeMs);
     } catch {
       return; // Already gone; another caller already claimed or finished it.
     }
     try {
       writeFileSync(recoveryClaimPath, markerContent, { encoding: "utf8", flag: "wx" });
-      try {
-        utimesSync(recoveryClaimPath, markerMtime, markerMtime);
-      } catch {
-        // Lost ownership of the just-written file in an extremely narrow
-        // window; harmless — nothing downstream depends on this copy's own
-        // mtime once ownership is established.
-      }
+      // Deliberately NOT stamped with reclaimMarkerPath's own (already
+      // stale) mtime: this write's own natural "now" timestamp is what
+      // makes recoveryClaimPath itself correctly read as fresh for as long
+      // as this call is still actively working the recovery below. Backdating
+      // it here would make a live, in-progress claim immediately look
+      // abandoned to a concurrent caller hitting EEXIST just below — the
+      // exact race this whole claim exists to prevent, just moved one level
+      // deeper.
     } catch (error: unknown) {
       // EEXIST can mean two different things: a genuinely concurrent
       // caller currently racing this exact claim right now (a live claim,
@@ -777,9 +826,30 @@ function requireText(name: string, value: string): string | null {
 function requireDate(name: string, value: string): string | null {
   const match = RFC3339_PATTERN.exec(value);
   if (!match) return `${name} must be a valid RFC 3339 date-time.`;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
   const hour = Number(match[4]);
   const minute = Number(match[5]);
   const second = Number(match[6]);
+  // The regex plus toComparableInstant's own Date.parse-based check alone
+  // cannot reject an out-of-range calendar component: Date.parse() silently
+  // *rolls forward* an invalid date (e.g. "2026-02-30" normalizes to March
+  // 2) rather than rejecting it — a real concern specifically because a
+  // leap-second value here gets substituted to ":59" before ever reaching
+  // toComparableInstant, so a bad calendar component would otherwise slip
+  // through undetected. Mirrors control-plane.controlled-merge's and
+  // control-plane.evidence-store's own isValidRfc3339DateTime component
+  // checks exactly, so this boundary is not semantically weaker than either.
+  if (month < 1 || month > 12) return `${name} must be a valid RFC 3339 date-time.`;
+  const maxDay = month === 2 && isLeapYear(year) ? 29 : (DAYS_IN_MONTH[month - 1] as number);
+  if (day < 1 || day > maxDay) return `${name} must be a valid RFC 3339 date-time.`;
+  if (hour > 23 || minute > 59) return `${name} must be a valid RFC 3339 date-time.`;
+  if (match[7] !== undefined) {
+    const offsetHour = Number(match[8]);
+    const offsetMinute = Number(match[9]);
+    if (offsetHour > 23 || offsetMinute > 59) return `${name} must be a valid RFC 3339 date-time.`;
+  }
   if (second === 60) {
     let offsetMinutesTotal = 0;
     if (match[7] !== undefined) {

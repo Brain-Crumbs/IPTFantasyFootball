@@ -1021,22 +1021,21 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
     // off untouched.
     const recoveryClaimPath = `${reclaimMarkerPath}.recovery-claim`;
     let markerContent: string;
-    let markerMtime: Date;
     try {
       markerContent = readFileSync(reclaimMarkerPath, "utf8");
-      markerMtime = new Date(statSync(reclaimMarkerPath).mtimeMs);
     } catch {
       return; // Already gone; another caller already claimed or finished it.
     }
     try {
       writeFileSync(recoveryClaimPath, markerContent, { encoding: "utf8", flag: "wx" });
-      try {
-        utimesSync(recoveryClaimPath, markerMtime, markerMtime);
-      } catch {
-        // Lost ownership of the just-written file in an extremely narrow
-        // window; harmless — nothing downstream depends on this copy's own
-        // mtime once ownership is established.
-      }
+      // Deliberately NOT stamped with reclaimMarkerPath's own (already
+      // stale) mtime: this write's own natural "now" timestamp is what
+      // makes recoveryClaimPath itself correctly read as fresh for as long
+      // as this call is still actively working the recovery below. Backdating
+      // it here would make a live, in-progress claim immediately look
+      // abandoned to a concurrent caller hitting EEXIST just below — the
+      // exact race this whole claim exists to prevent, just moved one level
+      // deeper.
     } catch (error: unknown) {
       // EEXIST can mean two different things: a genuinely concurrent
       // caller currently racing this exact claim right now (a live claim,
