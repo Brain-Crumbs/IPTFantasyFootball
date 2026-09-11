@@ -658,7 +658,7 @@ function sameIdentity(lock: AssignmentLockRecord, request: AcquireAssignmentRequ
 }
 
 function isStale(lock: AssignmentLockRecord, now: string): boolean {
-  return Boolean(lock.expiresAt && toComparableInstant(lock.expiresAt) <= toComparableInstant(now));
+  return lock.expiresAt !== undefined && instantAtOrBefore(lock.expiresAt, now);
 }
 
 function validateAcquire(request: AcquireAssignmentRequest): string | null {
@@ -670,7 +670,7 @@ function validateAcquire(request: AcquireAssignmentRequest): string | null {
     ?? requireText("lockId", request.lockId)
     ?? requireDate("acquiredAt", request.acquiredAt)
     ?? (request.expiresAt ? requireDate("expiresAt", request.expiresAt) : null)
-    ?? (request.expiresAt && toComparableInstant(request.expiresAt) <= toComparableInstant(request.acquiredAt)
+    ?? (request.expiresAt && instantAtOrBefore(request.expiresAt, request.acquiredAt)
       ? "expiresAt must be later than acquiredAt." : null);
 }
 
@@ -709,7 +709,17 @@ function requireDate(name: string, value: string): string | null {
       return `${name} must be a valid RFC 3339 date-time.`;
     }
   }
-  return Number.isNaN(toComparableInstant(value)) ? `${name} must be a valid RFC 3339 date-time.` : null;
+  return toComparableInstant(value) === null ? `${name} must be a valid RFC 3339 date-time.` : null;
+}
+
+// `<=` between two toComparableInstant() results, treating an invalid
+// (unparseable) instant as never comparable — the two call sites here only
+// ever invoke this on strings requireDate has already validated, so null
+// is not expected in practice, but it is handled rather than assumed away.
+function instantAtOrBefore(a: string, b: string): boolean {
+  const instantA = toComparableInstant(a);
+  const instantB = toComparableInstant(b);
+  return instantA !== null && instantB !== null && instantA <= instantB;
 }
 
 // A leap second (a seconds value of exactly 60) has no representation
@@ -722,47 +732,63 @@ function requireDate(name: string, value: string): string | null {
 // silently compare as NaN forever: validateAcquire could never reject an
 // expiry that is not later than acquisition, and isStale could never
 // consider that lock expired, permanently blocking explicit recovery.
-function toComparableInstant(value: string): number {
+//
+// Returns a bigint scaled at SUBDIVISIONS_PER_MS subdivisions per
+// millisecond since the epoch (null for an unparseable value), not a
+// `number` millisecond count: two different leap-second instants within
+// the very same leap second (e.g. ":60.100" acquired, ":60.900" expiring)
+// still need to compare correctly, which means placing each leap second's
+// own fraction somewhere strictly between the ":59" second before it and
+// the next minute's ":00.000" — and once that fractional placement is
+// added to an epoch-millisecond magnitude (already 12-13 significant
+// decimal digits) as a `number`, IEEE-754's ~15-17 significant-digit
+// budget leaves too little room left for the fraction, silently
+// collapsing distinct, validly-ordered instants to the same float. A
+// naive bigint fix (scale by a fixed subdivision count and *divide* the
+// fraction's digits down to fit) still loses precision the same way once
+// the fraction has enough digits to outrun that subdivision count's own
+// resolution — division is inherently lossy. The encoding below instead
+// reads the fraction's digits directly as an exact integer numerator
+// (padded/truncated to a fixed digit count, never divided), so ordering is
+// preserved exactly for any fraction up to that many digits — far beyond
+// any realistic clock's actual resolution.
+const LEAP_FRACTION_DIGITS = 30;
+const SUBDIVISIONS_PER_MS = 10n ** BigInt(LEAP_FRACTION_DIGITS + 1);
+
+function toComparableInstant(value: string): bigint | null {
   const isLeapSecond = value.length > 18 && value[17] === "6" && value[18] === "0";
-  if (!isLeapSecond) return Date.parse(value);
+  if (!isLeapSecond) {
+    const ms = Date.parse(value);
+    return Number.isNaN(ms) ? null : BigInt(ms) * SUBDIVISIONS_PER_MS;
+  }
   // Date.parse has no representation for a leap second (":60") at all, so
   // some substitution is unavoidable — but no whole-millisecond placement
   // can ever work: RFC 3339's own leap-second contract requires the result
   // to compare strictly later than *every* instant in the ":59" second
   // before it, including ":59.999", and strictly earlier than the next
-  // minute's own ":00.000" — and at whole-millisecond resolution those two
-  // bounds are numerically adjacent integers with no integer between them
-  // (":59.999" and ":00.000" of the next minute are exactly 1ms apart).
-  // A sub-millisecond epsilon is the only way to satisfy both bounds at
-  // once — computed from the whole-second ":59" form with any fraction
-  // discarded, so every leap-second value lands strictly between the ":59"
-  // second before it and the next minute's own ":00.000". Two *different*
-  // leap-second instants (e.g. ":60.100" acquired, ":60.900" expiring)
-  // still need to compare in their own right, though: an expiresAt only
-  // fractionally later than its own acquiredAt within the very same leap
-  // second must not collapse to equal, or a genuinely valid lease spanning
-  // both is wrongly rejected as non-increasing (and, symmetrically,
-  // isStale must not treat a not-yet-expired instant within the leap
-  // second as already past a `now` earlier within it). The leap second's
-  // own fractional digits are therefore preserved, scaled into the
-  // strictly-increasing sub-millisecond gap between ":59.999" and the next
-  // minute rather than discarded.
+  // minute's own ":00.000". At SUBDIVISIONS_PER_MS resolution there is a
+  // full millisecond's worth of subdivisions of room between ":59.999"
+  // (999 whole subdivided-milliseconds past the whole ":59" second) and
+  // the next minute (1000 past it) — ample space, via the exact digit
+  // encoding below, for every leap-second instant to land strictly
+  // between the two, ordered by its own fraction.
   const suffixMatch = /^(?:\.(\d+))?([Zz]|[+-]\d{2}:\d{2})$/.exec(value.slice(19));
-  if (suffixMatch === null) return NaN;
+  if (suffixMatch === null) return null;
   const fractionDigits = suffixMatch[1] ?? "";
   const offset = suffixMatch[2];
   const wholeSecond59Form = `${value.slice(0, 17)}59${offset}`;
-  const base59 = Date.parse(wholeSecond59Form);
-  if (Number.isNaN(base59)) return base59;
-  const fraction = fractionDigits.length > 0 ? Number(`0.${fractionDigits}`) : 0;
-  // epsilon ranges over (0.001, 0.999): strictly greater than 0 (so even a
-  // zero fraction lands strictly after base59+999, the latest
-  // Date.parse-representable ":59" instant) and strictly less than 1 (so
-  // even the largest fraction lands strictly before base59+1000, the next
-  // minute's ":00.000"), while still increasing monotonically with the
-  // leap second's own fraction.
-  const epsilon = 0.001 + fraction * 0.998;
-  return base59 + 999 + epsilon;
+  const base59Ms = Date.parse(wholeSecond59Form);
+  if (Number.isNaN(base59Ms)) return null;
+  const base59Scaled = BigInt(base59Ms) * SUBDIVISIONS_PER_MS;
+  // Padded (with trailing zeros) or truncated to exactly LEAP_FRACTION_DIGITS
+  // digits — read directly as an integer numerator, never divided, so two
+  // fractions differing anywhere within that many digits map to different
+  // integers. +1 keeps the result strictly greater than 0 even for an
+  // all-zero/absent fraction; the result ranges over [1, 10^LEAP_FRACTION_DIGITS],
+  // always strictly less than SUBDIVISIONS_PER_MS (10^(LEAP_FRACTION_DIGITS+1)).
+  const paddedFraction = `${fractionDigits}${"0".repeat(LEAP_FRACTION_DIGITS)}`.slice(0, LEAP_FRACTION_DIGITS);
+  const epsilon = BigInt(paddedFraction) + 1n;
+  return base59Scaled + 999n * SUBDIVISIONS_PER_MS + epsilon;
 }
 
 function freezeLock(lock: AssignmentLockRecord): AssignmentLockRecord {

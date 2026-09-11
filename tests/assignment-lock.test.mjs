@@ -372,6 +372,20 @@ test("two different leap-second instants within the same leap second still compa
   assert.equal(stillActive.rejection.code, "LOCK_CONFLICT");
 }));
 
+test("two leap-second instants differing only far into their fractional digits still compare correctly, not collapsed by floating-point rounding", () => withStore((store) => {
+  // An epoch-millisecond magnitude already spans 12-13 significant decimal
+  // digits; adding a fractional leap-second placement to it as an IEEE-754
+  // `number` leaves too little of the ~15-17 significant-digit budget for
+  // the fraction itself once the values get long enough, silently
+  // collapsing two distinct, validly-ordered RFC 3339 instants to the same
+  // float. A lease spanning two such instants must still be accepted.
+  const acquired = store.acquire(acquire({
+    acquiredAt: "1990-12-31T23:59:60.1000000Z",
+    expiresAt: "1990-12-31T23:59:60.1000001Z",
+  }));
+  assert.equal(acquired.ok, true, acquired.ok ? undefined : acquired.rejection.reason);
+}));
+
 test("an abandoned release reservation that already crashed mid-recovery (its .reclaim marker orphaned) is still reclaimed, not left blocking forever", () => withStore((store, root) => {
   const acquired = store.acquire(acquire());
   assert.equal(acquired.ok, true);

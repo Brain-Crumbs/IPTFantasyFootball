@@ -1099,6 +1099,31 @@ test("a release reservation that already crashed mid-recovery (its .reclaim mark
     assert.equal(result, "resumed-after-reclaim");
     assert.equal(existsSync(reclaimMarkerPath), false);
     assert.equal(existsSync(claimedRecordPath), false);
+    assert.equal(existsSync(`${reclaimMarkerPath}.recovery-claim`), false, "the private exclusive-ownership claim used to recover the marker is cleaned up too");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a stray file at the recovery-claim's own private path never blocks ordinary lock acquisition", async () => {
+  // reclaimAbandonedReservation's exclusive-ownership claim (added to close
+  // a lagging-recovery race) is deliberately a private, dedicated path that
+  // no other code — tryCreate() included — ever inspects, precisely so it
+  // can never be confused with the public reservationPath/reclaimMarkerPath
+  // this class's other logic actually blocks on. A stray leftover file at
+  // that private path (e.g. from some unrelated cause) must never wedge an
+  // otherwise-ordinary acquisition.
+  const dir = mkdtempSync(join(tmpdir(), "controlled-merge-task-lock-stray-recovery-claim-"));
+  try {
+    const { writeFileSync } = await import("node:fs");
+    const lockPath = join(dir, "BOOT-025.lifecycle.lock");
+    const reservationPath = `${lockPath}.release-reservation`;
+    const strayRecoveryClaimPath = `${reservationPath}.reclaim.recovery-claim`;
+    writeFileSync(strayRecoveryClaimPath, "leftover", { encoding: "utf8" });
+
+    const taskLock = new FileControlledMergeTaskLock(dir);
+    const result = await taskLock.withLock("BOOT-025", async () => "acquired");
+    assert.equal(result, "acquired");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

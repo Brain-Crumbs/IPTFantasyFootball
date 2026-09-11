@@ -1414,6 +1414,10 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     return `${lockPath}.reclaim-claim`;
   }
 
+  private tryCreateRollbackClaimPath(lockPath: string): string {
+    return `${lockPath}.try-create-rollback-claim`;
+  }
+
   // The reservation marker above (and whichever claimed-content file it was
   // guarding — release()'s own, or reclaimIfStale()'s) is normally cleaned
   // up in that call's own `finally` within microseconds. If the process
@@ -1472,27 +1476,58 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     // mean a *previous* call crashed between renaming the original
     // reservation away and finishing this same recovery (a rename is never
     // observed half-done), or that a concurrent caller reached this exact
-    // point moments earlier. Either way, nothing so far has actually
-    // *claimed* sole ownership of it — only observed that it exists (or
-    // failed to rename it away, which another caller doing exactly that is
-    // indistinguishable from). Left at a bare observation, every
+    // point moments earlier.
+    let claimedStats: { readonly mtimeMs: number } | null;
+    try {
+      claimedStats = statSync(reclaimMarkerPath);
+    } catch {
+      claimedStats = null;
+    }
+    if (claimedStats === null) return;
+    if (Date.now() - claimedStats.mtimeMs <= this.staleLockMs) {
+      // Not actually stale: reclaimMarkerPath's mtime can only ever be this
+      // recent if a legitimate, brand-new reservation was swept into this
+      // call's own renameSync(reservationPath, reclaimMarkerPath) above (a
+      // prior holder's release()/reclaimIfStale() call finished and
+      // unlinked the genuinely-stale reservation in the exact gap between
+      // this call's staleness read and its rename, and a fresh one was
+      // created before that rename landed — the rename then captured the
+      // new one, mtime and all). Restore it untouched rather than
+      // discarding a live reservation.
+      try {
+        renameSync(reclaimMarkerPath, reservationPath);
+      } catch {
+        // A third operation has since created its own fresh marker at
+        // reservationPath; there is nothing further to restore onto.
+      }
+      return;
+    }
+
+    // Nothing so far has actually *claimed* sole ownership of the
+    // now-confirmed-stale reclaimMarkerPath — only observed and re-verified
+    // that it exists and is old. Left at a bare observation, every
     // concurrent caller reaching here would race each other through the
-    // restore logic below on the very same fixed claim paths — and a
-    // caller lagging between this observation and that restore could
-    // consume a brand-new, unrelated claim a fresh release()/
-    // reclaimIfStale() legitimately created against reservationPath in the
-    // meantime, restoring live, in-progress content as though it belonged
-    // to the old crash and leaving that operation's own lock behind
-    // afterward. Claim exclusive ownership of *this* recovery attempt
-    // first: capture the marker's content and mtime, then re-establish
-    // both at reservationPath via an exclusive-create write — never a
-    // blind rename, since reservationPath may by now legitimately hold a
-    // brand-new, live reservation of its own that an unconditional rename
-    // would silently destroy — before moving the claim straight back to
-    // reclaimMarkerPath. Exactly one concurrent caller can win that
-    // exclusive create; every other caller's own attempt fails and it
-    // backs off untouched, the same way tryCreate()'s own EEXIST handling
-    // already protects the lock file itself.
+    // restore logic below on the very same fixed claim paths. Claim
+    // exclusive ownership of *this* recovery attempt first: capture the
+    // marker's content and mtime, then re-establish both at a dedicated,
+    // private claim path via an exclusive-create write. This path is
+    // deliberately distinct from reservationPath itself — reusing
+    // reservationPath here (an earlier version of this fix did) would let
+    // a completely unrelated, brand-new release()/reclaimIfStale() call
+    // mistake this call's own in-progress claim for a stale *public*
+    // reservation of its own and race it via the exact same
+    // renameSync(reservationPath, reclaimMarkerPath) above, since neither
+    // release() nor reclaimIfStale() checks reclaimMarkerPath before
+    // creating a fresh reservationPath. A private, fixed name that no
+    // other code path ever inspects cannot be confused with anything else;
+    // reclaimMarkerPath itself is left completely untouched until this
+    // claim fully lands, so it keeps blocking tryCreate() and this
+    // function's own primary branch for the entire recovery, exactly as it
+    // already did before this claim began. Exactly one concurrent caller
+    // can win the exclusive create; every other caller's own attempt fails
+    // and it backs off untouched, the same way tryCreate()'s own EEXIST
+    // handling already protects the lock file itself.
+    const recoveryClaimPath = `${reclaimMarkerPath}.recovery-claim`;
     let markerContent: string;
     let markerMtime: Date;
     try {
@@ -1502,50 +1537,16 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       return; // Already gone; another caller already claimed or finished it.
     }
     try {
-      writeFileSync(reservationPath, markerContent, { encoding: "utf8", flag: "wx" });
+      writeFileSync(recoveryClaimPath, markerContent, { encoding: "utf8", flag: "wx" });
     } catch {
-      // A live reservation already occupies this path, or another caller
-      // already won this exact claim; back off either way.
-      return;
+      return; // Another caller already won this exact claim.
     }
     try {
-      utimesSync(reservationPath, markerMtime, markerMtime);
+      utimesSync(recoveryClaimPath, markerMtime, markerMtime);
     } catch {
       // Lost ownership of the just-written file in an extremely narrow
-      // window; harmless — its age is simply re-evaluated below.
-    }
-    try {
-      unlinkSync(reclaimMarkerPath);
-    } catch {
-      // Already gone; nothing left to clean up.
-    }
-    try {
-      renameSync(reservationPath, reclaimMarkerPath);
-    } catch {
-      // Cannot happen under normal operation — this call exclusively holds
-      // reservationPath and reclaimMarkerPath is now vacant — but guard
-      // defensively rather than assume it.
-      return;
-    }
-
-    let claimedStats: { readonly mtimeMs: number } | null;
-    try {
-      claimedStats = statSync(reclaimMarkerPath);
-    } catch {
-      claimedStats = null;
-    }
-    if (claimedStats === null) return;
-    if (Date.now() - claimedStats.mtimeMs <= this.staleLockMs) {
-      // Not actually stale: a live call created a fresh marker here after
-      // the check above but before this claim landed. Restore it untouched
-      // rather than discarding a live reservation.
-      try {
-        renameSync(reclaimMarkerPath, reservationPath);
-      } catch {
-        // A third operation has since created its own fresh marker at
-        // reservationPath; there is nothing further to restore onto.
-      }
-      return;
+      // window; harmless — nothing downstream depends on this copy's own
+      // mtime once ownership is established.
     }
 
     // Restoring via a plain renameSync onto lockPath would not be safe
@@ -1600,6 +1601,11 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     } catch {
       // Already gone; nothing left to clean up.
     }
+    try {
+      unlinkSync(recoveryClaimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
   }
 
   private tryCreate(lockPath: string): string | null {
@@ -1638,12 +1644,52 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       // the narrow gap between this call's own pre-write check and its
       // write landing; back off rather than let this freshly created lock
       // stand in for real ownership while that call is still deciding what
-      // to do with the content it claimed.
+      // to do with the content it claimed. An unconditional unlink here is
+      // not safe, though: by the time it runs, a reclaimer could already
+      // have renamed this exact token away, found it did not match what it
+      // expected (the reclaimer's own stale-content check), and restored
+      // it — and, separately, a fresh tryCreate() elsewhere could since
+      // have exclusively created a brand-new token of its own at this same
+      // path once that reclaimer's reservation was cleaned up. Blindly
+      // unlinking at that point would delete that later, unrelated
+      // holder's lock instead of this attempt's own, leaving lockPath
+      // vacant while that holder's callback is still actively running and
+      // free for yet another caller to also win. Claim whatever currently
+      // sits at lockPath via the same atomic-rename-then-verify pattern
+      // used everywhere else in this class, and only ever discard it if it
+      // is still genuinely this attempt's own token.
+      const rollbackClaimPath = this.tryCreateRollbackClaimPath(lockPath);
+      let claimed: string | null;
       try {
-        unlinkSync(lockPath);
+        renameSync(lockPath, rollbackClaimPath);
       } catch {
-        // Already reclaimed or removed by someone else; nothing to roll
-        // back.
+        // Already gone — reclaimed, or rolled back by this same logic on a
+        // concurrent call; nothing left to roll back.
+        return null;
+      }
+      try {
+        claimed = readFileSync(rollbackClaimPath, "utf8");
+      } catch {
+        claimed = null;
+      }
+      if (claimed !== token && claimed !== null) {
+        // Not this attempt's own token — a reclaimer's legitimate
+        // replacement landed here first. Restore it untouched rather than
+        // discarding someone else's live lock; a plain rename is not safe
+        // here either, since a third, independent tryCreate() could have
+        // exclusively created yet another fresh token at lockPath in this
+        // same gap.
+        try {
+          writeFileSync(lockPath, claimed, { encoding: "utf8", flag: "wx" });
+        } catch {
+          // lockPath already holds a fresher record of its own; nothing to
+          // restore onto.
+        }
+      }
+      try {
+        unlinkSync(rollbackClaimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
       }
       return null;
     }
