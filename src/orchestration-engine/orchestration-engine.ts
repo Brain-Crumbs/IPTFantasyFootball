@@ -16,7 +16,8 @@ import { createLocalQaReviewGate } from "../qa-review/index.js";
 import type { ReviewFinding, ReviewNonPassDetail, ReviewOutcome } from "../review-framework/index.js";
 import type { ReviewReworkGate } from "../review-rework/index.js";
 import { createLocalReviewReworkGate } from "../review-rework/index.js";
-import type { TaskLifecycleState } from "../task-registry/index.js";
+import type { TaskLifecycleState, TaskRegistry } from "../task-registry/index.js";
+import { loadTaskRegistry } from "../task-registry/index.js";
 import type { UatReviewGate } from "../uat-review/index.js";
 import { createLocalUatReviewGate } from "../uat-review/index.js";
 
@@ -31,6 +32,21 @@ import { createLocalUatReviewGate } from "../uat-review/index.js";
  * engine/README.md` for the full behavioral contract.
  */
 
+// The declared total order every stage id can ever appear in. One `run()`
+// call never visits every id — a stop after Dev Validation, QA, Architecture,
+// or UAT means every later id is simply absent — but whichever ids a given
+// run does visit always appear in this exact relative order, including
+// `review-rework`: it is positioned once, after every review stage
+// (`uat-review`), which is also after every review stage that could
+// possibly precede it (`qa-review`, `architecture-review`) whenever those
+// stages ran at all. So a QA-fail run's own `stages` (`[..., "qa-review",
+// "review-rework"]`) or an Architecture-fail run's (`[..., "qa-review",
+// "architecture-agent", "architecture-review", "review-rework"]`) is always
+// an order-preserving subsequence of this constant — never out of order —
+// even though `review-rework` sits textually after `uat-review` here; see
+// `tests/orchestration-engine.test.mjs`'s QA/Architecture/UAT-failure tests,
+// which assert these exact runtime sequences and check them for subsequence
+// consistency against this constant.
 export const ORCHESTRATION_STAGE_IDS = [
   "developer-start",
   "developer-agent",
@@ -169,6 +185,14 @@ interface ReviewResult {
 export interface OrchestrationDependencies {
   readonly developerStart: Pick<DeveloperStartWorkflow, "start">;
   readonly developerValidation: Pick<DeveloperValidationGate, "validate">;
+  /** The same BOOT-011 task registry every wrapped gate already reads its
+   * own `task.requiredReviewRoles` from (see e.g. `src/qa-review/qa-
+   * review.ts`'s `nextStateAfterQaPass`). This orchestrator reads it for
+   * exactly the same field, so it invokes only the QA/Architecture/UAT
+   * review stages the task's own declared `requiredReviewRoles` actually
+   * names — never unconditionally invoking QA first — without recomputing
+   * or second-guessing any gate's own PASS/FAIL/BLOCKED routing decision. */
+  readonly taskRegistry: Pick<TaskRegistry, "get">;
   readonly qaReview: Pick<QaReviewGate, "prepareContext" | "review">;
   readonly architectureReview: Pick<ArchitectureReviewGate, "prepareContext" | "review">;
   readonly uatReview: Pick<UatReviewGate, "prepareContext" | "review">;
@@ -205,6 +229,57 @@ function stageRunId(baseRunId: string, stage: OrchestrationStageId): string {
   return `${baseRunId}::${stage}`;
 }
 
+const RFC3339_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/i;
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/**
+ * No shared, exported RFC 3339 validator exists anywhere in this repository
+ * to import instead (`control-plane.lifecycle`, `control-plane.controlled-
+ * merge`, `control-plane.evidence-store`, and `control-plane.assignment-
+ * lock` each hand-roll their own module-private copy of the same component-
+ * range checks rather than sharing one), so this mirrors that established
+ * pattern locally instead of reusing a bare `Date.parse(...)` +
+ * `.includes("T")` check: `Date.parse()` accepts a date-time with no UTC
+ * offset at all and silently rolls a calendar-impossible date forward (e.g.
+ * "2026-02-30" normalizes to March 2) rather than rejecting it, which would
+ * let a malformed `occurredAt` slip past `INVALID_REQUEST` and reach a
+ * wrapped dependency instead, contrary to this module's own contract.
+ */
+function isValidOrchestrationRfc3339DateTime(value: string): boolean {
+  const match = RFC3339_PATTERN.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (month < 1 || month > 12) return false;
+  const maxDay = month === 2 && isLeapYear(year) ? 29 : (DAYS_IN_MONTH[month - 1] as number);
+  if (day < 1 || day > maxDay) return false;
+  if (hour > 23 || minute > 59) return false;
+  // RFC 3339 allows a seconds value of 60 only for a leap second at the
+  // instant 23:59:60 UTC (never any other minute/hour), checked below
+  // against the UTC-equivalent time once the offset is known.
+  if (second > 60) return false;
+  let offsetMinutesTotal = 0;
+  if (match[7] !== undefined) {
+    const offsetHour = Number(match[8]);
+    const offsetMinute = Number(match[9]);
+    if (offsetHour > 23 || offsetMinute > 59) return false;
+    offsetMinutesTotal = (match[7] === "-" ? -1 : 1) * (offsetHour * 60 + offsetMinute);
+  }
+  if (second === 60) {
+    const utcMinutesOfDay = (((hour * 60 + minute - offsetMinutesTotal) % 1440) + 1440) % 1440;
+    if (Math.floor(utcMinutesOfDay / 60) !== 23 || utcMinutesOfDay % 60 !== 59) return false;
+  }
+  return true;
+}
+
 function summarizeAgentResult(role: AgentRunnerRole, result: AgentRunResult): string {
   if (result.outcome === "PASS") {
     return `${role} agent run PASS (runId=${result.runId}).`;
@@ -224,7 +299,7 @@ function validateRunRequest(request: OrchestrationRunRequest): void {
   if (request.runId.trim().length === 0 || request.runId !== request.runId.trim()) {
     throw new OrchestrationError("INVALID_REQUEST", "Orchestration runId must be non-empty and trimmed.");
   }
-  if (Number.isNaN(Date.parse(request.occurredAt)) || !request.occurredAt.includes("T")) {
+  if (!isValidOrchestrationRfc3339DateTime(request.occurredAt)) {
     throw new OrchestrationError("INVALID_REQUEST", "Orchestration occurredAt must be an RFC 3339 date-time.");
   }
 }
@@ -325,7 +400,18 @@ export class SequentialOrchestrationEngine {
       // explicitly out of ReviewReworkGate's scope (only QA_FAILED/
       // ARCHITECTURE_FAILED/UAT_FAILED are reworkable — see
       // src/review-rework/review-rework.ts), so this orchestrator does not
-      // invent that transition itself.
+      // invent that transition itself. Nor is "re-run orchestration" itself
+      // an executable retry path from here: `DeveloperStartWorkflow.start()`
+      // (this orchestrator's own first stage) only accepts a task currently
+      // in PLANNED/READY/ASSIGNED/IN_DEVELOPMENT — see its
+      // `TASK_STATE_NOT_STARTABLE` check in src/dev-start/dev-start.ts — and
+      // rejects DEV_VALIDATION_FAILED the same as any other unsupported
+      // state, so a bare `run()` retry cannot resume this task either. The
+      // only lifecycle rule that can move a task out of
+      // DEV_VALIDATION_FAILED (`DEV_VALIDATION_FAILED -> REWORK_REQUIRED` in
+      // `src/lifecycle/state-machine.ts`) is therefore not reachable through
+      // any module this orchestrator calls; the remediation says so plainly
+      // instead of naming a retry this module cannot actually perform.
       return this.stoppedResult(
         taskId,
         request.runId,
@@ -333,31 +419,56 @@ export class SequentialOrchestrationEngine {
         validationResult.lifecycleState,
         "dev-validation",
         `Developer validation failed: ${validationResult.failedCheckIds.join(", ") || "see checks"}.`,
-        "Fix the failing required validators on the task branch and re-run orchestration from Developer validation; QA review does not run until DEV_VALIDATED is reached.",
+        "No automated recovery is available from this orchestrator: DEV_VALIDATION_FAILED accepts no further transition through Developer start, QA, Architecture, UAT, or review-rework (all require a different starting state). Fix the failing required validators on the task branch, then use an explicit out-of-band lifecycle transition to REWORK_REQUIRED (or an equivalent manual recovery) before development, and therefore orchestration, can resume this task.",
       );
     }
 
-    // 4. QA (BOOT-018) — always entered first from DEV_VALIDATED; the gate
-    // itself computes, from the task's own requiredReviewRoles, whether the
-    // next stop is Architecture, UAT, or straight to MERGE_READY.
-    const qaOutcome = await this.runReviewStage({
-      role: "QA",
-      agentStage: "qa-agent",
-      reviewStage: "qa-review",
-      taskId,
-      request,
-      reviewerId: actorIdFor("QA", request.ownerId),
-      now,
-      stages,
-      prepareContext: (req) => this.dependencies.qaReview.prepareContext(req),
-      review: (req) => this.dependencies.qaReview.review(req),
-    });
-    if (qaOutcome.stopped !== null) return qaOutcome.stopped;
-    let lifecycleState = qaOutcome.lifecycleState;
+    // 4-6. QA/Architecture/UAT (BOOT-018/019/020) — invoked only for the
+    // review roles the task's own `requiredReviewRoles` actually names, read
+    // from the same BOOT-011 task registry every one of these gates already
+    // reads that field from itself (e.g. `nextStateAfterQaPass()` in
+    // src/qa-review/qa-review.ts) — never QA unconditionally. Calling a
+    // review gate whose role the task does not require would not only waste
+    // an agent run and persist an unwanted review-result record, it is also
+    // guaranteed to be rejected by the lifecycle state machine itself
+    // (`REVIEW_SEQUENCE_MISMATCH` — see `nextReviewTarget()` in
+    // src/lifecycle/state-machine.ts) *after* that unwanted record has
+    // already been persisted as a side effect. This only decides which gate
+    // to call; it never reimplements what a gate's own PASS/FAIL/BLOCKED
+    // judgment routes to next (still delegated entirely to each stage's own
+    // `lifecycleState` result below, exactly as before QA/Architecture/UAT
+    // has run).
+    const activeTask = this.dependencies.taskRegistry.get(taskId);
+    if (activeTask === undefined) {
+      throw new Error(
+        `Orchestration invariant violated: task '${taskId}' was resolved by Developer start but is absent from the task registry.`,
+      );
+    }
+    const requiredRoles = new Set(activeTask.requiredReviewRoles);
+    let lifecycleState: TaskLifecycleState = validationResult.lifecycleState;
 
-    // 5. Architecture (BOOT-019) — only when QA's own routing target was
-    // ARCHITECTURE_REVIEW.
-    if (lifecycleState === "ARCHITECTURE_REVIEW") {
+    if (requiredRoles.has("QA")) {
+      const qaOutcome = await this.runReviewStage({
+        role: "QA",
+        agentStage: "qa-agent",
+        reviewStage: "qa-review",
+        taskId,
+        request,
+        reviewerId: actorIdFor("QA", request.ownerId),
+        now,
+        stages,
+        prepareContext: (req) => this.dependencies.qaReview.prepareContext(req),
+        review: (req) => this.dependencies.qaReview.review(req),
+      });
+      if (qaOutcome.stopped !== null) return qaOutcome.stopped;
+      lifecycleState = qaOutcome.lifecycleState;
+    }
+
+    // Architecture — whenever QA's own routing target was
+    // ARCHITECTURE_REVIEW, or (QA not required, so lifecycleState is still
+    // DEV_VALIDATED) the task's own requiredReviewRoles names Architect as
+    // the first required review.
+    if (lifecycleState === "ARCHITECTURE_REVIEW" || (lifecycleState === "DEV_VALIDATED" && requiredRoles.has("Architect"))) {
       const architectureOutcome = await this.runReviewStage({
         role: "Architect",
         agentStage: "architecture-agent",
@@ -374,10 +485,12 @@ export class SequentialOrchestrationEngine {
       lifecycleState = architectureOutcome.lifecycleState;
     }
 
-    // 6. UAT (BOOT-020) — only when the prior stage's own routing target was
-    // UAT_REVIEW. An Architecture FAIL/BLOCKED above already returned a
-    // STOPPED result, so this line is never reached in that case.
-    if (lifecycleState === "UAT_REVIEW") {
+    // UAT — whenever the prior stage's own routing target was UAT_REVIEW, or
+    // (QA and Architecture both not required, so lifecycleState is still
+    // DEV_VALIDATED) the task's own requiredReviewRoles names UAT/Product as
+    // the first required review. An Architecture FAIL/BLOCKED above already
+    // returned a STOPPED result, so this line is never reached in that case.
+    if (lifecycleState === "UAT_REVIEW" || (lifecycleState === "DEV_VALIDATED" && requiredRoles.has("UAT/Product"))) {
       const uatOutcome = await this.runReviewStage({
         role: "UAT/Product",
         agentStage: "uat-agent",
@@ -526,13 +639,29 @@ export class SequentialOrchestrationEngine {
       }),
     );
 
+    // `runId`/`occurredAt` here are the agent run's own — not a freshly
+    // minted orchestration-stage id — because `ReviewFramework.submit()`
+    // (via each gate's `review()`) builds its persisted `reviewId` as
+    // `${taskId}:${role}:${revisionIdentity}:${runId}`, which
+    // `contracts/agent-provider/README.md` documents as always reproducing
+    // `AgentRunResult`'s own composite identity: "a successful
+    // `AgentRunResult` always carries `taskId`/`role`/`revisionIdentity`/
+    // `runId` exactly equal to the request that produced it, so
+    // `${result.taskId}:${result.role}:${result.revisionIdentity}:
+    // ${result.runId}` always reproduces the same composite identity
+    // `ReviewFramework.submit()` builds for its own `reviewId`". Reusing
+    // `agentResult.runId`/`.occurredAt` (rather than this stage's own
+    // `reviewRunId`/`now()`, which remain this module's own audit-record
+    // identity below) is what makes the persisted review-result record
+    // durably traceable back to the exact agent invocation that produced
+    // its judgment, even when `evidenceRefs` is empty.
     const reviewRunId = stageRunId(request.runId, reviewStage);
     const reviewStartedAt = now();
     const reviewResult = review({
       taskId,
       reviewerId,
-      runId: reviewRunId,
-      occurredAt: now(),
+      runId: agentResult.runId,
+      occurredAt: agentResult.occurredAt,
       context: prepared.context,
       outcome: agentResult.outcome,
       findings: agentResult.findings,
@@ -568,7 +697,12 @@ export class SequentialOrchestrationEngine {
           stage: "review-rework",
           role: null,
           runId: reworkRunId,
-          outcome: "FAIL",
+          // Propagates ReviewReworkGate's own authoritative judgment
+          // (`reworkResult.failedOutcome`, "FAIL" or "BLOCKED") rather than
+          // hardcoding "FAIL": a BLOCKED review is a different judgment than
+          // a FAIL one, and this stage record must not fabricate one the
+          // review itself never made.
+          outcome: reworkResult.failedOutcome,
           startedAt: reworkStartedAt,
           finishedAt: now(),
           summary: `Task routed to rework after ${role} ${reworkResult.failedOutcome} (${reviewResult.blockingFindings.length} blocking finding(s)).`,
@@ -577,17 +711,29 @@ export class SequentialOrchestrationEngine {
         }),
       );
 
+      // A BLOCKED agent result often carries no `findings` at all — the
+      // provider explains the block exclusively via `nonPass.reason`/
+      // `.remediation` (see `AgentRunResult`/`ReviewNonPassDetail` in
+      // src/agent-provider/agent-provider.ts) — so falling back to a bare
+      // "<role> review BLOCKED." with a generic remediation would silently
+      // discard the only actionable information the provider gave. Prefer
+      // the real blocking findings when present (unchanged from before);
+      // otherwise fall back to the provider's own `nonPass.reason`; only use
+      // the generic wording when the provider gave neither. Likewise prefer
+      // the provider's own `nonPass.remediation` over the generic templated
+      // remediation whenever the provider supplied one.
       const findingSummary = reviewResult.blockingFindings.map((finding) => finding.observed).join("; ");
+      const nonPassReason = agentResult.nonPass?.reason;
+      const reason = findingSummary
+        ? `${role} review ${reviewResult.outcome}: ${findingSummary}.`
+        : nonPassReason
+          ? `${role} review ${reviewResult.outcome}: ${nonPassReason}.`
+          : `${role} review ${reviewResult.outcome}.`;
+      const remediation =
+        agentResult.nonPass?.remediation ??
+        `Task moved to REWORK_REQUIRED. Resume development to address the ${role} findings, then re-run orchestration from Developer validation; later review stages do not run.`;
       return {
-        stopped: this.stoppedResult(
-          taskId,
-          request.runId,
-          stages,
-          reworkResult.lifecycleState,
-          reviewStage,
-          `${role} review ${reviewResult.outcome}${findingSummary ? `: ${findingSummary}` : ""}.`,
-          `Task moved to REWORK_REQUIRED. Resume development to address the ${role} findings, then re-run orchestration from Developer validation; later review stages do not run.`,
-        ),
+        stopped: this.stoppedResult(taskId, request.runId, stages, reworkResult.lifecycleState, reviewStage, reason, remediation),
       };
     }
 
@@ -655,8 +801,9 @@ export async function createLocalOrchestrationEngine(
     ...(options.requiredCiChecks !== undefined ? { requiredCiChecks: options.requiredCiChecks } : {}),
   };
 
-  const [developerStart, developerValidation, qaReview, architectureReview, uatReview, reviewRework, mergeReadiness, controlledMerge] =
+  const [taskRegistry, developerStart, developerValidation, qaReview, architectureReview, uatReview, reviewRework, mergeReadiness, controlledMerge] =
     await Promise.all([
+      loadTaskRegistry({ repositoryRoot }),
       createLocalDeveloperStartWorkflow(repositoryRoot),
       createLocalDeveloperValidationGate(repositoryRoot),
       createLocalQaReviewGate(repositoryRoot),
@@ -670,6 +817,7 @@ export async function createLocalOrchestrationEngine(
   const agentRunner = new AgentRunner({ provider: options.provider });
 
   return new SequentialOrchestrationEngine({
+    taskRegistry,
     developerStart,
     developerValidation,
     qaReview,

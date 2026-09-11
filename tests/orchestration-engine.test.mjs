@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { AgentRunner, FakeAgentProvider } from "../dist/agent-provider/index.js";
-import { ArchitectureReviewGate } from "../dist/architecture-review/index.js";
+import { ArchitectureReviewError, ArchitectureReviewGate } from "../dist/architecture-review/index.js";
 import { FileAssignmentLockStore } from "../dist/assignment-lock/index.js";
 import { ControlledMergeController } from "../dist/controlled-merge/index.js";
 import { DeveloperStartWorkflow } from "../dist/dev-start/index.js";
 import { DeveloperValidationGate } from "../dist/dev-validation/index.js";
-import { FileEvidenceStore } from "../dist/evidence-store/index.js";
+import { FileEvidenceStore, reviewResultLineageId } from "../dist/evidence-store/index.js";
 import { MergeReadinessPolicyEngine } from "../dist/merge-readiness/index.js";
 import {
   ORCHESTRATION_STAGE_IDS,
@@ -363,6 +363,7 @@ function buildFixture(options = {}) {
   const agentRunner = new AgentRunner({ provider });
 
   const engine = new SequentialOrchestrationEngine({
+    taskRegistry: registry,
     developerStart,
     developerValidation,
     qaReview,
@@ -467,6 +468,18 @@ test("developer validation failure stops orchestration before QA is ever invoked
     );
     assert.ok(result.stopped.reason.length > 0);
     assert.ok(result.stopped.remediation.length > 0);
+    // The remediation must not claim an executable "re-run orchestration"
+    // retry path: DeveloperStartWorkflow.start() (this orchestrator's own
+    // first stage) rejects any task not currently in PLANNED/READY/
+    // ASSIGNED/IN_DEVELOPMENT — see TASK_STATE_NOT_STARTABLE in
+    // src/dev-start/dev-start.ts — so DEV_VALIDATION_FAILED can never be
+    // resumed by simply calling run() again, and ReviewReworkGate.
+    // enterRework() has no entry point for DEV_VALIDATION_FAILED either
+    // (only QA_FAILED/ARCHITECTURE_FAILED/UAT_FAILED — see
+    // src/review-rework/review-rework.ts). The remediation must say so
+    // honestly instead.
+    assert.ok(!result.stopped.remediation.includes("re-run orchestration"));
+    assert.ok(result.stopped.remediation.includes("DEV_VALIDATION_FAILED"));
 
     // QA must never be invoked, on the agent-provider boundary or the gate.
     assert.equal(fixture.provider.requests.some((request) => request.role === "QA"), false);
@@ -575,6 +588,166 @@ test("run() rejects a malformed request before touching any dependency", async (
       (error) => error instanceof OrchestrationError && error.code === "INVALID_REQUEST",
     );
     assert.equal(fixture.provider.requests.length, 0);
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+test("run() rejects a request timestamp that is not strictly RFC 3339, even when Date.parse() would accept it", async () => {
+  const fixture = buildFixture();
+  try {
+    // No UTC offset at all: Date.parse() happily parses this as local time
+    // (never NaN), so the module's prior `Date.parse(...)` + `.includes("T")`
+    // check would have accepted it.
+    await assert.rejects(
+      () => fixture.engine.run({ ownerId: "dev-agent-1", runId: "run-9a", occurredAt: "2026-09-11T12:00:00" }),
+      (error) => error instanceof OrchestrationError && error.code === "INVALID_REQUEST",
+    );
+    // Calendar-impossible date: Date.parse() silently rolls "2026-02-30"
+    // forward to March 2 instead of rejecting it.
+    await assert.rejects(
+      () => fixture.engine.run({ ownerId: "dev-agent-1", runId: "run-9b", occurredAt: "2026-02-30T12:00:00Z" }),
+      (error) => error instanceof OrchestrationError && error.code === "INVALID_REQUEST",
+    );
+    assert.equal(fixture.provider.requests.length, 0, "no dependency should have been touched for either rejected request");
+
+    // A genuinely valid RFC 3339 value with a non-"Z" numeric offset is
+    // still accepted.
+    fixture.provider.setHandler(allPassHandler);
+    const result = await fixture.engine.run({ ownerId: "dev-agent-1", runId: "run-9c", occurredAt: "2026-09-11T12:00:00+02:00" });
+    assert.equal(result.stages[0].stage, "developer-start");
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+test("a task whose requiredReviewRoles requires no independent review skips QA/Architecture/UAT entirely and reaches merge readiness", async () => {
+  const fixture = buildFixture({ taskOverrides: { requiredReviewRoles: ["Developer", "MergeController"] } });
+  try {
+    fixture.provider.setHandler(allPassHandler);
+
+    const result = await fixture.engine.run({ ownerId: "dev-agent-1", runId: "run-10", occurredAt });
+
+    // Before the fix, QA was invoked unconditionally regardless of
+    // requiredReviewRoles, which the lifecycle state machine's own
+    // REVIEW_SEQUENCE_MISMATCH check rejects for a task that does not
+    // require QA (see nextReviewTarget() in
+    // src/lifecycle/state-machine.ts) — after QA's review-result record had
+    // already been persisted as an unwanted side effect. With the fix, no
+    // review gate the task does not require is ever invoked, and the run
+    // reaches merge readiness directly from DEV_VALIDATED, gracefully
+    // (STOPPED, not a thrown exception).
+    assert.equal(result.status, "STOPPED");
+    assert.equal(result.stopped.stage, "merge-readiness");
+    assert.ok(result.stopped.reason.includes("not MERGE_READY"));
+    assert.deepEqual(
+      result.stages.map((stage) => stage.stage),
+      ["developer-start", "developer-agent", "dev-validation", "merge-readiness"],
+    );
+    assert.equal(fixture.provider.requests.some((request) => request.role === "QA"), false);
+    assert.equal(fixture.provider.requests.some((request) => request.role === "Architect"), false);
+    assert.equal(fixture.provider.requests.some((request) => request.role === "UAT/Product"), false);
+    assert.equal(fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, "QA")), null);
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+test("QA is never invoked when the task's requiredReviewRoles omits it, even when a later review role is attempted instead", async () => {
+  const fixture = buildFixture({ taskOverrides: { requiredReviewRoles: ["Developer", "Architect", "MergeController"] } });
+  try {
+    fixture.provider.setHandler(allPassHandler);
+
+    // Reaching DONE for a task that skips QA remains blocked by a separate,
+    // pre-existing gap outside this module: ArchitectureReviewGate's
+    // prepareContext()/review() both require the lifecycle record to
+    // already be in ARCHITECTURE_REVIEW with a matching entry-evidence
+    // history event (see assertArchitectureReviewable()/
+    // assertArchitectureReviewEntryEvidence() in
+    // src/architecture-review/architecture-review.ts) before doing
+    // anything else, and no shipped module other than QaReviewGate ever
+    // produces that transition. This orchestrator does not itself mutate
+    // lifecycle state to paper over that gap (see this module's own
+    // "mutates no lifecycle state directly" contract), so the run still
+    // fails here — this test's point is only that it fails via
+    // Architecture's own, correctly-invoked precondition (before even an
+    // agent run, since prepareContext() checks the same precondition
+    // first), never via an unconditional, unwanted QA call: the proof QA
+    // was correctly skipped is the specific error identity (Architecture's
+    // own TASK_STATE_NOT_REVIEWABLE, not any QA-related rejection) and that
+    // no QA agent call or evidence was ever produced.
+    await assert.rejects(
+      () => fixture.engine.run({ ownerId: "dev-agent-1", runId: "run-11", occurredAt }),
+      (error) => error instanceof ArchitectureReviewError && error.code === "TASK_STATE_NOT_REVIEWABLE",
+    );
+
+    assert.equal(fixture.provider.requests.some((request) => request.role === "QA"), false);
+    assert.equal(fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, "QA")), null);
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+test("QA review evidence links back to the exact QA agent run that produced the judgment", async () => {
+  const fixture = buildFixture();
+  try {
+    fixture.provider.setHandler(allPassHandler);
+
+    const result = await fixture.engine.run({ ownerId: "dev-agent-1", runId: "run-13", occurredAt });
+    assert.equal(result.status, "COMPLETED");
+
+    const qaAgentRequest = fixture.provider.requests.find((request) => request.role === "QA");
+    assert.ok(qaAgentRequest);
+
+    const qaReviewEvidence = fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, "QA"));
+    assert.ok(qaReviewEvidence);
+    // reviewId embeds the exact runId ReviewFramework.submit() (via
+    // QaReviewGate.review()) was given. Per contracts/agent-provider/
+    // README.md, a successful AgentRunResult's own runId "always
+    // reproduces the same composite identity ReviewFramework.submit()
+    // builds for its own reviewId" — so it must be the QA agent's own
+    // runId, never a separately minted orchestration-stage id such as
+    // "run-13::qa-review".
+    assert.equal(qaReviewEvidence.payload.reviewId, `${fixture.task.taskId}:QA:${revision}:${qaAgentRequest.runId}`);
+    assert.ok(!qaReviewEvidence.payload.reviewId.includes("::qa-review"));
+    // recordedAt is the agent result's own occurredAt (this fixture's fixed
+    // `occurredAt` constant), not a fresh call to the orchestration clock,
+    // which only ever produces later, distinct timestamps.
+    assert.equal(qaReviewEvidence.payload.recordedAt, occurredAt);
+  } finally {
+    cleanup(fixture);
+  }
+});
+
+test("a BLOCKED review with no findings preserves BLOCKED through rework and surfaces the provider's own reason/remediation", async () => {
+  const fixture = buildFixture();
+  try {
+    const nonPass = {
+      reason: "fixture: the QA agent could not access required test fixtures",
+      remediation: "fixture: grant the QA agent read access to tests/fixtures and retry",
+    };
+    fixture.provider.setHandler((request) =>
+      request.role === "QA" ? agentResult(request, "BLOCKED", { findings: [], nonPass }) : agentResult(request, "PASS"),
+    );
+
+    const result = await fixture.engine.run({ ownerId: "dev-agent-1", runId: "run-14", occurredAt });
+
+    assert.equal(result.status, "STOPPED");
+    assert.equal(result.stopped.stage, "qa-review");
+    assert.equal(result.finalLifecycleState, "REWORK_REQUIRED");
+
+    // The review-rework stage record must preserve BLOCKED, not fabricate
+    // FAIL: ReviewReworkGate.enterRework() reports back the authoritative
+    // review's own outcome as `failedOutcome`.
+    const reworkStage = result.stages.find((stage) => stage.stage === "review-rework");
+    assert.ok(reworkStage);
+    assert.equal(reworkStage.outcome, "BLOCKED");
+
+    // With no blocking findings recorded, the stop detail must fall back to
+    // the provider's own nonPass.reason/remediation rather than a bare
+    // "QA review BLOCKED." with a generic, uninformative remediation.
+    assert.equal(result.stopped.reason, `QA review BLOCKED: ${nonPass.reason}.`);
+    assert.equal(result.stopped.remediation, nonPass.remediation);
   } finally {
     cleanup(fixture);
   }
