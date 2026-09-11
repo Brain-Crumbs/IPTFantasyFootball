@@ -72,7 +72,7 @@ Primary API:
 
 ## Run identity and evidence traceability
 
-The acceptance criterion "run identity is explicit and traceable to evidence" is satisfied structurally, not by this module writing evidence itself (it has no `control-plane.evidence-store` dependency and calls no review framework): `AgentRunResult`'s `taskId`, `role`, `revisionIdentity`, and `runId` together are exactly the four fields `ReviewFramework.submit()` already combines into its own `reviewId` (`${taskId}:${role}:${revisionIdentity}:${runId}`), and every other field `ReviewSubmissionRequest` needs beyond that composite key — `outcome`, `details`, `findings`, `evidenceRefs`, `nonPass`, `occurredAt` — is present on `AgentRunResult` with the identical type, reused directly from `control-plane.review-framework` rather than a parallel, independently-drifting duplicate. A future orchestrator (BOOT-027 onward) can therefore construct a complete `ReviewSubmissionRequest` from one `AgentRunResult` plus a `reviewerId`/`contextPackage`, without this module ever needing to know that submission will happen.
+The acceptance criterion "run identity is explicit and traceable to evidence" is satisfied structurally, not by this module writing evidence itself (it has no `control-plane.evidence-store` dependency and calls no review framework): `AgentRunResult`'s `taskId`, `role`, `revisionIdentity`, and `runId` together are exactly the four fields `ReviewFramework.submit()` already combines into its own `reviewId` (`${taskId}:${role}:${revisionIdentity}:${runId}`), and every other field `ReviewSubmissionRequest` needs beyond that composite key — `outcome`, `details`, `findings`, `evidenceRefs`, `nonPass`, `occurredAt` — is present on `AgentRunResult` with the identical type, reused directly from `control-plane.review-framework` rather than a parallel, independently-drifting duplicate. `control-plane.orchestration-engine` (BOOT-027) does exactly this: it constructs a complete `ReviewSubmissionRequest`-shaped review call from one `AgentRunResult` plus a `reviewerId`/`contextPackage`, without this module ever needing to know that submission happens.
 
 ## Why `control-plane.review-framework` types are reused, not redefined locally
 
@@ -95,11 +95,11 @@ The acceptance criterion "run identity is explicit and traceable to evidence" is
 - `lifecycle-state-machine/*`
 - `dev-start/*`
 
-This module persists no evidence and mutates no lifecycle state itself — a future orchestrator (BOOT-027 onward) composes `AgentRunner`'s result into `control-plane.evidence-store`/`control-plane.lifecycle-state-machine` on its own. Separately, no concrete AI vendor SDK is a dependency of this repository (`package.json` lists none); this module must keep it that way.
+This module persists no evidence and mutates no lifecycle state itself — `control-plane.orchestration-engine` (BOOT-027) composes `AgentRunner`'s result into the relevant review gate's `review()` call, which is itself what reaches `control-plane.evidence-store`/`control-plane.lifecycle-state-machine`. Separately, no concrete AI vendor SDK is a dependency of this repository (`package.json` lists none); this module must keep it that way.
 
 ## Known consumers
 
-### future-sequential-orchestration (BOOT-027+)
+### control-plane.orchestration-engine (BOOT-027, implemented)
 
 Why this consumer depends on the module:
 
@@ -112,7 +112,7 @@ Required capabilities:
 - `runner-enforced-cancellation`
 - `normalized-provider-errors`
 
-### future-review-framework-submission (BOOT-027+, via `control-plane.review-framework`)
+### control-plane.orchestration-engine (BOOT-027, implemented) — review-submission shape, via each review gate's own `review()`
 
 Why this consumer depends on the module:
 
@@ -124,7 +124,7 @@ Required capabilities:
 
 ## Consumer expectations and accepted ranges
 
-### future-sequential-orchestration
+### control-plane.orchestration-engine
 
 Expectations:
 
@@ -137,7 +137,7 @@ Accepted producer-output ranges:
 - An `AgentRunResult` whose `outcome` is `PASS`, `FAIL`, or `BLOCKED`.
 - A thrown `AgentProviderError` whose `code` is one of `AgentProviderErrorCode`'s seven values.
 
-### future-review-framework-submission
+### control-plane.orchestration-engine (review-submission shape)
 
 Expectations:
 
@@ -149,7 +149,7 @@ Accepted producer-output ranges:
 
 ## Consumer-required reachable ranges
 
-### future-sequential-orchestration
+### control-plane.orchestration-engine
 
 Required reachable producer-output ranges:
 
@@ -190,4 +190,4 @@ Compatibility rule: every required reachable range must be contained by the prod
 - [ ] Is the producer reachable range still contained by each relevant consumer accepted range?
 - [ ] Is each consumer-required reachable range still contained by the producer reachable range?
 
-If structural compatibility remains but semantic behavior changes (for example, which errors are `recoverable`, or whether `run()` ever calls the provider for an unsupported role), explicitly route the change for downstream semantic compatibility review — BOOT-027+ is the named known consumer above.
+If structural compatibility remains but semantic behavior changes (for example, which errors are `recoverable`, or whether `run()` ever calls the provider for an unsupported role), explicitly route the change for downstream semantic compatibility review — `control-plane.orchestration-engine` (BOOT-027) is the named known consumer above.

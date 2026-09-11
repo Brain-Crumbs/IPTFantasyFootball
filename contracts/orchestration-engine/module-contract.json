@@ -1,0 +1,129 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.orchestration-engine",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "new SequentialOrchestrationEngine(dependencies: OrchestrationDependencies)",
+      "SequentialOrchestrationEngine.run(request: OrchestrationRunRequest): Promise<OrchestrationRunResult>",
+      "OrchestrationRunRequest { ownerId, runId, occurredAt }",
+      "OrchestrationRunResult { taskId, runId, status: 'COMPLETED' | 'STOPPED', finalLifecycleState, stages, stopped?, pullRequestNumber?, mergeCommitSha? }",
+      "OrchestrationStageRecord { stage, role, runId, outcome, startedAt, finishedAt, summary, evidenceRefs, lifecycleState? }",
+      "OrchestrationStopDetail { stage, reason, remediation }",
+      "OrchestrationStageId = 'developer-start' | 'developer-agent' | 'dev-validation' | 'qa-agent' | 'qa-review' | 'architecture-agent' | 'architecture-review' | 'uat-agent' | 'uat-review' | 'review-rework' | 'merge-readiness' | 'controlled-merge'",
+      "ORCHESTRATION_STAGE_IDS: readonly OrchestrationStageId[], the twelve stage identifiers above in pipeline order",
+      "OrchestrationStageOutcome = 'PASS' | 'FAIL' | 'BLOCKED'",
+      "OrchestrationErrorCode = 'INVALID_REQUEST'",
+      "OrchestrationError { code, recoverable }",
+      "OrchestrationDependencies { developerStart: Pick<DeveloperStartWorkflow,'start'>, developerValidation: Pick<DeveloperValidationGate,'validate'>, qaReview: Pick<QaReviewGate,'prepareContext'|'review'>, architectureReview: Pick<ArchitectureReviewGate,'prepareContext'|'review'>, uatReview: Pick<UatReviewGate,'prepareContext'|'review'>, reviewRework: Pick<ReviewReworkGate,'enterRework'>, mergeReadiness: Pick<MergeReadinessPolicyEngine,'evaluate'>, controlledMerge: Pick<ControlledMergeController,'merge'>, agentRunner: Pick<AgentRunner,'run'>, toolPermissionPolicyFor?, timeoutMsFor?, actorIdFor?, now? }",
+      "createLocalOrchestrationEngine(repositoryRoot: string, options: LocalOrchestrationOptions): Promise<SequentialOrchestrationEngine>",
+      "LocalOrchestrationOptions { provider: AgentProvider, owner, repo, token, apiBaseUrl?, fetchImpl?, integrationTarget?, requiredCiChecks?, toolPermissionPolicyFor?, timeoutMsFor?, actorIdFor?, now? }"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "sequential-role-pipeline-coordination",
+      "deterministic-gate-delegation",
+      "role-context-isolation-passthrough",
+      "distinct-run-identity-per-stage",
+      "fail-closed-stop-on-non-pass-gate",
+      "qa-architecture-uat-rework-routing",
+      "merge-readiness-gate-before-merge-invocation",
+      "structured-stop-diagnostics",
+      "local-composition-root"
+    ],
+    "behavioralConstraints": [
+      "run() validates ownerId/runId (non-empty, trimmed) and occurredAt (RFC 3339 date-time) before touching any dependency, throwing OrchestrationError('INVALID_REQUEST') on violation",
+      "run() calls DeveloperStartWorkflow.start() first, using the exact DeveloperStartResult (taskId, canonicalBranch, sourceRevision, Developer-scoped context, lifecycleState) it returns; no task/branch/lock selection logic is reimplemented",
+      "run() then invokes AgentRunner.run() for role 'Developer' with the Developer context DeveloperStartWorkflow.start() compiled; this run's own outcome is recorded for traceability only and never gates whether Dev Validation runs, since an agent's self-reported outcome is never authoritative for a deterministic gate",
+      "run() then calls DeveloperValidationGate.validate(); a non-PASS outcome stops the run at stage 'dev-validation' without ever invoking QA, and without calling ReviewReworkGate (DEV_VALIDATION_FAILED is out of ReviewReworkGate's own scope)",
+      "on a PASS Dev Validation, run() calls QaReviewGate.prepareContext() then AgentRunner.run() for role 'QA' with that exact context, then QaReviewGate.review() with the agent's outcome/findings/details/evidenceRefs/nonPass verbatim",
+      "a non-PASS QA/Architecture/UAT review result is immediately routed through ReviewReworkGate.enterRework() and the run stops at that review stage; no later review stage is invoked in the same run",
+      "on a PASS QA review, run() branches strictly on that review's own returned lifecycleState: 'ARCHITECTURE_REVIEW' runs the Architecture stage, 'UAT_REVIEW' runs the UAT stage directly (skipping Architecture), 'MERGE_READY' proceeds straight to Merge Readiness; the same branching rule applies to a PASS Architecture review's own returned lifecycleState (this module never inspects task.requiredReviewRoles itself to make this decision)",
+      "run() calls MergeReadinessPolicyEngine.evaluate() once every required review stage has passed; a ready:false result stops the run at stage 'merge-readiness' without ever calling ControlledMergeController.merge()",
+      "run() calls ControlledMergeController.merge() only after MergeReadinessPolicyEngine.evaluate() returned ready:true in this same run; status is 'COMPLETED' only once that call returns lifecycleState 'DONE'",
+      "every stage's runId is derived deterministically as `${request.runId}::<stage-id>`, so two calls with different request.runId values never collide and no single run() call ever reuses a runId across two stages",
+      "the default actorIdFor(role, ownerId) returns ownerId unchanged for role 'Developer' and `${ownerId}::${role}` for every other role, guaranteeing by construction that a QA/Architecture/UAT/MergeController actor identity is never textually equal to the Developer identity ReviewFramework.submit()'s self-approval check compares against",
+      "the default toolPermissionPolicyFor(role) returns { allowedTools: [], networkAccess: 'none' } for every role; a caller wanting broader tool/network access for a given role must supply its own toolPermissionPolicyFor",
+      "a legitimate non-PASS gate/readiness outcome never causes run() to throw: it returns OrchestrationRunResult with status 'STOPPED' and a stopped { stage, reason, remediation } detail; only a genuine infrastructure/precondition failure raised by a wrapped module (DeveloperStartError, DeveloperValidationError, QaReviewError, ArchitectureReviewError, UatReviewError, ReviewReworkError, MergeReadinessError, ControlledMergeError, AgentProviderError, or OrchestrationError('INVALID_REQUEST') from this module's own request validation) propagates out of run(), unchanged and unnormalized",
+      "createLocalOrchestrationEngine(repositoryRoot, options) wires each wrapped module's own createLocal* factory (createLocalDeveloperStartWorkflow, createLocalDeveloperValidationGate, createLocalQaReviewGate, createLocalArchitectureReviewGate, createLocalUatReviewGate, createLocalReviewReworkGate, createLocalMergeReadinessPolicyEngine, createLocalControlledMergeController) against the repository's real .agent/state stores, plus a real AgentRunner wrapping the caller-supplied AgentProvider; this module opens no lifecycle/evidence/lock store of its own"
+    ],
+    "invariants": [
+      "this module decides no PASS/FAIL/BLOCKED/ready judgment itself; every such judgment is read back from the wrapped module that is authoritative for it",
+      "this module never calls transitionLifecycle or any lifecycle-state store directly; every lifecycle transition happens inside a wrapped module's own call",
+      "this module never skips a failed or blocked required gate: a non-PASS QA/Architecture/UAT/Dev-Validation result, or a ready:false Merge Readiness result, always stops the run before the next stage in the pipeline runs",
+      "ControlledMergeController.merge() is never invoked in a run() call unless MergeReadinessPolicyEngine.evaluate() was invoked in that same run() call and returned ready:true",
+      "the Architecture agent/review stages never run after a non-PASS QA review in the same run() call; the UAT agent/review stages never run after a non-PASS Architecture review in the same run() call",
+      "every OrchestrationStageRecord in a returned OrchestrationRunResult carries a runId distinct from every other stage's runId in that same result",
+      "every agent-driven stage (Developer/QA/Architect/UAT/Product) passes the wrapped gate's own prepareContext()-compiled ContextPackage, unmodified, to both AgentRunner.run() and the subsequent review() call; this module compiles no context of its own and narrows or widens no role's context",
+      "this module embeds no provider-specific (vendor) behavior: AgentRunner, not this module, resolves which concrete AgentProvider executes a role's run"
+    ],
+    "examples": [
+      "a happy-path run() call with a fake AgentProvider returning PASS for every role visits all twelve ORCHESTRATION_STAGE_IDS except 'review-rework', ends status 'COMPLETED' with finalLifecycleState 'DONE', and returns the merged pull request's number and merge commit SHA",
+      "a run() call whose DeveloperValidationGate.validate() call returns outcome 'FAIL' returns status 'STOPPED' with stopped.stage 'dev-validation', and AgentRunner.run() is never called for role 'QA'",
+      "a run() call whose QA agent run reports outcome 'FAIL' causes QaReviewGate.review() to record that FAIL, ReviewReworkGate.enterRework() to route the task to REWORK_REQUIRED, and returns status 'STOPPED' with stopped.stage 'qa-review'; AgentRunner.run() is never called for role 'Architect' or 'UAT/Product' in that same run() call",
+      "a run() call whose Architecture agent run reports outcome 'BLOCKED' returns status 'STOPPED' with stopped.stage 'architecture-review' after routing to rework, and AgentRunner.run() is never called for role 'UAT/Product' in that same run() call",
+      "a run() call that reaches Merge Readiness with ready:false (for example a pull-request base mismatch) returns status 'STOPPED' with stopped.stage 'merge-readiness', finalLifecycleState remains 'MERGE_READY', and ControlledMergeController.merge() is never called",
+      "two run() calls for the same task with request.runId 'run-a' and 'run-b' produce entirely disjoint stage/agent-run runId sets (every id prefixed `run-a::` versus `run-b::`)"
+    ],
+    "edgeCases": [
+      "a task whose requiredReviewRoles omits 'Architect' never reaches an 'architecture-agent'/'architecture-review' stage in the returned OrchestrationRunResult, because QaReviewGate.review()'s own returned lifecycleState routes straight past it (per the review-gate set's own already-shipped sequencing rules) rather than this module inspecting requiredReviewRoles itself",
+      "the Developer agent run reporting outcome 'FAIL' or 'BLOCKED' does not stop the run or skip Dev Validation; it is recorded in the returned stages list with that outcome, and Dev Validation's own deterministic result remains the sole authority for whether the Developer stage passed",
+      "a genuine infrastructure failure from any wrapped module (for example DeveloperStartError('LOCK_REJECTED') on a lock already held by a different owner/run) propagates out of run() as that module's own typed error, not as an OrchestrationRunResult with status 'STOPPED'",
+      "calling run() twice with the same request.runId against a task already past IN_DEVELOPMENT on the second call surfaces whatever error DeveloperStartWorkflow.start() itself raises for a task in a state it does not accept (for example TASK_STATE_NOT_STARTABLE), since this module performs no idempotency/resume handling of its own beyond what DeveloperStartWorkflow.start() already provides"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.dev-start",
+    "control-plane.dev-validation",
+    "control-plane.qa-review",
+    "control-plane.architecture-review",
+    "control-plane.uat-review",
+    "control-plane.review-rework",
+    "control-plane.merge-readiness",
+    "control-plane.controlled-merge",
+    "control-plane.agent-provider",
+    "control-plane.context-compiler (type-only reuse of ContextPackage)",
+    "control-plane.review-framework (type-only reuse of ReviewFinding/ReviewNonPassDetail/ReviewOutcome)",
+    "control-plane.task-registry (type-only reuse of TaskLifecycleState)"
+  ],
+  "forbiddenDependencies": [
+    "fantasy-product/*",
+    "ci-enforcement/*",
+    "any direct evidence-store/lifecycle-state-machine/assignment-lock/git-branch-lifecycle access outside of what an injected wrapped-module dependency already performs",
+    "any concrete AI vendor SDK"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "cli-orchestrate-command (reserved, BOOT-029+)",
+      "expectations": [
+        "SequentialOrchestrationEngine.run() never throws an error that is not one of the typed errors named in this module's behavioralConstraints",
+        "a status 'STOPPED' result always carries a stopped.stage that is one of OrchestrationStageId and a non-empty stopped.reason/stopped.remediation",
+        "createLocalOrchestrationEngine() requires a concrete AgentProvider; no real vendor adapter ships in this repository until a later BOOT task supplies one"
+      ],
+      "requiredCapabilities": [
+        "sequential-role-pipeline-coordination",
+        "structured-stop-diagnostics",
+        "local-composition-root"
+      ],
+      "acceptedRanges": [
+        "an OrchestrationRunResult whose status is 'COMPLETED' or 'STOPPED'",
+        "a thrown error that is one of DeveloperStartError, DeveloperValidationError, QaReviewError, ArchitectureReviewError, UatReviewError, ReviewReworkError, MergeReadinessError, ControlledMergeError, AgentProviderError, or OrchestrationError"
+      ]
+    },
+    {
+      "consumerId": "operator-observability (BOOT-030+)",
+      "expectations": [
+        "every OrchestrationStageRecord's evidenceRefs, when non-empty, names an evidence lineage/sequence a wrapped module's own evidence store already persisted, reusable for audit without this module persisting anything of its own"
+      ],
+      "requiredCapabilities": [
+        "structured-stop-diagnostics",
+        "distinct-run-identity-per-stage"
+      ],
+      "acceptedRanges": [
+        "an ordered OrchestrationStageRecord[] whose stage values are a (possibly non-contiguous) subsequence of ORCHESTRATION_STAGE_IDS in pipeline order"
+      ]
+    }
+  ]
+}

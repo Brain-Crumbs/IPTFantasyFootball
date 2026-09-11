@@ -96,7 +96,7 @@
   ],
   "knownConsumers": [
     {
-      "consumerId": "future-sequential-orchestration",
+      "consumerId": "control-plane.orchestration-engine",
       "expectations": [
         "AgentRunner.run() never throws an error that is not an AgentProviderError",
         "a CANCELLED result is never retried automatically without a fresh decision to run again (recoverable: false); a TIMEOUT or PROVIDER_ERROR may be retried (recoverable: true)",
@@ -118,7 +118,7 @@
       ]
     },
     {
-      "consumerId": "future-review-framework-submission",
+      "consumerId": "control-plane.orchestration-engine (review-submission shape, via each review gate's own review())",
       "expectations": [
         "every AgentRunResult field also present on ReviewSubmissionRequest (taskId, role, revisionIdentity, outcome, details, findings, evidenceRefs, nonPass, occurredAt) carries the exact same meaning and shape control-plane.review-framework already defines for that field"
       ],

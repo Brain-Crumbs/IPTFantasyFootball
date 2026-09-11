@@ -44,6 +44,11 @@ export const RESERVED_COMMANDS: readonly CommandDescriptor[] = [
     summary: "Drive the review rework and approval invalidation loop (owned by BOOT-021; behavior implemented, CLI wiring owned by BOOT-026+).",
     status: "reserved",
   },
+  {
+    name: "orchestrate",
+    summary: "Run the sequential orchestration engine end to end (owned by BOOT-027; behavior implemented, CLI wiring deferred until a real agent-provider adapter exists — see BOOT-029).",
+    status: "reserved",
+  },
 ] as const;
 
 export const ALL_COMMANDS: readonly CommandDescriptor[] = [
