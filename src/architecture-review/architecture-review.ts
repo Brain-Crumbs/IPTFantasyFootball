@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -73,6 +74,20 @@ const MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024;
 // reclaimed by the next caller rather than wedging the task indefinitely.
 // Matches BOOT-018's own FileQaReviewTaskLock threshold.
 const STALE_LOCK_MS = 5 * 60 * 1000;
+
+// A bound on how many times release() retries claiming its own release
+// reservation when another release()/reclaimIfStale() call currently holds
+// it — a genuinely separate OS process, not merely a different call in this
+// one. Each attempt is a real, if fast, failing filesystem syscall, so this
+// loop consumes real wall-clock time (not merely JS tick count) even
+// without an artificial delay between attempts; the bound exists to absorb
+// real OS scheduling jitter around the other holder's own critical section
+// (claim, compare, restore-or-discard, unlink — a handful of fast
+// synchronous filesystem operations), not to model any expected long wait.
+// withLock() here is synchronous end to end (unlike control-plane.
+// controlled-merge's own async variant), so this retries via a bounded
+// busy loop rather than an awaited delay.
+const RELEASE_RESERVATION_CONTENTION_RETRIES = 500;
 
 // After ARCHITECTURE_REVIEW passes, the only remaining review stage the
 // BOOT-009 lifecycle engine's own (unexported) review-sequence check can
@@ -838,12 +853,32 @@ export class FileArchitectureReviewTaskLock implements ArchitectureReviewTaskLoc
     this.reclaimAbandonedReservation(lockPath);
 
     const reservationPath = this.releaseReservationPath(lockPath);
-    try {
-      writeFileSync(reservationPath, "", { encoding: "utf8", flag: "wx" });
-    } catch {
-      // A release() or reclaimIfStale() for this exact lock path is already
-      // in flight; back off silently — a release racing a reclaim is not a
-      // caller-visible error.
+    // A stale former holder's own release() and its replacement's release()
+    // can legitimately land here concurrently (the replacement reclaimed
+    // the lock while the former holder was already mid-callback and only
+    // finishes afterward). Backing off unconditionally the moment this
+    // write loses that race — the original behavior — would let whichever
+    // side loses simply abandon its own release: if the loser's token is
+    // still genuinely current, it is never actually cleaned up, even
+    // though its own callback has already finished, wedging ordinary
+    // acquisition behind a full STALE_LOCK_MS wait for no reason. Retry a
+    // bounded number of times instead of backing off on the first loss.
+    let claimed = false;
+    for (let attempt = 0; attempt < RELEASE_RESERVATION_CONTENTION_RETRIES; attempt += 1) {
+      try {
+        writeFileSync(reservationPath, "", { encoding: "utf8", flag: "wx" });
+        claimed = true;
+        break;
+      } catch {
+        // Another release()/reclaimIfStale() call currently holds the
+        // reservation; retry rather than abandoning this release() outright.
+      }
+    }
+    if (!claimed) {
+      // Contention has outlasted the bounded retry window — an unusually
+      // slow concurrent holder, or genuine starvation. Back off rather
+      // than block indefinitely; the ordinary stale-reclaim path remains
+      // the eventual fallback.
       return;
     }
     try {
@@ -1130,76 +1165,113 @@ export class FileArchitectureReviewTaskLock implements ArchitectureReviewTaskLoc
    */
   private recoverOrDeferToRollbackClaim(lockPath: string): boolean {
     const rollbackClaimPath = this.tryCreateRollbackClaimPath(lockPath);
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+
     let stats: { readonly mtimeMs: number } | null;
     try {
       stats = statSync(rollbackClaimPath);
-    } catch {
-      return true; // Nothing there; proceed normally.
-    }
-    if (Date.now() - stats.mtimeMs <= STALE_LOCK_MS) return false; // Still genuinely in flight; back off.
-
-    // Confirmed stale by this observation alone, but nothing so far has
-    // actually *claimed* sole ownership of this recovery attempt — every
-    // concurrent caller reaching the same conclusion would otherwise race
-    // each other through the restore below on this same fixed
-    // rollbackClaimPath, and a caller lagging between this observation and
-    // that restore could consume a fresh, unrelated claim a different,
-    // legitimately live rollback created against rollbackClaimPath in the
-    // meantime. Claim exclusive ownership of *this* recovery attempt first,
-    // via a dedicated, private sub-path, mirroring
-    // reclaimAbandonedReservation's own recoveryClaimPath pattern.
-    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
-    let claimedContent: string;
-    try {
-      claimedContent = readFileSync(rollbackClaimPath, "utf8");
     } catch (error: unknown) {
-      // ENOENT genuinely means another caller already finished this exact
-      // recovery. Any other failure (a permission error, a transient I/O
-      // error) must not be treated the same way: the orphaned content
-      // might still be sitting there holding a displaced holder's token,
+      // ENOENT genuinely means nothing is there. Any other failure (a
+      // permission error, a transient I/O error) must not be treated the
+      // same way: the claim might still hold a displaced holder's token,
       // so back off conservatively rather than let tryCreate() proceed as
       // though nothing were here.
-      return errorCode(error) === "ENOENT";
-    }
-    try {
-      writeFileSync(rollbackRecoveryClaimPath, claimedContent, { encoding: "utf8", flag: "wx" });
-    } catch (error: unknown) {
-      if (errorCode(error) !== "EEXIST") return false;
-      // EEXIST can mean two different things: a genuinely concurrent
-      // caller currently racing this exact claim right now (a live claim,
-      // back off and let it finish), or an earlier caller's own claim that
-      // itself crashed before finishing — rollbackRecoveryClaimPath is
-      // private and the only code that ever writes to it is this exact
-      // block, so if one is already sitting there and old enough to be
-      // considered abandoned by the same STALE_LOCK_MS threshold as
-      // everything else here, this generation never completed. There is
-      // nothing left to *claim* in that case: this caller simply resumes
-      // the very same recovery using the orphaned copy already there —
-      // its content is necessarily identical to what was just read from
-      // rollbackClaimPath above, since nothing ever mutates either file's
-      // content after creation.
-      let existingClaimStats: { readonly mtimeMs: number } | null;
-      try {
-        existingClaimStats = statSync(rollbackRecoveryClaimPath);
-      } catch {
-        existingClaimStats = null;
-      }
-      if (existingClaimStats === null || Date.now() - existingClaimStats.mtimeMs <= STALE_LOCK_MS) {
-        // Either it just vanished (another caller already finished this
-        // exact recovery — nothing left to do), or it is still genuinely
-        // fresh (a live, concurrent claim in flight right now) — back off
-        // either way rather than race it.
-        return false;
-      }
+      if (errorCode(error) !== "ENOENT") return false;
+      stats = null;
     }
 
-    // Restore its content back to lockPath, preserving the orphan's own
-    // original mtime the same way reclaimAbandonedReservation's own
-    // restore does, then drop both the claim and the original marker —
-    // self-healing past the crash.
-    const orphanedMtime = new Date(stats.mtimeMs);
+    if (stats !== null) {
+      if (Date.now() - stats.mtimeMs <= STALE_LOCK_MS) return false; // Still genuinely in flight; back off.
+
+      // Confirmed stale by this observation alone, but nothing so far has
+      // actually *claimed* rollbackClaimPath's own current generation — a
+      // caller that only reads its content and copies the bytes elsewhere
+      // (the earlier version of this method) leaves rollbackClaimPath
+      // itself unclaimed: a concurrent caller could recover and remove
+      // this exact generation, and a brand-new rollback could then place
+      // a live, unrelated generation at this same fixed path before this
+      // call's own later unconditional cleanup — which would then destroy
+      // that live generation's content without ever having read or
+      // accounted for it. linkSync captures whichever generation
+      // genuinely still occupies rollbackClaimPath at this instant
+      // atomically: unlike renameSync (which would silently replace an
+      // earlier, still-orphaned claim sitting at rollbackRecoveryClaimPath
+      // from a separate crash cycle), link() fails with EEXIST if the
+      // destination already exists, so an existing orphan is never
+      // silently clobbered either.
+      try {
+        linkSync(rollbackClaimPath, rollbackRecoveryClaimPath);
+        try {
+          unlinkSync(rollbackClaimPath);
+        } catch {
+          // Already gone; harmless — our own link is independently valid.
+        }
+      } catch (error: unknown) {
+        if (errorCode(error) === "ENOENT") return true; // Already gone entirely.
+        if (errorCode(error) !== "EEXIST") return false; // Some other failure: defer.
+        // EEXIST: rollbackRecoveryClaimPath already holds an earlier
+        // attempt's own capture — a live one still being worked, or one
+        // abandoned by a crash between its own link and unlink above.
+        // rollbackClaimPath itself was never touched by this attempt
+        // either way, so it may now hold a completely different,
+        // unrelated generation this call must not disturb.
+        let existingClaimStats: { readonly mtimeMs: number } | null;
+        try {
+          existingClaimStats = statSync(rollbackRecoveryClaimPath);
+        } catch {
+          existingClaimStats = null;
+        }
+        if (existingClaimStats === null || Date.now() - existingClaimStats.mtimeMs <= STALE_LOCK_MS) {
+          // Either it just vanished (another caller already finished this
+          // exact recovery), or it is still genuinely fresh (a live,
+          // concurrent claim in flight right now) — back off either way.
+          return false;
+        }
+        // Confirmed stale: fall through and resume using the orphaned
+        // capture already sitting there.
+      }
+    } else {
+      // Nothing at the primary path right now. An earlier claim could
+      // still be sitting, unresumed, at rollbackRecoveryClaimPath if a
+      // previous caller's own link-then-unlink sequence above was
+      // interrupted by a crash after the link landed but before it
+      // reached the restore/cleanup below.
+      let recoveryStats: { readonly mtimeMs: number } | null;
+      try {
+        recoveryStats = statSync(rollbackRecoveryClaimPath);
+      } catch (error: unknown) {
+        if (errorCode(error) !== "ENOENT") return false;
+        return true; // Nothing at either path.
+      }
+      if (Date.now() - recoveryStats.mtimeMs <= STALE_LOCK_MS) return false; // A live claim's own capture.
+    }
+
+    // Either this call just claimed rollbackRecoveryClaimPath above, or an
+    // earlier crash left it there already confirmed stale. Restore its
+    // content back to lockPath, preserving the orphan's own original
+    // mtime the same way reclaimAbandonedReservation's own restore does,
+    // then drop the claim — self-healing past the crash.
+    let claimStats: { readonly mtimeMs: number } | null;
     try {
-      writeFileSync(lockPath, claimedContent, { encoding: "utf8", flag: "wx" });
+      claimStats = statSync(rollbackRecoveryClaimPath);
+    } catch (error: unknown) {
+      if (errorCode(error) !== "ENOENT") return false; // Transient failure: defer.
+      return true; // Already gone — another caller resumed it first.
+    }
+
+    let orphaned: string;
+    try {
+      orphaned = readFileSync(rollbackRecoveryClaimPath, "utf8");
+    } catch (error: unknown) {
+      // ENOENT genuinely means another caller already resumed and finished
+      // this exact recovery. Any other failure must not be treated the
+      // same way: this content might still be a displaced holder's token,
+      // so back off rather than proceed as though it were absent.
+      return errorCode(error) === "ENOENT";
+    }
+    const orphanedMtime = new Date(claimStats.mtimeMs);
+    try {
+      writeFileSync(lockPath, orphaned, { encoding: "utf8", flag: "wx" });
       try {
         utimesSync(lockPath, orphanedMtime, orphanedMtime);
       } catch {
@@ -1209,11 +1281,6 @@ export class FileArchitectureReviewTaskLock implements ArchitectureReviewTaskLoc
     } catch {
       // lockPath already holds a fresh lock — a concurrent, legitimate
       // tryCreate() won the race; leave it untouched.
-    }
-    try {
-      unlinkSync(rollbackClaimPath);
-    } catch {
-      // Already gone; nothing left to clean up.
     }
     try {
       unlinkSync(rollbackRecoveryClaimPath);

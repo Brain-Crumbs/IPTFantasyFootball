@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -336,6 +336,44 @@ test("a still-live acquire() rollback-recovery claim is never raced by a second 
 }));
 
 test("an abandoned acquire() rollback-recovery claim (crashed after claiming, before finishing) is itself resumed rather than wedging the task forever", () => withStore((store, root) => {
+  // rollbackClaimPath is already gone at this point (an earlier caller's
+  // own linkSync-then-unlink succeeded) — only the orphaned recovery-claim
+  // remains, simulating a crash right after that unlink but before the
+  // restore-to-activePath completed.
+  const activePath = join(root, "BOOT-010.lock.json");
+  const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+  const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+  const orphaned = {
+    schemaId: "ipt.assignment-lock",
+    schemaVersion: "1.1.0",
+    lockId: "lock-orphaned",
+    taskId: "BOOT-010",
+    canonicalBranch: "bootstrap/boot-010-assignment-locks",
+    ownerId: "agent-orphaned",
+    runId: "run-orphaned",
+    status: "ACTIVE",
+    acquiredAt: "2026-09-03T22:00:00Z",
+  };
+  const serialized = `${JSON.stringify(orphaned, null, 2)}\n`;
+  writeFileSync(rollbackRecoveryClaimPath, serialized, { encoding: "utf8" });
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(rollbackRecoveryClaimPath, old, old);
+
+  const attempted = store.acquire(acquire({ ownerId: "agent-z", runId: "run-z", lockId: "lock-z" }));
+  assert.equal(attempted.ok, false);
+  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
+  assert.equal(existsSync(rollbackClaimPath), false);
+  assert.equal(existsSync(rollbackRecoveryClaimPath), false);
+  assert.equal(store.get("BOOT-010").lockId, "lock-orphaned");
+}));
+
+test("a double-orphaned acquire() rollback claim (crashed between linking and removing the original) never loses the displaced content, even though one attempt may still report contention", () => withStore((store, root) => {
+  // The narrower crash window where the original claim's own unlink never
+  // ran (both rollbackClaimPath and its recovery-claim briefly coexist)
+  // resolves the recovery-claim first and leaves the now-superseded
+  // original for a later pass to clean up, rather than ever unconditionally
+  // destroying whichever generation happens to occupy rollbackClaimPath by
+  // then.
   const activePath = join(root, "BOOT-010.lock.json");
   const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
   const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
@@ -357,18 +395,24 @@ test("an abandoned acquire() rollback-recovery claim (crashed after claiming, be
   utimesSync(rollbackClaimPath, old, old);
   utimesSync(rollbackRecoveryClaimPath, old, old);
 
-  const attempted = store.acquire(acquire({ ownerId: "agent-z", runId: "run-z", lockId: "lock-z" }));
-  assert.equal(attempted.ok, false);
-  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
-  assert.equal(existsSync(rollbackClaimPath), false);
-  assert.equal(existsSync(rollbackRecoveryClaimPath), false);
-  assert.equal(store.get("BOOT-010").lockId, "lock-orphaned");
+  const first = store.acquire(acquire({ ownerId: "agent-z", runId: "run-z", lockId: "lock-z" }));
+  assert.equal(first.ok, false);
+  assert.equal(first.rejection.code, "LOCK_CONFLICT");
+  assert.equal(existsSync(rollbackRecoveryClaimPath), false, "the recovery-claim itself must be resolved by the first attempt");
+  assert.equal(store.get("BOOT-010").lockId, "lock-orphaned", "the displaced record must never be lost");
+
+  const second = store.acquire(acquire({ ownerId: "agent-z", runId: "run-z", lockId: "lock-z" }));
+  assert.equal(second.ok, false);
+  assert.equal(second.rejection.code, "LOCK_CONFLICT");
+  assert.equal(existsSync(rollbackClaimPath), false, "the second attempt must finish draining the leftover original");
+  assert.equal(store.get("BOOT-010").lockId, "lock-orphaned", "the displaced record must still be intact after the drain");
 }));
 
-test("a transient failure reading the acquire() rollback claim (not a genuine absence) defers rather than proceeding as though nothing were there", () => withStore((store, root) => {
-  // A directory at rollbackClaimPath makes readFileSync fail with EISDIR,
-  // not ENOENT, while statSync still succeeds — reproducing "stat
-  // succeeded, read failed for some other reason" without relying on real
+test("a transient failure claiming the acquire() rollback file (not a genuine absence or a live claim) defers rather than proceeding as though nothing were there", () => withStore((store, root) => {
+  // A directory at rollbackClaimPath makes linkSync fail with EPERM (Linux
+  // forbids hard-linking directories, even as root), not ENOENT/EEXIST,
+  // while statSync still succeeds — reproducing "stat succeeded, the claim
+  // itself failed for some other reason" without relying on real
   // permission errors.
   const activePath = join(root, "BOOT-010.lock.json");
   const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
@@ -379,8 +423,46 @@ test("a transient failure reading the acquire() rollback claim (not a genuine ab
   const attempted = store.acquire(acquire());
   assert.equal(attempted.ok, false);
   assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
+  assert.equal(store.get("BOOT-010"), null, "must not proceed to create a fresh lock while the claim failure is unexplained");
+  assert.equal(existsSync(rollbackClaimPath), true, "the unclaimable marker must be left in place, not discarded");
+}));
+
+test("a transient failure statting the acquire() rollback claim itself (not a genuine absence) defers rather than proceeding as though nothing were there", () => withStore((store, root) => {
+  // The very first statSync on rollbackClaimPath must not treat every
+  // failure as proof of absence either: only ENOENT does. A self-
+  // referential symlink makes statSync fail with ELOOP, a reliable,
+  // root-immune way to force a non-ENOENT failure without real permission
+  // errors.
+  const activePath = join(root, "BOOT-010.lock.json");
+  const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+  symlinkSync(rollbackClaimPath, rollbackClaimPath);
+
+  const attempted = store.acquire(acquire());
+  assert.equal(attempted.ok, false);
+  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
+  assert.equal(store.get("BOOT-010"), null, "must not proceed to create a fresh lock while the stat failure is unexplained");
+}));
+
+test("a transient failure reading an already-claimed acquire() rollback recovery claim (not a genuine absence) defers rather than proceeding as though nothing were there", () => withStore((store, root) => {
+  // Once rollbackRecoveryClaimPath itself is confirmed stale, the final
+  // read of its content must not treat every failure as "already gone"
+  // either — only ENOENT does. A directory there makes the read fail with
+  // an EISDIR-class error while genuinely existing.
+  const activePath = join(root, "BOOT-010.lock.json");
+  const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+  const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+  // rollbackClaimPath itself is absent (as if an earlier caller already
+  // linked-then-unlinked it), leaving only the orphaned recovery-claim —
+  // here made unreadable rather than a normal file.
+  mkdirSync(rollbackRecoveryClaimPath);
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  utimesSync(rollbackRecoveryClaimPath, old, old);
+
+  const attempted = store.acquire(acquire());
+  assert.equal(attempted.ok, false);
+  assert.equal(attempted.rejection.code, "LOCK_CONFLICT");
   assert.equal(store.get("BOOT-010"), null, "must not proceed to create a fresh lock while the read failure is unexplained");
-  assert.equal(existsSync(rollbackClaimPath), true, "the unreadable marker must be left in place, not discarded");
+  assert.equal(existsSync(rollbackRecoveryClaimPath), true, "the unreadable claim must be left in place, not discarded");
 }));
 
 test("atomic lock-file acquisition is not wedged by an empty legacy task directory", () => withStore((store, root) => {

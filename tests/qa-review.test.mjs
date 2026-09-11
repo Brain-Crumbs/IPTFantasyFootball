@@ -898,6 +898,10 @@ test("FileQaReviewTaskLock never races a second caller reaching the same stale c
 });
 
 test("FileQaReviewTaskLock resumes an abandoned rollback-recovery claim (crashed after claiming, before finishing) rather than wedging the task forever", () => {
+  // rollbackClaimPath is already gone at this point (an earlier caller's
+  // own linkSync-then-unlink succeeded) — only the orphaned recovery-claim
+  // remains, simulating a crash right after that unlink but before the
+  // restore-to-lockPath completed.
   const root = mkdtempSync(join(tmpdir(), "ipt-qa-review-lock-abandoned-rollback-recovery-claim-"));
   try {
     const lock = new FileQaReviewTaskLock(root);
@@ -909,10 +913,8 @@ test("FileQaReviewTaskLock resumes an abandoned rollback-recovery claim (crashed
     // restored lockPath content as stale and finish reclaiming it on the
     // same withLock() attempt's retry.
     const displacedStamp = String(Date.now() - 10 * 60 * 1000);
-    writeFileSync(rollbackClaimPath, displacedStamp, { encoding: "utf8" });
     writeFileSync(rollbackRecoveryClaimPath, displacedStamp, { encoding: "utf8" });
     const old = new Date(Date.now() - 10 * 60 * 1000);
-    utimesSync(rollbackClaimPath, old, old);
     utimesSync(rollbackRecoveryClaimPath, old, old);
 
     let ran = false;
@@ -920,6 +922,43 @@ test("FileQaReviewTaskLock resumes an abandoned rollback-recovery claim (crashed
       ran = true;
     });
     assert.ok(ran, "expected the lock to be acquired after the abandoned rollback-recovery claim was resumed");
+    assert.equal(existsSync(rollbackClaimPath), false);
+    assert.equal(existsSync(rollbackRecoveryClaimPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileQaReviewTaskLock fully drains a double-orphaned rollback claim (crashed between linking and removing the original) across successive acquisitions, never losing the displaced content", () => {
+  // The narrower crash window where the original claim's own unlink never
+  // ran (both rollbackClaimPath and its recovery-claim briefly coexist)
+  // resolves the recovery-claim first and leaves the now-superseded
+  // original for a later pass to clean up, rather than ever unconditionally
+  // destroying whichever generation happens to occupy rollbackClaimPath by
+  // then. One acquisition attempt may therefore still report contention,
+  // but the very next one completes the drain.
+  const root = mkdtempSync(join(tmpdir(), "ipt-qa-review-lock-double-orphaned-rollback-claim-"));
+  try {
+    const lock = new FileQaReviewTaskLock(root);
+    const lockPath = join(root, "BOOT-018.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+
+    const displacedStamp = String(Date.now() - 10 * 60 * 1000);
+    writeFileSync(rollbackClaimPath, displacedStamp, { encoding: "utf8" });
+    writeFileSync(rollbackRecoveryClaimPath, displacedStamp, { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+    utimesSync(rollbackRecoveryClaimPath, old, old);
+
+    assert.throws(() => lock.withLock("BOOT-018", () => "should-not-run"));
+    assert.equal(existsSync(rollbackRecoveryClaimPath), false, "the recovery-claim itself must be resolved by the first attempt");
+
+    let ran = false;
+    lock.withLock("BOOT-018", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the second attempt to fully drain the double-orphaned claim");
     assert.equal(existsSync(rollbackClaimPath), false);
     assert.equal(existsSync(rollbackRecoveryClaimPath), false);
   } finally {

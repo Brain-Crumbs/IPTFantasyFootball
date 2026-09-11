@@ -161,68 +161,106 @@ export class FileAssignmentLockStore implements AssignmentLockStore {
   #recoverOrDeferToAcquireRollbackClaim(taskId: string): boolean {
     const activePath = this.#activePath(taskId);
     const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
+    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
+
     let stats: { readonly mtimeMs: number } | null;
     try {
       stats = statSync(rollbackClaimPath);
-    } catch {
-      return true; // Nothing there; proceed normally.
-    }
-    if (Date.now() - stats.mtimeMs <= RELEASE_CLAIM_STALE_MS) return false; // Still genuinely in flight; back off.
-
-    // Confirmed stale by this observation alone, but nothing so far has
-    // actually *claimed* sole ownership of this recovery attempt. Claim
-    // exclusive ownership via a dedicated, private sub-path first, exactly
-    // as #reclaimAbandonedRelease's own recoveryClaimPath does.
-    const rollbackRecoveryClaimPath = `${rollbackClaimPath}.recovery-claim`;
-    let claimedContent: string;
-    try {
-      claimedContent = readFileSync(rollbackClaimPath, "utf8");
     } catch (error) {
-      // ENOENT genuinely means another caller already finished this exact
-      // recovery. Any other failure must not be treated the same way: the
-      // orphaned content might still be holding a displaced holder's
-      // token, so back off conservatively rather than proceed as though
-      // nothing were here.
+      // ENOENT genuinely means nothing is there. Any other failure (a
+      // permission error, a transient I/O error) must not be treated the
+      // same way: the claim might still hold a displaced holder's token,
+      // so back off conservatively rather than proceed as though nothing
+      // were here.
+      if (errorCode(error) !== "ENOENT") return false;
+      stats = null;
+    }
+
+    if (stats !== null) {
+      if (Date.now() - stats.mtimeMs <= RELEASE_CLAIM_STALE_MS) return false; // Still genuinely in flight; back off.
+
+      // Confirmed stale by this observation alone, but nothing so far has
+      // actually *claimed* rollbackClaimPath's own current generation — a
+      // caller that only reads its content and copies the bytes elsewhere
+      // (the earlier version of this method) leaves rollbackClaimPath
+      // itself unclaimed: a concurrent caller could recover and remove
+      // this exact generation, and a brand-new rollback could then place
+      // a live, unrelated generation at this same fixed path before this
+      // call's own later unconditional cleanup — which would then destroy
+      // that live generation's content without ever having read or
+      // accounted for it. linkSync captures whichever generation
+      // genuinely still occupies rollbackClaimPath at this instant
+      // atomically: unlike renameSync (which would silently replace an
+      // earlier, still-orphaned claim sitting at rollbackRecoveryClaimPath
+      // from a separate crash cycle), link() fails with EEXIST if the
+      // destination already exists, so an existing orphan is never
+      // silently clobbered either.
+      try {
+        linkSync(rollbackClaimPath, rollbackRecoveryClaimPath);
+        try {
+          unlinkSync(rollbackClaimPath);
+        } catch {
+          // Already gone; harmless — our own link is independently valid.
+        }
+      } catch (error) {
+        if (errorCode(error) === "ENOENT") return true; // Already gone entirely.
+        if (errorCode(error) !== "EEXIST") return false; // Some other failure: defer.
+        // EEXIST: rollbackRecoveryClaimPath already holds an earlier
+        // attempt's own capture — a live one still being worked, or one
+        // abandoned by a crash between its own link and unlink above.
+        // rollbackClaimPath itself was never touched by this attempt
+        // either way, so it may now hold a completely different,
+        // unrelated generation this call must not disturb.
+        let existingClaimStats: { readonly mtimeMs: number } | null;
+        try {
+          existingClaimStats = statSync(rollbackRecoveryClaimPath);
+        } catch {
+          existingClaimStats = null;
+        }
+        if (existingClaimStats === null || Date.now() - existingClaimStats.mtimeMs <= RELEASE_CLAIM_STALE_MS) {
+          // Either it just vanished (another caller already finished this
+          // exact recovery), or it is still genuinely fresh (a live,
+          // concurrent claim in flight right now) — back off either way.
+          return false;
+        }
+        // Confirmed stale: fall through and resume using the orphaned
+        // capture already sitting there.
+      }
+    } else {
+      // Nothing at the primary path right now. An earlier claim could
+      // still be sitting, unresumed, at rollbackRecoveryClaimPath if a
+      // previous caller's own link-then-unlink sequence above was
+      // interrupted by a crash after the link landed but before it
+      // reached the restore/cleanup below.
+      let recoveryStats: { readonly mtimeMs: number } | null;
+      try {
+        recoveryStats = statSync(rollbackRecoveryClaimPath);
+      } catch (error) {
+        if (errorCode(error) !== "ENOENT") return false;
+        return true; // Nothing at either path.
+      }
+      if (Date.now() - recoveryStats.mtimeMs <= RELEASE_CLAIM_STALE_MS) return false; // A live claim's own capture.
+    }
+
+    // Either this call just claimed rollbackRecoveryClaimPath above, or an
+    // earlier crash left it there already confirmed stale. Restore its
+    // content back to activePath, then drop the claim — self-healing past
+    // the crash.
+    let orphaned: string;
+    try {
+      orphaned = readFileSync(rollbackRecoveryClaimPath, "utf8");
+    } catch (error) {
+      // ENOENT genuinely means another caller already resumed and finished
+      // this exact recovery. Any other failure must not be treated the
+      // same way: this content might still be a displaced holder's token,
+      // so back off rather than proceed as though it were absent.
       return errorCode(error) === "ENOENT";
     }
     try {
-      writeFileSync(rollbackRecoveryClaimPath, claimedContent, { encoding: "utf8", flag: "wx" });
-    } catch (error) {
-      if (errorCode(error) !== "EEXIST") return false;
-      // EEXIST can mean a genuinely concurrent caller racing this exact
-      // claim right now (a live claim, back off and let it finish), or an
-      // earlier caller's own claim that itself crashed before finishing —
-      // rollbackRecoveryClaimPath is private and the only code that ever
-      // writes to it is this exact block, so an existing one old enough to
-      // be considered abandoned by the same threshold means this
-      // generation never completed, and this caller simply resumes it
-      // using the orphaned copy already there (its content is necessarily
-      // identical to what was just read from rollbackClaimPath above,
-      // since nothing ever mutates either file's content after creation).
-      let existingClaimStats: { readonly mtimeMs: number } | null;
-      try {
-        existingClaimStats = statSync(rollbackRecoveryClaimPath);
-      } catch {
-        existingClaimStats = null;
-      }
-      if (existingClaimStats === null || Date.now() - existingClaimStats.mtimeMs <= RELEASE_CLAIM_STALE_MS) {
-        // Either it just vanished (another caller already finished this
-        // exact recovery), or it is still genuinely fresh (a live claim in
-        // flight right now) — back off either way rather than race it.
-        return false;
-      }
-    }
-
-    try {
-      writeFileSync(activePath, claimedContent, { encoding: "utf8", flag: "wx" });
+      writeFileSync(activePath, orphaned, { encoding: "utf8", flag: "wx" });
     } catch {
       // activePath already holds a fresh record — a concurrent, legitimate
       // acquire() won the race; leave it untouched.
-    }
-    try {
-      unlinkSync(rollbackClaimPath);
-    } catch {
-      // Already gone; nothing left to clean up.
     }
     try {
       unlinkSync(rollbackRecoveryClaimPath);
