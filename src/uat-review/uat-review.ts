@@ -886,11 +886,27 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
       return; // Already gone; nothing left to release.
     }
 
-    let observed: string | null;
+    let observed: string;
     try {
       observed = readFileSync(claimPath, "utf8");
     } catch {
-      observed = null;
+      // An unreadable claim (a transient I/O error, not "genuinely gone" —
+      // the rename just above guarantees claimPath exists) must never be
+      // treated as safe to discard: the content could belong to a live
+      // holder's own fresh replacement lock (a reclaimer's), and discarding
+      // it would let that holder's critical section keep running after its
+      // lock was silently deleted, with a third caller free to also enter
+      // it. Give the content back to lockPath, whatever it actually is,
+      // rather than risk losing it — the reservation this call already
+      // holds keeps ordinary tryCreate() blocked the entire time, so
+      // lockPath is guaranteed still vacant to restore onto.
+      try {
+        renameSync(claimPath, lockPath);
+      } catch {
+        // Someone else has since restored or replaced it; nothing further
+        // to do.
+      }
+      return;
     }
     if (observed !== token) {
       // Not this holder's own lock (a reclaimer's fresh replacement, most
@@ -898,12 +914,10 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
       // create and never `renameSync`: POSIX rename silently replaces an
       // existing destination, which would clobber a third caller's own fresh
       // lock, whereas flag:"wx" correctly fails instead.
-      if (observed !== null) {
-        try {
-          writeFileSync(lockPath, observed, { encoding: "utf8", flag: "wx" });
-        } catch {
-          // A fresh lock now exists at lockPath; nothing to restore onto.
-        }
+      try {
+        writeFileSync(lockPath, observed, { encoding: "utf8", flag: "wx" });
+      } catch {
+        // A fresh lock now exists at lockPath; nothing to restore onto.
       }
       try {
         unlinkSync(claimPath);
@@ -929,6 +943,10 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
 
   private reclaimClaimedPath(lockPath: string): string {
     return `${lockPath}.reclaim-claim`;
+  }
+
+  private tryCreateRollbackClaimPath(lockPath: string): string {
+    return `${lockPath}.try-create-rollback-claim`;
   }
 
   /**
@@ -1112,6 +1130,62 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
   }
 
   /**
+   * Recovers or defers to the rollback claim `tryCreate`'s own "someone else
+   * reserved this path" branch below takes: a private detail of that
+   * method alone, recognized by nothing else, including
+   * `reclaimAbandonedReservation` itself. A process killed between claiming
+   * lockPath away into it and finishing that same rollback would otherwise
+   * leave the displaced holder's content stranded there forever, with
+   * nothing left to ever recover it, while lockPath itself sits vacant for
+   * any later `tryCreate` to happily recreate — a genuine double-entry
+   * race. Mirrors control-plane.controlled-merge's own
+   * `FileControlledMergeTaskLock.recoverOrDeferToRollbackClaim`. Returns
+   * `false` when this call should back off entirely (a live rollback is
+   * still genuinely in flight, or an abandoned one was just recovered and
+   * lockPath is no longer vacant to create into); `true` when it is safe to
+   * proceed with `tryCreate`'s own normal logic.
+   */
+  private recoverOrDeferToRollbackClaim(lockPath: string): boolean {
+    const rollbackClaimPath = this.tryCreateRollbackClaimPath(lockPath);
+    let stats: { readonly mtimeMs: number } | null;
+    try {
+      stats = statSync(rollbackClaimPath);
+    } catch {
+      return true; // Nothing there; proceed normally.
+    }
+    if (Date.now() - stats.mtimeMs <= STALE_LOCK_MS) return false; // Still genuinely in flight; back off.
+
+    // Stale: restore its content back to lockPath, preserving the orphan's
+    // own original mtime the same way reclaimAbandonedReservation's own
+    // restore does, then drop the marker — self-healing past the crash.
+    let orphaned: string;
+    try {
+      orphaned = readFileSync(rollbackClaimPath, "utf8");
+    } catch {
+      return true; // Already gone — another caller already recovered it.
+    }
+    const orphanedMtime = new Date(stats.mtimeMs);
+    try {
+      writeFileSync(lockPath, orphaned, { encoding: "utf8", flag: "wx" });
+      try {
+        utimesSync(lockPath, orphanedMtime, orphanedMtime);
+      } catch {
+        // Lost ownership of the just-written file in an extremely narrow
+        // window; the lock will simply need to age out again.
+      }
+    } catch {
+      // lockPath already holds a fresh lock — a concurrent, legitimate
+      // tryCreate() won the race; leave it untouched.
+    }
+    try {
+      unlinkSync(rollbackClaimPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    return false;
+  }
+
+  /**
    * Creates the lock file exclusively and returns the unique token this
    * holder wrote, or `null` when the file already exists (ordinary
    * contention) or a release()/reclaimIfStale() call currently holds this
@@ -1121,6 +1195,15 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
    * misreported as another reviewer holding the task.
    */
   private tryCreate(lockPath: string): string | null {
+    // A rollback claim (below) can itself be interrupted by a crash between
+    // claiming lockPath away and finishing that same rollback — recognized
+    // by nothing else in this class, since it is a private detail of this
+    // method's own rollback path, not the public reservation/reclaim-marker
+    // mechanism. Recover or defer to it first, before any of this call's
+    // own logic runs, so an abandoned one never wedges the displaced
+    // holder's content forever and a still-live one is never raced.
+    if (!this.recoverOrDeferToRollbackClaim(lockPath)) return null;
+
     // A release()/reclaimIfStale() in flight for this exact lock path has
     // claimed it away for inspection: ordinary creation must stay blocked for
     // that entire window rather than merely observing the path as transiently
@@ -1144,11 +1227,52 @@ export class FileUatReviewTaskLock implements UatReviewTaskLock {
       // A release()/reclaimIfStale() reserved this path in the narrow gap
       // between the pre-write check above and this write landing; roll back
       // rather than let this freshly created lock stand in for real ownership
-      // while that call is still deciding what to do with what it claimed.
+      // while that call is still deciding what to do with what it claimed. An
+      // unconditional unlink here is not safe, though: by the time it runs, a
+      // reclaimer could already have renamed this exact token away, found it
+      // did not match what it expected (the reclaimer's own stale-content
+      // check), and restored it — and, separately, a fresh tryCreate()
+      // elsewhere could since have exclusively created a brand-new token of
+      // its own at this same path once that reclaimer's reservation was
+      // cleaned up. Blindly unlinking at that point would delete that later,
+      // unrelated holder's lock instead of this attempt's own, leaving
+      // lockPath vacant while that holder's critical section is still
+      // actively running and free for yet another caller to also win. Claim
+      // whatever currently sits at lockPath via the same atomic-rename-then-
+      // verify pattern used everywhere else in this class, and only ever
+      // discard it if it is still genuinely this attempt's own token.
+      const rollbackClaimPath = this.tryCreateRollbackClaimPath(lockPath);
+      let claimed: string | null;
       try {
-        unlinkSync(lockPath);
+        renameSync(lockPath, rollbackClaimPath);
       } catch {
-        // Already reclaimed or removed by someone else; nothing to roll back.
+        // Already gone — reclaimed, or rolled back by this same logic on a
+        // concurrent call; nothing left to roll back.
+        return null;
+      }
+      try {
+        claimed = readFileSync(rollbackClaimPath, "utf8");
+      } catch {
+        claimed = null;
+      }
+      if (claimed !== token && claimed !== null) {
+        // Not this attempt's own token — a reclaimer's legitimate
+        // replacement landed here first. Restore it untouched rather than
+        // discarding someone else's live lock; a plain rename is not safe
+        // here either, since a third, independent tryCreate() could have
+        // exclusively created yet another fresh token at lockPath in this
+        // same gap.
+        try {
+          writeFileSync(lockPath, claimed, { encoding: "utf8", flag: "wx" });
+        } catch {
+          // lockPath already holds a fresher record of its own; nothing to
+          // restore onto.
+        }
+      }
+      try {
+        unlinkSync(rollbackClaimPath);
+      } catch {
+        // Already gone; nothing left to clean up.
       }
       return null;
     }

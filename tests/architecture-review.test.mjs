@@ -998,6 +998,62 @@ test("FileArchitectureReviewTaskLock recovers even when a process crashed right 
   }
 });
 
+test("FileArchitectureReviewTaskLock recovers an orphaned tryCreate() rollback claim (process crashed mid-rollback) rather than permanently displacing its owner", () => {
+  // tryCreate()'s own rollback path claims lockPath away into a private,
+  // fixed rollback-claim path before deciding whether to restore or
+  // discard it. A crash right after that claiming rename — but before the
+  // restore-or-discard finishes — leaves the displaced holder's content
+  // stranded there forever: nothing else (not reclaimAbandonedReservation,
+  // not tryCreate()'s own reservation/reclaim-marker checks) recognizes
+  // this path at all, so a later tryCreate() would see lockPath as vacant
+  // and happily create a brand-new token while the displaced content is
+  // never recovered.
+  const root = mkdtempSync(join(tmpdir(), "ipt-architecture-review-lock-orphaned-rollback-claim-"));
+  try {
+    const lock = new FileArchitectureReviewTaskLock(root);
+    const lockPath = join(root, "BOOT-019.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+
+    // lockPath itself is vacant (as it would be right after the claiming
+    // rename), and the displaced holder's own genuinely-stale token sits
+    // orphaned at the rollback-claim path.
+    writeFileSync(rollbackClaimPath, `${Date.now() - 10 * 60 * 1000}:displaced-token`, { encoding: "utf8" });
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    utimesSync(rollbackClaimPath, old, old);
+
+    let ran = false;
+    lock.withLock("BOOT-019", () => {
+      ran = true;
+    });
+    assert.ok(ran, "expected the lock to be acquired after the orphaned rollback claim was recovered");
+    assert.equal(existsSync(rollbackClaimPath), false, "the orphaned rollback claim must be cleaned up, not left stranded");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("FileArchitectureReviewTaskLock never mistakes a live (fresh) tryCreate() rollback claim for an abandoned one", () => {
+  const root = mkdtempSync(join(tmpdir(), "ipt-architecture-review-lock-live-rollback-claim-"));
+  try {
+    const lock = new FileArchitectureReviewTaskLock(root);
+    const lockPath = join(root, "BOOT-019.lifecycle.lock");
+    const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
+
+    // Freshly created (no backdating): a live, in-progress rollback, not an
+    // abandoned one.
+    writeFileSync(rollbackClaimPath, "displaced-token", { encoding: "utf8" });
+
+    assert.throws(
+      () => lock.withLock("BOOT-019", () => {}),
+      (error) => error instanceof ArchitectureReviewError && error.code === "STATE_CONFLICT",
+    );
+    assert.equal(existsSync(rollbackClaimPath), true);
+    assert.equal(readFileSync(rollbackClaimPath, "utf8"), "displaced-token");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("RepositoryArchitectureContextSource includes a dependency task's affected contract, un-redacted, and an exact-revision diff", () => {
   const dependency = task({ taskId: "BOOT-017", dependencies: [], affectedContracts: ["control-plane.review-framework"] });
   const primary = task({ taskId: "BOOT-019", dependencies: ["BOOT-017"], affectedContracts: [] });
