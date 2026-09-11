@@ -817,7 +817,25 @@ export class ControlledMergeController {
   private isMergeEvidencePayloadFor(payload: unknown, taskId: string, expectedRevision: string | undefined): boolean {
     if (typeof expectedRevision !== "string") return false;
     if (typeof payload !== "object" || payload === null) return false;
-    if (!this.dependencies.evidenceStore.validate(payload).ok) return false;
+    // A throw from a provider-neutral validate() implementation (its schema
+    // backend failing to read, for instance) is an infrastructure failure,
+    // not a legitimate "this payload doesn't validate" determination — it
+    // must be normalized into a recoverable ControlledMergeError the same
+    // way every other evidence-store boundary call already is (see
+    // getCurrentEvidence), not left to propagate raw or be silently treated
+    // as "not reusable" (which would mask the failure by writing a fresh,
+    // functionally duplicate evidence record instead of surfacing it).
+    let validation: ValidateResult;
+    try {
+      validation = this.dependencies.evidenceStore.validate(payload);
+    } catch (error: unknown) {
+      throw new ControlledMergeError(
+        "EVIDENCE_REJECTED",
+        `Task '${taskId}' merge evidence could not be validated: ${detail(error)}`,
+        true,
+      );
+    }
+    if (!validation.ok) return false;
     const candidate = payload as Record<string, unknown>;
     return (
       candidate.schemaId === "ipt.merge-evidence" &&
@@ -1453,13 +1471,62 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
     // it above, or because it was already sitting there — which can only
     // mean a *previous* call crashed between renaming the original
     // reservation away and finishing this same recovery (a rename is never
-    // observed half-done). Either way the marker's own mtime, preserved by
-    // the rename, still reflects the original reservation's true age, so
-    // it is recovered identically from here whether freshly claimed just
-    // now or found already abandoned: without this, a crash landing in
-    // that exact one-line gap would leave the marker blocking every future
-    // tryCreate() check forever, since nothing else would ever revisit it
-    // once the original reservation path is gone for good.
+    // observed half-done), or that a concurrent caller reached this exact
+    // point moments earlier. Either way, nothing so far has actually
+    // *claimed* sole ownership of it — only observed that it exists (or
+    // failed to rename it away, which another caller doing exactly that is
+    // indistinguishable from). Left at a bare observation, every
+    // concurrent caller reaching here would race each other through the
+    // restore logic below on the very same fixed claim paths — and a
+    // caller lagging between this observation and that restore could
+    // consume a brand-new, unrelated claim a fresh release()/
+    // reclaimIfStale() legitimately created against reservationPath in the
+    // meantime, restoring live, in-progress content as though it belonged
+    // to the old crash and leaving that operation's own lock behind
+    // afterward. Claim exclusive ownership of *this* recovery attempt
+    // first: capture the marker's content and mtime, then re-establish
+    // both at reservationPath via an exclusive-create write — never a
+    // blind rename, since reservationPath may by now legitimately hold a
+    // brand-new, live reservation of its own that an unconditional rename
+    // would silently destroy — before moving the claim straight back to
+    // reclaimMarkerPath. Exactly one concurrent caller can win that
+    // exclusive create; every other caller's own attempt fails and it
+    // backs off untouched, the same way tryCreate()'s own EEXIST handling
+    // already protects the lock file itself.
+    let markerContent: string;
+    let markerMtime: Date;
+    try {
+      markerContent = readFileSync(reclaimMarkerPath, "utf8");
+      markerMtime = new Date(statSync(reclaimMarkerPath).mtimeMs);
+    } catch {
+      return; // Already gone; another caller already claimed or finished it.
+    }
+    try {
+      writeFileSync(reservationPath, markerContent, { encoding: "utf8", flag: "wx" });
+    } catch {
+      // A live reservation already occupies this path, or another caller
+      // already won this exact claim; back off either way.
+      return;
+    }
+    try {
+      utimesSync(reservationPath, markerMtime, markerMtime);
+    } catch {
+      // Lost ownership of the just-written file in an extremely narrow
+      // window; harmless — its age is simply re-evaluated below.
+    }
+    try {
+      unlinkSync(reclaimMarkerPath);
+    } catch {
+      // Already gone; nothing left to clean up.
+    }
+    try {
+      renameSync(reservationPath, reclaimMarkerPath);
+    } catch {
+      // Cannot happen under normal operation — this call exclusively holds
+      // reservationPath and reclaimMarkerPath is now vacant — but guard
+      // defensively rather than assume it.
+      return;
+    }
 
     let claimedStats: { readonly mtimeMs: number } | null;
     try {
@@ -1663,13 +1730,31 @@ export class FileControlledMergeTaskLock implements ControlledMergeTaskLock {
       return false;
     }
 
+    // A rename preserves mtime, so this reflects whatever mtime the file
+    // genuinely had at the instant it was just claimed — not the earlier
+    // statSync reclaimIfStale used to decide staleness before this call
+    // even began. refresh() bumps a live holder's mtime via a metadata-
+    // only utimesSync without ever touching content, so a holder that
+    // refreshed its heartbeat in the gap between that earlier check and
+    // this claim would read back identical content below even though it
+    // is, right now, demonstrably not stale — content identity alone is
+    // not sufficient proof of abandonment when the thing that actually
+    // changed is the mtime, not the bytes.
+    let claimedStats: { readonly mtimeMs: number } | null;
+    try {
+      claimedStats = statSync(claimPath);
+    } catch {
+      claimedStats = null;
+    }
+    const stillStale = claimedStats !== null && Date.now() - claimedStats.mtimeMs > this.staleLockMs;
+
     let claimed: string | null;
     try {
       claimed = readFileSync(claimPath, "utf8");
     } catch {
       claimed = null;
     }
-    if (claimed !== observed) {
+    if (claimed !== observed || !stillStale) {
       if (claimed !== null) {
         try {
           writeFileSync(lockPath, claimed, { encoding: "utf8", flag: "wx" });

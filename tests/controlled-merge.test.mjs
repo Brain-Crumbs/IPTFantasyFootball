@@ -1914,6 +1914,106 @@ test("an evidence-store I/O failure after a confirmed merge is normalized to a r
   assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
 });
 
+test("a throwing evidence-store validate() during the post-merge reuse check is normalized to a recoverable EVIDENCE_REJECTED", async () => {
+  // A provider-neutral ControlledMergeEvidenceStore.validate() implementation
+  // could throw for reasons unrelated to the payload itself (its schema
+  // backend failing to read, say) — an infrastructure failure, not a
+  // legitimate "this isn't valid merge evidence" determination. It must be
+  // normalized the same way every other evidence-store boundary call already
+  // is, not left to propagate raw past isMergeEvidencePayloadFor.
+  const { store: inner } = makeEvidenceStore();
+  const seeded = inner.record({
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:seed`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "merged-sha-1",
+    policyDecisionReference: "placeholder",
+    recordedAt: occurredAt,
+  });
+  assert.equal(seeded.ok, true);
+
+  class ThrowingValidateEvidenceStore {
+    record(payload) {
+      return inner.record(payload);
+    }
+
+    getCurrent(lineageId) {
+      return inner.getCurrent(lineageId);
+    }
+
+    getHistory(lineageId) {
+      return inner.getHistory(lineageId);
+    }
+
+    validate() {
+      throw new Error("schema backend unavailable");
+    }
+  }
+
+  const pullRequests = new FakePullRequestPort({ existing: [prRecord({ merged: true, mergeCommitSha: "merged-sha-1" })] });
+  const { controller, state } = makeController({ pullRequests, evidenceStore: new ThrowingValidateEvidenceStore() });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "EVIDENCE_REJECTED");
+    assert.equal(error.recoverable, true);
+    return true;
+  });
+
+  assert.equal(state.get(task.taskId).currentState, "MERGE_READY");
+});
+
+test("a throwing evidence-store validate() during resume is normalized to a recoverable EVIDENCE_REJECTED", async () => {
+  const { store: inner } = makeEvidenceStore();
+  const originalPayload = {
+    schemaId: "ipt.merge-evidence",
+    schemaVersion: "1.0.0",
+    evidenceId: `${task.taskId}:merge:${revision}:${occurredAt}`,
+    taskId: task.taskId,
+    revisionIdentity: revision,
+    pullRequestNumber: 63,
+    mergeCommitSha: "original-merge-sha",
+    policyDecisionReference: "control-plane.merge-readiness:BOOT-025@rev:ready",
+    recordedAt: occurredAt,
+  };
+  const original = inner.record(originalPayload);
+  assert.equal(original.ok, true);
+
+  class ThrowingValidateEvidenceStore {
+    record(payload) {
+      return inner.record(payload);
+    }
+
+    getCurrent(lineageId) {
+      return inner.getCurrent(lineageId);
+    }
+
+    getHistory(lineageId) {
+      return inner.getHistory(lineageId);
+    }
+
+    validate() {
+      throw new Error("schema backend unavailable");
+    }
+  }
+
+  const stateStore = new MemoryStateStore([
+    [task.taskId, lifecycleRecord(task.taskId, "MERGED", [historyEventFor("MERGED", original.record)])],
+  ]);
+  const pullRequests = new FakePullRequestPort({});
+  const { controller } = makeController({ stateStore, evidenceStore: new ThrowingValidateEvidenceStore(), pullRequests });
+
+  await assert.rejects(() => controller.merge(request()), (error) => {
+    assert.ok(error instanceof ControlledMergeError);
+    assert.equal(error.code, "EVIDENCE_REJECTED");
+    assert.equal(error.recoverable, true);
+    return true;
+  });
+});
+
 test("the controller itself rejects a merged=true result with an empty sha, not only the GitHub adapter", async () => {
   // A ControlledMergePullRequestPort is a public port any caller may
   // satisfy with a different adapter; this fake models one that never

@@ -734,17 +734,35 @@ function toComparableInstant(value: string): number {
   // bounds are numerically adjacent integers with no integer between them
   // (":59.999" and ":00.000" of the next minute are exactly 1ms apart).
   // A sub-millisecond epsilon is the only way to satisfy both bounds at
-  // once; this system has no need to distinguish between two different
-  // leap-second instants down to fractions of a millisecond, only to place
-  // *any* leap second, regardless of its own fraction, strictly between
-  // the ":59" second before it and the next minute — so every leap-second
-  // value maps to half a millisecond before that next-minute boundary,
-  // computed from the whole-second ":59" form with any fraction discarded.
-  const suffixMatch = /(?:\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.exec(value);
+  // once — computed from the whole-second ":59" form with any fraction
+  // discarded, so every leap-second value lands strictly between the ":59"
+  // second before it and the next minute's own ":00.000". Two *different*
+  // leap-second instants (e.g. ":60.100" acquired, ":60.900" expiring)
+  // still need to compare in their own right, though: an expiresAt only
+  // fractionally later than its own acquiredAt within the very same leap
+  // second must not collapse to equal, or a genuinely valid lease spanning
+  // both is wrongly rejected as non-increasing (and, symmetrically,
+  // isStale must not treat a not-yet-expired instant within the leap
+  // second as already past a `now` earlier within it). The leap second's
+  // own fractional digits are therefore preserved, scaled into the
+  // strictly-increasing sub-millisecond gap between ":59.999" and the next
+  // minute rather than discarded.
+  const suffixMatch = /^(?:\.(\d+))?([Zz]|[+-]\d{2}:\d{2})$/.exec(value.slice(19));
   if (suffixMatch === null) return NaN;
-  const wholeSecond59Form = `${value.slice(0, 17)}59${suffixMatch[1]}`;
+  const fractionDigits = suffixMatch[1] ?? "";
+  const offset = suffixMatch[2];
+  const wholeSecond59Form = `${value.slice(0, 17)}59${offset}`;
   const base59 = Date.parse(wholeSecond59Form);
-  return Number.isNaN(base59) ? base59 : base59 + 999.5;
+  if (Number.isNaN(base59)) return base59;
+  const fraction = fractionDigits.length > 0 ? Number(`0.${fractionDigits}`) : 0;
+  // epsilon ranges over (0.001, 0.999): strictly greater than 0 (so even a
+  // zero fraction lands strictly after base59+999, the latest
+  // Date.parse-representable ":59" instant) and strictly less than 1 (so
+  // even the largest fraction lands strictly before base59+1000, the next
+  // minute's ":00.000"), while still increasing monotonically with the
+  // leap second's own fraction.
+  const epsilon = 0.001 + fraction * 0.998;
+  return base59 + 999 + epsilon;
 }
 
 function freezeLock(lock: AssignmentLockRecord): AssignmentLockRecord {

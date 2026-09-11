@@ -351,6 +351,27 @@ test("a leap second compares strictly later than every fractional value of the :
   assert.equal(acquired.ok, true, acquired.ok ? undefined : acquired.rejection.reason);
 }));
 
+test("two different leap-second instants within the same leap second still compare in their own right, not collapsed to one value", () => withStore((store) => {
+  // Collapsing every fractional instant during ":60" to the same value
+  // would make a lease acquired at ":60.100" and expiring at ":60.900"
+  // (later, within the very same leap second) look non-increasing and get
+  // rejected as "not later than acquiredAt".
+  const acquired = store.acquire(acquire({
+    acquiredAt: "1990-12-31T23:59:60.100Z",
+    expiresAt: "1990-12-31T23:59:60.900Z",
+  }));
+  assert.equal(acquired.ok, true, acquired.ok ? undefined : acquired.rejection.reason);
+
+  // Symmetrically, a "now" of :60.100Z (the lease's own acquiredAt, earlier
+  // within the same leap second than its :60.900Z expiresAt) must not be
+  // treated as already past that expiry — the lock must still read as held.
+  const stillActive = store.acquire(acquire({
+    ownerId: "agent-b", runId: "run-b", lockId: "lock-b", acquiredAt: "1990-12-31T23:59:60.100Z",
+  }));
+  assert.equal(stillActive.ok, false);
+  assert.equal(stillActive.rejection.code, "LOCK_CONFLICT");
+}));
+
 test("an abandoned release reservation that already crashed mid-recovery (its .reclaim marker orphaned) is still reclaimed, not left blocking forever", () => withStore((store, root) => {
   const acquired = store.acquire(acquire());
   assert.equal(acquired.ok, true);
