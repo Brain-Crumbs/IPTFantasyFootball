@@ -11,6 +11,16 @@ import {
 const TASK_ID_PATTERN = /^[A-Z]+-[0-9]{3,}$/;
 
 /**
+ * `setTimeout`'s own delay ceiling (2^31 - 1 ms, a 32-bit signed integer):
+ * Node (and every other `setTimeout` implementation sharing this behavior)
+ * silently truncates a larger delay to a value near zero rather than
+ * rejecting it, so a caller requesting a longer timeout than this would
+ * otherwise receive an almost-immediate spurious `TIMEOUT` instead of the
+ * duration it actually asked for.
+ */
+const MAX_SET_TIMEOUT_DELAY_MS = 2147483647;
+
+/**
  * BOOT-026 reuses the exact BOOT-012 `ContextRole` union rather than
  * redefining an equivalent enum: an agent run's role is always the role its
  * compiled context package was built for, and the two must never be able to
@@ -189,6 +199,12 @@ export class AgentRunner {
 
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
     validateRequest(request);
+    // Frozen before the provider ever sees it: a provider that mutates the
+    // request object it was handed (accidentally, or a nonconforming
+    // vendor/test adapter) must never be able to make a later read of
+    // request.taskId/role/revisionIdentity/runId disagree with the identity
+    // this call already validated and is about to bind the result to.
+    Object.freeze(request);
 
     const contextPackage = request.contextPackage;
     if (contextPackage.taskId !== request.taskId) {
@@ -220,6 +236,18 @@ export class AgentRunner {
       providerCapabilities = this.dependencies.provider.capabilities();
     } catch (error: unknown) {
       throw normalizeProviderError(error, providerId);
+    }
+    if (
+      typeof providerCapabilities !== "object" ||
+      providerCapabilities === null ||
+      !Array.isArray(providerCapabilities.supportedRoles)
+    ) {
+      throw new AgentProviderError(
+        "PROVIDER_ERROR",
+        `Agent provider '${providerId}' capabilities() returned a malformed AgentProviderCapabilities shape (supportedRoles must be an array).`,
+        true,
+        providerId,
+      );
     }
     if (!providerCapabilities.supportedRoles.includes(request.role)) {
       throw new AgentProviderError(
@@ -338,9 +366,30 @@ function validateRequest(request: AgentRunRequest): void {
   if (!isNonEmptyTrimmedString(request.actorId)) {
     throw new AgentProviderError("INVALID_REQUEST", "Agent run actorId must be non-empty and trimmed.", false);
   }
+  if (
+    typeof request.contextPackage !== "object" ||
+    request.contextPackage === null ||
+    Array.isArray(request.contextPackage) ||
+    typeof (request.contextPackage as { taskId?: unknown }).taskId !== "string" ||
+    typeof (request.contextPackage as { role?: unknown }).role !== "string" ||
+    typeof (request.contextPackage as { sourceRevision?: unknown }).sourceRevision !== "string"
+  ) {
+    throw new AgentProviderError(
+      "INVALID_REQUEST",
+      "Agent run contextPackage must be an object with string taskId/role/sourceRevision fields.",
+      false,
+    );
+  }
   validateToolPermissionPolicy(request.toolPermissionPolicy);
-  if (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) || request.timeoutMs <= 0)) {
-    throw new AgentProviderError("INVALID_REQUEST", "Agent run timeoutMs must be a positive integer when provided.", false);
+  if (
+    request.timeoutMs !== undefined &&
+    (!Number.isInteger(request.timeoutMs) || request.timeoutMs <= 0 || request.timeoutMs > MAX_SET_TIMEOUT_DELAY_MS)
+  ) {
+    throw new AgentProviderError(
+      "INVALID_REQUEST",
+      `Agent run timeoutMs must be a positive integer no greater than ${MAX_SET_TIMEOUT_DELAY_MS} (setTimeout's own delay ceiling) when provided.`,
+      false,
+    );
   }
   if (request.signal !== undefined && typeof request.signal.aborted !== "boolean") {
     throw new AgentProviderError("INVALID_REQUEST", "Agent run signal must be an AbortSignal when provided.", false);
@@ -414,6 +463,17 @@ function validateResult(rawResult: unknown, request: AgentRunRequest, providerId
   if (!Array.isArray(candidate.findings) || candidate.findings.some((finding) => !isValidFinding(finding))) {
     throw malformed(providerId, "findings");
   }
+  // ReviewFramework.validateRequest() rejects a duplicate findingId (see
+  // src/review-framework/review-framework.ts); a result this module already
+  // declared well-formed must not fail that downstream check, so the same
+  // uniqueness constraint is enforced here.
+  const seenFindingIds = new Set<string>();
+  for (const finding of candidate.findings as ReadonlyArray<{ findingId: string }>) {
+    if (seenFindingIds.has(finding.findingId)) {
+      throw malformed(providerId, "findings");
+    }
+    seenFindingIds.add(finding.findingId);
+  }
   if (!Array.isArray(candidate.evidenceRefs) || candidate.evidenceRefs.some((ref) => typeof ref !== "string")) {
     throw malformed(providerId, "evidenceRefs");
   }
@@ -428,7 +488,35 @@ function validateResult(rawResult: unknown, request: AgentRunRequest, providerId
     throw malformed(providerId, "occurredAt");
   }
 
-  return Object.freeze({ ...candidate }) as unknown as AgentRunResult;
+  // A shallow freeze of `candidate` itself would still leave the provider
+  // holding live references to `details`/`findings`/`evidenceRefs`/`nonPass`
+  // (the same objects/arrays the provider constructed and returned), able to
+  // mutate an already-validated-and-returned AgentRunResult after the fact.
+  // structuredClone() detaches the result from every provider-owned
+  // reference before it is frozen; a value that cannot be structured-cloned
+  // (for example a function nested in `details`) is itself malformed for a
+  // result meant to be persisted as evidence.
+  let cloned: Record<string, unknown>;
+  try {
+    cloned = structuredClone(candidate);
+  } catch {
+    throw malformed(providerId, "result (contains non-structured-cloneable data)");
+  }
+  return deepFreeze(cloned) as unknown as AgentRunResult;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (Array.isArray(value)) {
+    for (const item of value) deepFreeze(item);
+    return Object.freeze(value);
+  }
+  if (typeof value === "object" && value !== null) {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      deepFreeze((value as Record<string, unknown>)[key]);
+    }
+    return Object.freeze(value);
+  }
+  return value;
 }
 
 function isValidFinding(value: unknown): boolean {

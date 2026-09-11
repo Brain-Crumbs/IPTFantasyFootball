@@ -359,7 +359,103 @@ test("rejects an invalid run request before ever calling the provider", async ()
     () => runner.run(runRequest({ timeoutMs: -5 })),
     (error) => error instanceof AgentProviderError && error.code === "INVALID_REQUEST",
   );
+  await assert.rejects(
+    () => runner.run(runRequest({ timeoutMs: 2147483648 })),
+    (error) => error instanceof AgentProviderError && error.code === "INVALID_REQUEST",
+  );
+  await assert.rejects(
+    () => runner.run(runRequest({ contextPackage: undefined })),
+    (error) => error instanceof AgentProviderError && error.code === "INVALID_REQUEST",
+  );
+  await assert.rejects(
+    () => runner.run(runRequest({ contextPackage: null })),
+    (error) => error instanceof AgentProviderError && error.code === "INVALID_REQUEST",
+  );
+  await assert.rejects(
+    () => runner.run(runRequest({ contextPackage: { role: "Developer", taskId, task: {} } })),
+    (error) => error instanceof AgentProviderError && error.code === "INVALID_REQUEST",
+  );
   assert.equal(provider.requests.length, 0);
+});
+
+test("rejects a timeoutMs at or above setTimeout's own delay ceiling before ever calling the provider, rather than firing an almost-instant spurious timeout", async () => {
+  const provider = new FakeAgentProvider();
+  const runner = new AgentRunner({ provider });
+
+  await assert.rejects(
+    () => runner.run(runRequest({ timeoutMs: 2147483647 + 1 })),
+    (error) => error instanceof AgentProviderError && error.code === "INVALID_REQUEST",
+  );
+  assert.equal(provider.requests.length, 0);
+});
+
+test("normalizes a provider whose capabilities() returns a malformed shape instead of throwing a raw TypeError", async () => {
+  const provider = new FakeAgentProvider();
+  provider.capabilities = () => ({ providerId: "fake-agent-provider", supportsCancellation: true, supportsTimeout: true });
+  const runner = new AgentRunner({ provider });
+
+  await assert.rejects(
+    () => runner.run(runRequest()),
+    (error) => error instanceof AgentProviderError && error.code === "PROVIDER_ERROR",
+  );
+});
+
+test("rejects a provider result whose findings entries carry duplicate findingIds", async () => {
+  const provider = new FakeAgentProvider();
+  const runner = new AgentRunner({ provider });
+  const request = runRequest();
+  const finding = { findingId: "dup-1", severity: "LOW", observed: "x", expected: "y" };
+  provider.setHandler((req) => passResult(req, { findings: [finding, { ...finding }] }));
+
+  await assert.rejects(
+    () => runner.run(request),
+    (error) => error instanceof AgentProviderError && error.code === "MALFORMED_RESULT",
+  );
+});
+
+test("validates the request's own identity fields, not a copy the provider mutated in place before resolving", async () => {
+  const provider = new FakeAgentProvider();
+  const runner = new AgentRunner({ provider });
+  const request = runRequest();
+  provider.setHandler((req) => {
+    // A nonconforming provider attempting to rewrite the run identity on the
+    // very request object it was handed, before resolving with a result
+    // that (without the run()-time freeze) would then match its own tampered
+    // copy rather than the identity AgentRunner actually validated.
+    try {
+      req.taskId = "BOOT-999";
+    } catch {
+      // Expected in strict mode: the frozen request rejects the write.
+    }
+    return passResult(req);
+  });
+
+  const result = await runner.run(request);
+  assert.equal(result.taskId, taskId);
+  assert.equal(request.taskId, taskId);
+});
+
+test("a caller cannot mutate an AgentRunResult's nested fields after it is returned", async () => {
+  const provider = new FakeAgentProvider();
+  const runner = new AgentRunner({ provider });
+  const request = runRequest();
+  const findings = [{ findingId: "f1", severity: "LOW", observed: "x", expected: "y" }];
+  const rawResult = passResult(request, { outcome: "FAIL", findings, nonPass: { reason: "r", remediation: "m" } });
+  provider.enqueueResult(rawResult);
+
+  const result = await runner.run(request);
+  assert.throws(() => {
+    result.findings[0].severity = "CRITICAL";
+  });
+  assert.throws(() => {
+    result.details.summary = "tampered";
+  });
+
+  // Mutating the provider's own original array/object after the fact must
+  // not retroactively change the already-returned, independently-cloned
+  // AgentRunResult.
+  findings[0].severity = "CRITICAL";
+  assert.equal(result.findings[0].severity, "LOW");
 });
 
 test("a FakeAgentProvider run() with no queued result, handler, or error configured fails loudly rather than hanging silently", async () => {
