@@ -102,11 +102,13 @@ interface LoadedSchema {
 export class FileEvidenceStore implements EvidenceStore {
   readonly #root: string;
   readonly #schemas: ReadonlyMap<SupportedEvidenceSchemaId, LoadedSchema>;
+  readonly #readOnly: boolean;
 
-  constructor(root: string, options: { readonly repositoryRoot?: string } = {}) {
+  constructor(root: string, options: { readonly repositoryRoot?: string; readonly readOnly?: boolean } = {}) {
     if (!root.trim()) throw new RangeError("Evidence store root must be non-empty.");
     this.#root = root;
-    mkdirSync(this.#root, { recursive: true });
+    this.#readOnly = options.readOnly ?? false;
+    if (!this.#readOnly) mkdirSync(this.#root, { recursive: true });
 
     const repositoryRoot = options.repositoryRoot ?? process.cwd();
     const schemas = new Map<SupportedEvidenceSchemaId, LoadedSchema>();
@@ -117,6 +119,7 @@ export class FileEvidenceStore implements EvidenceStore {
   }
 
   record(payload: unknown): RecordResult {
+    if (this.#readOnly) throw new Error("Cannot record evidence in a read-only evidence store.");
     const validated = this.#validatePayload(payload);
     if (!validated.ok) return validated.result;
     const { payload: validPayload, lineageId } = validated;

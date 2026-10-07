@@ -1,0 +1,127 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.status-reporting",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "ProjectStatusReporter(dependencies: StatusReportingDependencies)",
+      "ProjectStatusReporter.read(observedAt: string): ProjectStatus",
+      "createLocalStatusDependencies(repositoryRoot: string, registry?: TaskRegistry): Promise<StatusReportingDependencies>",
+      "readLocalLifecycleStates(repositoryRoot: string, registry: TaskRegistry): ReadonlyMap<string, TaskLifecycleState>",
+      "renderProjectStatus(status: ProjectStatus): string",
+      "StatusReportingDependencies { registry, lifecycle.get, assignments.get, revisions.get, evidence.getHistory, evidence.validate, validationLineages.list }",
+      "ProjectStatus { statusVersion: 1.0.0, observedAt, scope: LOCAL_REGISTERED_TASKS, kind, progress, phases, activeTaskIds, tasks, next, notes }",
+      "TaskStatus { taskId, title, canonicalBranch, phaseId, state, stateRevision, stateSource, revision, active, assignment, dependencies, blockers, reviews, validation }",
+      "EvidenceStatus { subject, lineageId, currency, outcome, revisionIdentity, sequence, nonPassReason, historyCount, blockingFindings }",
+      "ProgressCounts { total, done, active, blocked }",
+      "BOOTSTRAP_PHASES; phaseForTask(taskId: string): number | null"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "read-only-project-status",
+      "registered-task-phase-progress",
+      "assignment-and-dependency-blockers",
+      "latest-revision-bound-evidence-status",
+      "existing-next-task-selection",
+      "fail-closed-status-observation"
+    ],
+    "behavioralConstraints": [
+      "scope is LOCAL_REGISTERED_TASKS: only real task definitions and local lifecycle assignment evidence and canonical branch state are reported; GitHub issue checkboxes are not imported",
+      "statusVersion 1.0.0 is the command payload contract, not a new persisted schema; the CLI envelope remains version 1.0.0",
+      "read(observedAt) validates its RFC3339 timestamp through the assignment producer and uses it consistently for existing producer expiry comparisons including leap seconds without adding a precision promise",
+      "tasks sort lexically by task ID; phase membership follows issue #1 BOOT-000 through BOOT-035 ranges, other IDs are ungrouped, empty phase groups are omitted, and counts derive only from registered tasks",
+      "kind is empty for zero registered tasks, complete for a nonempty set entirely DONE, and in_progress otherwise; active and blocked counts may overlap DONE",
+      "active means lifecycle beyond PLANNED READY DONE BLOCKED or a held ACTIVE/STALE assignment; blocked means at least one observed blocker",
+      "missing lifecycle defaults explicitly to PLANNED with DEFAULT_PLANNED provenance; invalid persisted lifecycle never defaults",
+      "canonical local branch revision is an exact commit or null; unavailable canonical refs never fall back to HEAD, remote-tracking refs, or stored evidence",
+      "review currency is NONE CURRENT STALE or UNKNOWN_REVISION independently of PASS FAIL or BLOCKED outcome; every read lineage history is validated and only its latest record supplies the displayed result",
+      "Developer review handoff is distinct from raw validator evidence; recorded validator lineages do not resolve or replace the required-validator gate",
+      "next uses the unchanged BOOT-008 READY/PLANNED lifecycle and transitive-DONE dependency policy; displayed lock blockers never silently narrow eligibility",
+      "two consecutive captures must agree or read throws; observation-time change detection is not cross-file transaction isolation or a guarantee against later changes",
+      "local adapters read .agent/state/lifecycle assignments and evidence without directory creation, support schema-valid legacy 1.0/1.1 lifecycle and assignment records, and reject malformed or unreadable authoritative input rather than returning partial success",
+      "default CLI next consumes readLocalLifecycleStates while explicit taskStates injection remains supported",
+      "persisted validator requiredness is unavailable, so validator stale/non-passing outcomes are observations rather than inferred gating blockers; nonPassReason exposes stored review reasons or failed validator-check details",
+      "review blockers apply only during QA_REVIEW ARCHITECTURE_REVIEW or UAT_REVIEW to Developer handoff and declared independent roles through the current stage; future roles and MergeController are never inferred prerequisites and a no-review path does not require Developer handoff",
+      "an active independent review stage with no recorded validator evidence reports VALIDATION_MISSING",
+      "stateRevision is the final lifecycle event revision or null; post-validation stages whose state revision differs from an available canonical tip report LIFECYCLE_REVISION_UNVERIFIED; exact-head MERGE_READY is not re-derived from individual evidence outcomes"
+    ],
+    "invariants": [
+      "no lifecycle assignment evidence or branch mutation; no fetch recovery provider invocation review judgment gate approval merge or repair",
+      "human and JSON views derive from the same immutable ProjectStatus and agree on blockers currency progress and next selection",
+      "orchestration journals manual-provider exchange packets GitHub checkmarks and narrative claims never establish lifecycle or evidence authority",
+      "CURRENT proves exact local revision equality only, not gate acceptance independent review CI remote freshness or uncommitted-work validation",
+      "empty local registry or phase metadata never declares Bootstrap v1 cutover or authorizes task self-selection"
+    ],
+    "examples": [
+      "a clean checkout without task definitions returns empty with zero counts and next.kind empty",
+      "a latest QA PASS at an older commit is STALE PASS even when an older attempt passed for the current revision",
+      "a READY task with a held stale assignment can remain next selected while displaying LOCK_STALE and LOCK_STATE_CONFLICT",
+      "all local task states DONE yields complete even if a leftover held assignment also produces active/blocked counts"
+    ],
+    "edgeCases": [
+      "missing canonical branch yields null revision and UNKNOWN_REVISION for existing evidence rather than unrelated HEAD",
+      "invalid latest or historical evidence fails the view rather than falling back to a passing older attempt",
+      "a lifecycle or evidence change between captures rejects the observation",
+      "an observed blocker or valid empty registry is successful data; invalid or changing input is a command error",
+      "zero registered records never imply completion of the manual GitHub bootstrap tracker",
+      "confirmed MERGED bookkeeping and DONE do not gain a missing-branch blocker; nullable revision remains an observation because those paths do not require a task branch"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.task-registry",
+    "control-plane.dependency-dag",
+    "control-plane.next-task",
+    "read-only control-plane.lifecycle-state-machine interfaces",
+    "read-only control-plane.assignment-lock interfaces",
+    "read-only control-plane.evidence-store interfaces",
+    "schemas/v1/*",
+    "node:fs",
+    "node:path",
+    "node:child_process"
+  ],
+  "forbiddenDependencies": [
+    "mutating-workflow-entry-points/*",
+    "github-adapter/*",
+    "agent-provider-invocation/*",
+    "orchestration-journal-authority/*",
+    "fantasy-product/*",
+    "dashboard/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "control-plane.cli-shell",
+      "expectations": [
+        "one read-only status model powers human and JSON output without duplicated calculations",
+        "explicit local scope and unknown stale blocked empty outcomes survive rendering",
+        "untrustworthy or changing input maps to the existing CLI error envelope without partial data"
+      ],
+      "requiredCapabilities": [
+        "read-only-project-status",
+        "registered-task-phase-progress",
+        "assignment-and-dependency-blockers",
+        "latest-revision-bound-evidence-status",
+        "existing-next-task-selection",
+        "fail-closed-status-observation"
+      ],
+      "acceptedRanges": [
+        "project kind empty complete or in_progress",
+        "next kind selected empty complete or blocked",
+        "all existing lifecycle states and nullable branch revisions/assignments",
+        "currency NONE CURRENT STALE UNKNOWN_REVISION independently of outcome PASS FAIL BLOCKED or null for absent evidence",
+        "thrown read failure for invalid or changing input"
+      ],
+      "requiredReachableRanges": [
+        "empty local registry",
+        "no active task with eligible next work",
+        "active development task with exact held assignment",
+        "dependency-blocked task",
+        "mixed current and stale review evidence",
+        "unknown currency for unavailable canonical branch",
+        "all local tasks DONE with no eligible work",
+        "fail-closed invalid or changing input without mutation"
+      ]
+    }
+  ]
+}

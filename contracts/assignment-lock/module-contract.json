@@ -2,7 +2,7 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.assignment-lock",
-  "moduleVersion": "1.0.0",
+  "moduleVersion": "1.1.0",
   "structuralContract": {
     "interfaces": [
       "FileAssignmentLockStore(root)",
@@ -11,7 +11,8 @@
       "AssignmentLockStore.recoverStale(request): LockResult",
       "AssignmentLockStore.get(taskId): AssignmentLockRecord | null",
       "AssignmentLockStore.getAudit(taskId): readonly LockAuditEvent[]",
-      "durable records: schemas/v1/assignment-lock.schema.json v1.1"
+      "durable records: schemas/v1/assignment-lock.schema.json v1.1",
+      "isAssignmentLockExpired(lock: { readonly expiresAt?: string }, now: string): boolean"
     ]
   },
   "semanticContract": {
@@ -32,7 +33,8 @@
       "an-abandoned-release-reservation-and-the-orphaned-record-it-was-guarding-are-crash-recoverable-rather-than-wedging-the-task-forever",
       "expiry-and-lease-ordering-comparisons-use-the-same-leap-second-aware-instant-as-requireDate-so-a-leap-second-expiresAt-compares-correctly-instead-of-as-NaN",
       "restoring-an-orphaned-record-during-abandoned-reservation-reclaim-uses-an-exclusive-create-write-never-a-plain-rename-so-a-fresh-concurrently-created-assignment-is-never-silently-overwritten",
-      "a-leap-second-with-or-without-a-fraction-always-compares-strictly-between-the-second-before-it-and-the-following-minute-never-equal-to-or-past-either"
+      "a-leap-second-with-or-without-a-fraction-always-compares-strictly-between-the-second-before-it-and-the-following-minute-never-equal-to-or-past-either",
+      "pure-assignment-expiry-observation"
     ],
     "behavioralConstraints": [
       "release() claims the active record via an atomic rename before inspecting or mutating it, then checks lockId plus any supplied expectedOwnerId/expectedRunId/expectedCanonicalBranch guards against that exact claimed content — never a separate, earlier read a concurrent recoverStale() could invalidate before the actual mutation runs; a mismatch on any one rejects the entire call as LOCK_ID_MISMATCH with no partial effect and restores the claimed record to the active path byte-for-byte (or, if a third operation has since created its own fresh record there, leaves that record untouched instead of overwriting it), and omitting all three optional guards preserves the original lockId-only match exactly",
@@ -50,7 +52,8 @@
       "ordinary acquisition of an expired lock returns LOCK_STALE",
       "stale recovery must name the exact stale lock and win an exclusive recovery claim",
       "a matching recovery identity may resume its interrupted claim while a competing recovery identity receives LOCK_CONFLICT",
-      "archive paths are collision-safe when lock IDs are reused"
+      "archive paths are collision-safe when lock IDs are reused",
+      "isAssignmentLockExpired validates now and any expiresAt using producer RFC3339 semantics, returns true exactly at or after expiry and false with no expiry, preserves existing producer comparison semantics (ordinary timestamps at millisecond precision and arbitrary-length leap-second fractions), and throws RangeError for invalid timestamps without reading or mutating a lock store"
     ],
     "invariants": [
       "two competing assignment attempts cannot both succeed for the same task",
@@ -59,14 +62,16 @@
       "a recovery contender that did not win the stale-lock claim cannot archive or replace that assignment",
       "an active non-stale lock cannot be recovered through the stale path",
       "runtime-persisted records satisfy the assignment-lock schema contract",
-      "release and stale-recovery actions remain auditable"
+      "release and stale-recovery actions remain auditable",
+      "expiry observation never acquires releases recovers renews or changes assignment identity/status"
     ],
     "examples": [
       "Agent A acquires a task and Agent B receives LOCK_CONFLICT",
       "Agent A reacquires the same active identity before expiry and receives idempotent success",
       "after expiry ordinary reacquisition returns LOCK_STALE even for Agent A",
       "two recoveries targeting the same stale lock compete for one recovery claim and only the winner may publish a replacement",
-      "a released lock ID may be reused without colliding with archived history"
+      "a released lock ID may be reused without colliding with archived history",
+      "isAssignmentLockExpired reports an expired active record to status without recovering or rewriting it"
     ],
     "edgeCases": [
       "same identity retry after expiry returns LOCK_STALE",
@@ -74,7 +79,8 @@
       "interrupted recovery may be resumed by the matching recovery identity",
       "date-only timestamp strings are rejected",
       "legacy empty task directories do not block atomic lock-file acquisition",
-      "reused lock IDs produce distinct archive destinations"
+      "reused lock IDs produce distinct archive destinations",
+      "expiry equality is expired; a missing expiresAt is false; invalid now still throws even when no expiry exists"
     ]
   },
   "allowedDependencies": [
@@ -120,6 +126,26 @@
         "explicit stale recovery success",
         "competing stale recovery conflict",
         "release followed by acquisition by a new identity"
+      ]
+    },
+    {
+      "consumerId": "control-plane.status-reporting",
+      "expectations": [
+        "observational expiry exactly matches the assignment producer including its existing ordinary-timestamp precision and leap-second fraction ordering",
+        "querying expiry never invokes acquisition or stale recovery"
+      ],
+      "requiredCapabilities": [
+        "pure-assignment-expiry-observation"
+      ],
+      "acceptedRanges": [
+        "true or false for valid timestamps",
+        "RangeError for invalid timestamps"
+      ],
+      "requiredReachableRanges": [
+        "false before expiry or without expiresAt",
+        "true exactly at and after expiry",
+        "correct ordering across offset leap-second timestamps",
+        "invalid timestamps rejected without mutation"
       ]
     }
   ]

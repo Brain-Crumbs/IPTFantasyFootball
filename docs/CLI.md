@@ -1,9 +1,9 @@
 # Agent Control Plane CLI contract
 
-**Task:** BOOT-005 / issue #7, extended by BOOT-008 / issue #10, BOOT-013 / issue #15, BOOT-016 / issue #18, and BOOT-029 / issue #31
+**Task:** BOOT-005 / issue #7, extended by BOOT-008 / issue #10, BOOT-013 / issue #15, BOOT-016 / issue #18, BOOT-029 / issue #31, and BOOT-030 / issue #32
 **Parent architecture:** issue #1
 
-The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic read-only next-task selection. BOOT-013 adds the canonical start-only Developer workflow. BOOT-016 adds the canonical developer validation gate. BOOT-029 adds local/manual provider packet export, import, and waiting. Independent review, sequential orchestration, and controlled completion exist as library gates; their generic CLI surfaces remain reserved.
+The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic read-only next-task selection. BOOT-013 adds the canonical start-only Developer workflow. BOOT-016 adds the canonical developer validation gate. BOOT-029 adds local/manual provider packet export, import, and waiting. BOOT-030 adds read-only local project status and persisted lifecycle input for default next selection. Independent review, sequential orchestration, and controlled completion exist as library gates; their generic CLI surfaces remain reserved.
 
 ## Clean-checkout setup
 
@@ -40,6 +40,7 @@ Implemented:
 - `help` (also `--help`, `-h`) — BOOT-005
 - `version` (also `--version`, `-v`) — BOOT-005
 - `next` — BOOT-008
+- `status` — BOOT-030
 - `start <owner-id> <run-id>` — BOOT-013
 - `validate <task-id> <actor-id> <run-id>` — BOOT-016
 - `manual export <request-file> <exchange-dir>` — BOOT-029
@@ -49,7 +50,6 @@ Implemented:
 Reserved commands deliberately fail until their owning task supplies behavior:
 
 - `review` — BOOT-017+
-- `status` — BOOT-030
 - `rework` — BOOT-021 (behavior implemented as `ReviewReworkGate`; CLI wiring owned by BOOT-026+)
 - `orchestrate` — BOOT-027/028 (implemented as `SequentialOrchestrationEngine`; generic CLI wiring remains deferred. BOOT-029 supplies manual transport commands and a provider injectable into this library.)
 
@@ -72,7 +72,18 @@ The BOOT-008 policy is:
 
 Result kinds are `selected`, `empty`, `complete`, or `blocked`. `next` remains read-only and does not assign, lock, create branches, or mutate lifecycle state.
 
-During the continuing manual bootstrap, executable `next` without an explicit lifecycle snapshot retains BOOT-008's transitional behavior for omitted entries. The BOOT-013 `start` workflow does not rely on that omission behavior: it reads its own persisted start-state snapshot before selecting work.
+BOOT-030 makes executable `next` read the persisted local lifecycle snapshot by default, using the same read-only loader as `status`. Explicitly supplied `taskStates` maps remain supported. Missing lifecycle records are explicitly `PLANNED`; malformed records fail closed. The BOOT-008 selection policy is unchanged and does not check assignment ownership or expiry. `status` displays those blockers alongside the same next result, and BOOT-013 still enforces acquisition/start gates.
+
+## `status` command
+
+```sh
+npm run agent -- status
+npm run --silent agent -- --json status
+```
+
+No positional arguments are accepted. Human and JSON views derive from one read-only `ProjectStatus` result with `data.statusVersion: "1.0.0"`, `scope: "LOCAL_REGISTERED_TASKS"`, observation timestamp, progress/phase counts, active tasks, canonical branches/revisions, lifecycle stages, assignments, latest evidence currency/outcomes, concrete blockers, and BOOT-008 next eligibility. See [STATUS.md](STATUS.md) for the full payload semantics and source boundaries.
+
+A valid empty or blocked observation succeeds (exit `0`); invalid or changing authoritative input fails closed (exit `70`). An empty local registry is not project completion. Status does not fetch GitHub/remote state, mutate runtime state, recover locks, run gates, or declare cutover. The stable top-level JSON envelope is unchanged.
 
 ## `start` command
 
@@ -212,7 +223,7 @@ Expected command errors remain machine-readable on stdout and are distinguished 
 | `4` | `WORKFLOW_BLOCKED` | A deterministic workflow prerequisite/conflict or an expected manual-adapter failure prevented completion. |
 | `70` | `INTERNAL_ERROR` | Unexpected runtime failure or repository input that cannot be trusted. |
 
-All errors are non-zero. The top-level JSON envelope remains unchanged; `start`, `validate`, and `manual` have command-specific data shapes.
+All errors are non-zero. The top-level JSON envelope remains unchanged; `start`, `validate`, `manual`, and `status` have command-specific data shapes.
 
 ## Provider neutrality
 

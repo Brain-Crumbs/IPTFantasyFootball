@@ -3,7 +3,7 @@
 ## Identity and purpose
 
 - **Module ID:** `control-plane.cli-shell`
-- **Module version:** `1.1.0`
+- **Module version:** `1.2.0`
 - **Manifest:** `./module-contract.json`
 
 Provides the stable provider-neutral command-line shell, output envelope, diagnostics, exit-code vocabulary, and reviewed command routing consumed by bootstrap command implementations. BOOT-008 adds the first workflow-domain command, `next`, behind the BOOT-005 shell contract.
@@ -13,8 +13,8 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 - Human mode: `npm run agent -- <command>`
 - Machine mode: `npm run --silent agent -- --json <command>`
 - JSON envelope: `{ schemaVersion, ok, command, data, error }`
-- Exit codes: `0` success, `2` usage error, `3` recognized/unimplemented, `70` unexpected internal error.
-- Implemented commands: `help`, `version`, `next`.
+- Exit codes: `0` success, `2` usage error, `3` recognized/unimplemented, `4` workflow blocked, `70` unexpected internal error.
+- Implemented commands: `help`, `version`, `next`, `status`, `start`, `validate`, and `manual export/import/run`; see [docs/CLI.md](../../docs/CLI.md) for each command-owning contract.
 
 ## Capabilities
 
@@ -24,6 +24,7 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 - Route `next` to the deterministic BOOT-008 task selector.
 - Preserve selected task ID/canonical branch metadata in machine output.
 - Operate without an AI provider.
+- Route `status` to one read-only `ProjectStatus` shared by human and JSON views (`read-only-project-status-command`).
 
 ## Behavioral constraints and ranges
 
@@ -31,6 +32,10 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 - Expected usage errors exit `2`.
 - Reserved unimplemented commands exit `3`.
 - Unexpected internal failures exit `70`.
+- Expected workflow blockers use existing exit `4`; valid observational blocked/empty results from `next` or `status` exit `0`.
+- `status` returns command data `statusVersion: "1.0.0"` with `scope: "LOCAL_REGISTERED_TASKS"`; no new persisted schema or top-level envelope version is introduced.
+- Default `next` reads the same validated persisted lifecycle map as `status`; explicit `taskStates` maps and BOOT-008 eligibility semantics remain unchanged.
+- Invalid or changing status inputs fail closed with exit `70`, without partial successful data.
 - JSON mode emits exactly one top-level envelope object for normal success or expected command failure.
 - The documented npm machine invocation uses `--silent` so npm lifecycle logging cannot pollute CLI stdout.
 - `next` returns `selected`, `empty`, `complete`, or `blocked` as command-specific `data` while keeping the top-level envelope unchanged.
@@ -38,9 +43,10 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 
 ## Invariants
 
-- Identical argv and equivalent repository/task-state inputs produce deterministic normal command results.
+- Identical argv, observation timestamp, and equivalent repository/task-state inputs produce deterministic normal command results.
 - Registration of a reserved command never implies workflow behavior is implemented.
 - The shell itself does not require any AI provider.
+- Status performs no mutation, fetch, acquisition/recovery, provider invocation, gate approval, or merge. Local scope/empty/blocked/stale/unknown facts survive rendering.
 - BOOT-008 command routing does not perform assignment, lifecycle mutation, branch mutation, review, or merge behavior.
 
 ## Dependencies
@@ -51,6 +57,7 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 - `contracts/*`
 - `control-plane.task-registry`
 - `control-plane.next-task`
+- `control-plane.status-reporting`
 
 ### Forbidden
 
@@ -89,7 +96,7 @@ Expectations:
 
 Accepted producer-output ranges:
 
-- Exit codes `{0, 2, 3, 70}`.
+- Exit codes `{0, 2, 3, 4, 70}`.
 - Any command-specific data documented by the owning BOOT task.
 
 Compatibility rule: the producer's reachable output range must be contained by the consumer's accepted range.
@@ -104,6 +111,7 @@ Required reachable producer-output ranges:
 - Exit `2` for invalid usage.
 - Exit `3` for reserved/unimplemented commands.
 - A successful `next` envelope whose data can include selected task ID and canonical branch.
+- A successful `status` envelope preserving explicit local scope and empty/blocked/stale/unknown facts.
 
 Compatibility rule: each required reachable outcome must remain reachable; overlap is insufficient.
 
@@ -111,7 +119,8 @@ Compatibility rule: each required reachable outcome must remain reachable; overl
 
 - `npm run --silent agent -- --json version` emits only a success envelope on stdout and exits `0`.
 - `npm run --silent agent -- --json next` emits a BOOT-008 selection result in `data` and exits `0` when selection is evaluated successfully.
-- `npm run agent -- start` exits `3` until BOOT-013 implements developer task start.
+- `npm run agent -- review` exits `3` while generic review CLI wiring remains reserved.
+- `npm run --silent agent -- --json status` emits one local registered-task aggregate in `data`.
 
 ## Edge cases
 
@@ -120,6 +129,7 @@ Compatibility rule: each required reachable outcome must remain reachable; overl
 - Unknown options fail as usage errors.
 - Unknown commands are not treated as future reserved commands.
 - A valid empty task registry makes `next` return a successful `empty` result rather than an error.
+- The same registry makes `status` return `kind: "empty"` and zero counts, without inferring GitHub bootstrap progress or cutover.
 
 ## Change-impact checklist
 

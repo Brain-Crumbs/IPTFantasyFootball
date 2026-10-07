@@ -2,10 +2,10 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.evidence-store",
-  "moduleVersion": "1.0.0",
+  "moduleVersion": "1.1.0",
   "structuralContract": {
     "interfaces": [
-      "FileEvidenceStore(root, options?: { repositoryRoot?: string })",
+      "FileEvidenceStore(root, options?: { repositoryRoot?: string; readOnly?: boolean })",
       "EvidenceStore.record(payload: unknown): RecordResult",
       "EvidenceStore.validate(payload: unknown): ValidateResult (BOOT-025)",
       "EvidenceStore.getCurrent(lineageId: string): StoredEvidenceRecord | null",
@@ -32,10 +32,11 @@
       "explicit-revision-mismatch-detection",
       "deterministic-local-persistence",
       "multi-schema-record-support",
-      "pure-read-only-schema-validation-without-persisting-a-record"
+      "pure-read-only-schema-validation-without-persisting-a-record",
+      "read-only-store-mode-without-initialization-writes"
     ],
     "behavioralConstraints": [
-      "validate(payload) applies the exact same checks record() itself applies (payload-is-an-object, supported schemaId, exact schemaVersion match, full schema-document validation, taskId pattern, lineage derivability) and reports the same EvidenceRejection shape on failure, but never writes anything either way — record() and validate() share one internal implementation, so a payload record() would accept is always exactly the set validate() reports ok for, by construction rather than by keeping two implementations in sync by hand",
+      "validate(payload) applies the exact same checks record() in the default writable mode applies (payload-is-an-object, supported schemaId, exact schemaVersion match, full schema-document validation, taskId pattern, lineage derivability) and reports the same EvidenceRejection shape on failure, but never writes anything either way — record() and validate() share one internal implementation, so a payload a writable record() would accept is always exactly the set validate() reports ok for, by construction rather than by keeping two implementations in sync by hand",
       "record() accepts only payloads whose schemaId is a supported evidence schema and whose schemaVersion matches the reader's exact supported version",
       "record() validates the full payload against the corresponding schemas/v1/*.schema.json document, including $ref-resolved nested shapes and role/outcome-conditioned allOf/if/then requirements, before acceptance",
       "a lineage is derived deterministically from taskId plus validatorId for validation-evidence records, taskId plus role for review-result records, or taskId alone for merge-evidence records, so the three record kinds never collide even for the same taskId",
@@ -43,7 +44,8 @@
       "getCurrent returns the highest-sequence record for a lineage; getHistory returns every record for a lineage in sequence order with status CURRENT on the last entry and SUPERSEDED on all earlier entries",
       "checkRevision distinguishes CURRENT (matches expectedRevisionIdentity), REVISION_MISMATCH (a current record exists but for a different revision), and NOT_FOUND (no record exists for the lineage) so a caller can never mistake evidence as applying to a revision it was not recorded against",
       "the schema validator's supported JSON Schema subset includes the integer type and the minimum/maximum numeric keywords (BOOT-025), so a numeric field declared type: integer with a minimum rejects a fractional, zero, or out-of-range value at record() time, not only in the separate Python fixture validator",
-      "the schema validator's type keyword accepts either a single type string or an array of alternative type strings (BOOT-025), so a field declared type: [\"object\", \"null\"] rejects any value that is neither a well-formed object nor a genuine null at record() time — every existing single-string type declaration continues to behave identically"
+      "the schema validator's type keyword accepts either a single type string or an array of alternative type strings (BOOT-025), so a field declared type: [\"object\", \"null\"] rejects any value that is neither a well-formed object nor a genuine null at record() time — every existing single-string type declaration continues to behave identically",
+      "readOnly defaults to false and leaves existing constructor/record behavior unchanged; readOnly:true skips root-directory creation and makes record() throw before validation or filesystem mutation while validate/getCurrent/getHistory/checkRevision remain available"
     ],
     "invariants": [
       "the store performs no lifecycle state transition",
@@ -57,14 +59,16 @@
       "recording a second ipt.validation-evidence for the same task/validator at a newer revisionIdentity leaves the first record queryable via getHistory as SUPERSEDED",
       "recording ipt.review-result documents for Developer, QA, Architect, UAT/Product, and MergeController roles on the same task keeps five independent current lineages",
       "checkRevision against a stale expectedRevisionIdentity returns REVISION_MISMATCH carrying both the current record and the mismatched expectation",
-      "recording one ipt.merge-evidence document for a task's controlled merge (BOOT-025) and reading it back via getCurrent(mergeEvidenceLineageId(taskId)) never collides with that same task's ipt.validation-evidence or ipt.review-result lineages"
+      "recording one ipt.merge-evidence document for a task's controlled merge (BOOT-025) and reading it back via getCurrent(mergeEvidenceLineageId(taskId)) never collides with that same task's ipt.validation-evidence or ipt.review-result lineages",
+      "FileEvidenceStore(root, { readOnly: true }) can query a nonexistent evidence root without creating it"
     ],
     "edgeCases": [
       "a non-object payload is rejected as INVALID_PAYLOAD",
       "an unrecognized schemaId is rejected as UNSUPPORTED_SCHEMA_ID",
       "a recognized schemaId with an unsupported schemaVersion is rejected as UNSUPPORTED_SCHEMA_VERSION",
       "a review-result with outcome FAIL or BLOCKED but no nonPass detail is rejected by the schema's allOf/if/then requirement",
-      "querying a lineage that has never received a record returns null from getCurrent, an empty array from getHistory, and NOT_FOUND from checkRevision"
+      "querying a lineage that has never received a record returns null from getCurrent, an empty array from getHistory, and NOT_FOUND from checkRevision",
+      "record() on a read-only instance throws even for a schema-valid payload; validate() still reports that payload validity without permitting a write"
     ]
   },
   "allowedDependencies": [
@@ -137,6 +141,32 @@
       ],
       "requiredReachableRanges": [
         "one current merge-evidence record per task, read back byte-for-byte identical to what was recorded"
+      ]
+    },
+    {
+      "consumerId": "control-plane.status-reporting",
+      "expectations": [
+        "constructing and querying an evidence store for status never creates directories or evidence",
+        "latest and historical payloads can be revalidated before trusting lineage status",
+        "validation success is distinct from permission to write a read-only instance"
+      ],
+      "requiredCapabilities": [
+        "read-only-store-mode-without-initialization-writes",
+        "pure-read-only-schema-validation-without-persisting-a-record",
+        "append-only-auditable-history",
+        "current-vs-superseded-distinction"
+      ],
+      "acceptedRanges": [
+        "empty history or null for missing lineages",
+        "sequence-ordered current/superseded records",
+        "ValidateResult ok true or structured rejection",
+        "thrown error for a read-only record() attempt"
+      ],
+      "requiredReachableRanges": [
+        "read absent root without creating it",
+        "revalidate existing evidence without writing",
+        "read lineage history with only latest CURRENT",
+        "reject every attempted write in read-only mode"
       ]
     }
   ]

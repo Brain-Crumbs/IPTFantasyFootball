@@ -1,3 +1,4 @@
+import { ProjectStatusReporter, createLocalStatusDependencies, readLocalLifecycleStates, renderProjectStatus } from "../status-reporting/index.js";
 import {
   DeveloperStartError,
   createLocalDeveloperStartWorkflow,
@@ -42,6 +43,7 @@ export interface CliRunContext {
   taskStates?: ReadonlyMap<string, TaskLifecycleState>;
   developerStartWorkflow?: Pick<DeveloperStartWorkflow, "start">;
   developerValidationGate?: Pick<DeveloperValidationGate, "validate">;
+  projectStatusReporter?: Pick<ProjectStatusReporter, "read">;
   now?: () => string;
 }
 
@@ -116,7 +118,7 @@ function helpText(): string {
     "IPT Agent Control Plane CLI",
     "",
     "Deterministic, provider-neutral command surface for the repository development control plane.",
-    "BOOT-008 implements next-task selection, BOOT-013 implements developer task start, BOOT-016 implements developer validation, and BOOT-029 adds local/manual role handoffs; general review/orchestration CLI composition remains reserved.",
+    "BOOT-008 implements next-task selection, BOOT-013 implements developer task start, BOOT-016 implements developer validation, BOOT-029 adds local/manual role handoffs, and BOOT-030 reports read-only project status; general review/orchestration CLI composition remains reserved.",
     "",
     "Usage:",
     "  agent [--json] <command>",
@@ -268,7 +270,7 @@ export async function runCli(
       const registry = await registryFor(context);
       const result = selectNextEligibleTask(
         registry,
-        context.taskStates === undefined ? {} : { taskStates: context.taskStates },
+        { taskStates: context.taskStates ?? readLocalLifecycleStates(context.repositoryRoot ?? ".", registry) },
       );
       return succeed("next", parsed.json, result, nextHuman(result));
     } catch (error: unknown) {
@@ -276,6 +278,27 @@ export async function runCli(
       return fail("next", parsed.json, EXIT_CODES.INTERNAL_ERROR, {
         code: "INTERNAL_ERROR",
         message,
+      });
+    }
+  }
+
+  if (parsed.command === "status") {
+    if (parsed.rest.length > 0) {
+      return fail("status", parsed.json, EXIT_CODES.USAGE_ERROR, {
+        code: "USAGE_UNEXPECTED_ARGUMENT",
+        message: `Command 'status' does not accept arguments: ${parsed.rest.join(" ")}`,
+      });
+    }
+    try {
+      const reporter = context.projectStatusReporter ?? new ProjectStatusReporter(
+        await createLocalStatusDependencies(context.repositoryRoot ?? ".", await registryFor(context)),
+      );
+      const result = reporter.read((context.now ?? (() => new Date().toISOString()))());
+      return succeed("status", parsed.json, result, renderProjectStatus(result));
+    } catch (error: unknown) {
+      return fail("status", parsed.json, EXIT_CODES.INTERNAL_ERROR, {
+        code: "INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Cannot obtain trustworthy project status.",
       });
     }
   }

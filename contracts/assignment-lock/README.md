@@ -3,7 +3,7 @@
 ## Identity and purpose
 
 - **Module ID:** `control-plane.assignment-lock`
-- **Module version:** `1.0.0`
+- **Module version:** `1.1.0`
 - **Manifest:** `./module-contract.json`
 
 BOOT-010 owns explicit assignment identity and lock semantics for repository tasks. It prevents competing agents from both acquiring the same task while preserving deterministic conflict information and auditable release/recovery behavior.
@@ -11,6 +11,7 @@ BOOT-010 owns explicit assignment identity and lock semantics for repository tas
 ## Structural contract
 
 - `FileAssignmentLockStore(root)`
+- `isAssignmentLockExpired(lock: { readonly expiresAt?: string }, now: string): boolean` (BOOT-030)
 - `AssignmentLockStore.acquire(request): LockResult`
 - `AssignmentLockStore.release(request): LockResult` — `request` accepts optional `expectedOwnerId`/`expectedRunId`/`expectedCanonicalBranch` compare-and-swap guards (BOOT-025), checked against the exact same record `release()` atomically claims before ever mutating it (see "Behavioral constraints and ranges" below) — never a separate, earlier read a concurrent operation could invalidate before the actual mutation runs. Omitting the optional fields preserves the original `lockId`-only match exactly.
 - `AssignmentLockStore.recoverStale(request): LockResult`
@@ -34,6 +35,8 @@ BOOT-010 owns explicit assignment identity and lock semantics for repository tas
 - A rename failure while claiming the active path is reported as `LOCK_NOT_FOUND` only for a genuinely absent lock (`ENOENT`); any other failure (permissions, a read-only filesystem, a transient I/O error) propagates instead, since a caller treating `LOCK_NOT_FOUND` as benign would otherwise skip release while the original assignment is still present on disk.
 - `acquiredAt`/`expiresAt`/`occurredAt` accept a genuine RFC 3339 leap second (`23:59:60`) under any offset, checked against the UTC-equivalent instant rather than requiring the literal local digits to read `23:59` — consistent with `control-plane.controlled-merge`'s and `control-plane.evidence-store`'s own date-time validators, which also share this module's explicit month/day/leap-year and offset-range calendar checks: `Date.parse()` silently rolls an out-of-range calendar component (`2026-02-30`, say) forward into the next month rather than rejecting it, so a leap-second timestamp on a nonexistent date is rejected before ever being substituted, not left to slip through unnoticed. Every later comparison against an already-validated timestamp (`isStale`'s `expiresAt`-vs-now check, `expiresAt`-later-than-`acquiredAt`) goes through the same leap-second-substituted instant, not a raw `Date.parse` of the original string — `Date.parse` alone returns `NaN` for a leap second, which would otherwise make expiry ordering unenforceable and a leap-second `expiresAt` lock appear to never expire. A leap second is placed strictly between the `:59` second before it and the next minute's own instant, and two different leap-second instants are still compared correctly against each other rather than collapsed to one value: each leap second's own fractional digits (RFC 3339 places no bound on how many a timestamp may carry) are compared pairwise, right-padded to a common length, rather than baked into any fixed-width numeric encoding — a fixed-width encoding (float or bigint alike) always imposes some ceiling past which distinct, validly-ordered fractions collide, where pairwise string comparison has none.
 - `release()`'s reservation marker and the record it claims away both use a fixed, well-known path once the reservation is held (not a randomized one — the reservation itself already guarantees exclusivity). If the process holding the reservation crashes before its own `finally` removes it, the marker (and, if the crash happened mid-claim, the orphaned record it was guarding) is not lost forever: once the marker is older than a fixed staleness threshold (mirroring `control-plane.controlled-merge`'s own abandoned-holder convention), `acquire()` or a later `release()` call reclaims it. That reclaim is itself atomic, not a plain stat-then-unlink: the marker is claimed via its own atomic rename first, and only the *captured* file's own re-checked age (rename preserves mtime) decides whether to proceed — restoring it untouched if it turns out to be a fresh marker a different, legitimately live `release()` call created in the gap between the initial staleness check and this claim, rather than stripping that live call of its own protection mid-flight. `acquire()`'s own check for an in-flight release also recognizes this claim's own temporary `.reclaim` marker, keeping that gap as narrow as an ordinary single ownership check. Once a claimed marker is confirmed genuinely stale, the orphaned record is restored to the active path via an exclusive-create write — never a plain `renameSync`, which POSIX silently allows to overwrite an existing destination file rather than fail — so a fresh, legitimately-created assignment that already occupies the active path is never clobbered by the orphan, re-entering the normal active/stale lifecycle rather than vanishing or leaving the task appearing falsely unassigned, before the stale marker itself is dropped.
+
+BOOT-030 adds `pure-assignment-expiry-observation`: `isAssignmentLockExpired` exposes the producer's existing RFC 3339 ordering without constructing a store or mutating an assignment. It validates `now` and any `expiresAt`, returns true at or after expiry, false before expiry or with no expiry, and throws `RangeError` for invalid timestamps. Leap seconds and offsets use the same producer comparison as acquisition/recovery. This export adds no precision promise: ordinary timestamps retain the existing millisecond comparison, while leap-second fractions retain the existing arbitrary-length comparison. Existing assignment and recovery behavior is unchanged.
 
 ## Behavioral constraints and ranges
 
@@ -94,6 +97,10 @@ Required capabilities:
 - deterministic-conflicts
 - auditable-release-recovery
 
+### control-plane.status-reporting
+
+Consumes `pure-assignment-expiry-observation` to show stale assignments without acquiring, releasing, renewing, or recovering them. It requires the same producer expiry semantics instead of an independently approximated comparison.
+
 ## Consumer expectations and accepted ranges
 
 ### future-bootstrap-task-start-workflow
@@ -113,6 +120,10 @@ Accepted producer-output ranges:
 
 Compatibility rule: the producer's reachable output range must remain within these states/results unless downstream consumers are updated and semantically reviewed.
 
+### control-plane.status-reporting
+
+Accepts `true`/`false` for valid timestamps and `RangeError` for invalid input. The result says whether expiry was reached; it grants no recovery authority or change in ownership.
+
 ## Consumer-required reachable ranges
 
 ### future-bootstrap-task-start-workflow
@@ -127,6 +138,10 @@ Required reachable producer-output ranges:
 - Release followed by acquisition by a new identity.
 
 Compatibility rule: all of these outcomes must remain reachable; preserving only the TypeScript shapes is insufficient.
+
+### control-plane.status-reporting
+
+Requires false before expiry and when no expiry exists, true exactly at/after expiry, correct leap-second/offset ordering, and invalid timestamp rejection. Even absent expiry must not skip validating `now`.
 
 ## Examples
 

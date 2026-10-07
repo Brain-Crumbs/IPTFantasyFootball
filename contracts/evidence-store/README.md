@@ -3,6 +3,7 @@
 **Task:** BOOT-015 / issue #17
 **Parent architecture:** issue #1
 **Module ID:** `control-plane.evidence-store`
+**Module version:** `1.1.0`
 
 ## Identity and purpose
 
@@ -14,9 +15,9 @@ The store does not run validators, does not execute reviews, and does not decide
 
 Primary API:
 
-- `new FileEvidenceStore(root, options?: { repositoryRoot?: string })`
+- `new FileEvidenceStore(root, options?: { repositoryRoot?: string; readOnly?: boolean })`
 - `EvidenceStore.record(payload: unknown): RecordResult`
-- `EvidenceStore.validate(payload: unknown): ValidateResult` (BOOT-025) — the exact same checks `record()` itself applies (payload shape, schemaId, schemaVersion, full schema-document validation, taskId pattern, lineage derivability), reported the same way, but never persists anything: `record()` and `validate()` share one internal implementation, so a payload one accepts is always exactly what the other reports `ok` for. Lets a caller that already holds a *stored* payload (a candidate for reuse, say) reconfirm it is still fully schema-valid without re-implementing this store's own validation logic.
+- `EvidenceStore.validate(payload: unknown): ValidateResult` (BOOT-025) — the exact same checks `record()` in the default writable mode applies (payload shape, schemaId, schemaVersion, full schema-document validation, taskId pattern, lineage derivability), reported the same way, but never persists anything: `record()` and `validate()` share one internal implementation, so a payload a writable `record()` accepts is always exactly what `validate()` reports `ok` for. Lets a caller that already holds a *stored* payload (a candidate for reuse, say) reconfirm it is still fully schema-valid without re-implementing this store's own validation logic.
 - `EvidenceStore.getCurrent(lineageId: string): StoredEvidenceRecord | null`
 - `EvidenceStore.getHistory(lineageId: string): readonly StoredEvidenceRecord[]`
 - `EvidenceStore.checkRevision(lineageId: string, expectedRevisionIdentity: string): RevisionCheckResult`
@@ -26,9 +27,13 @@ Primary API:
 
 `record()` accepts a raw JSON payload, not a pre-typed record: the store determines which of the three supported schemas applies from `payload.schemaId`, so callers do not need a separate "kind" argument.
 
+## Read-only observation mode
+
+BOOT-030 adds the optional `readOnly: true` constructor mode (`read-only-store-mode-without-initialization-writes`). It skips root-directory creation; `validate`, `getCurrent`, `getHistory`, and `checkRevision` retain their read behavior, including empty/null/not-found results for absent lineages. `record()` throws before validation or filesystem writes in this mode, even for a valid payload. Validation success confirms payload validity, not permission to write. The default is `false`, preserving existing writable constructor and append behavior for all existing gates. No evidence schema or lineage format changes.
+
 ## Schema-validated acceptance
 
-Every `record()` call is validated against the exact `schemas/v1/validation-evidence.schema.json`, `schemas/v1/review-result.schema.json`, or `schemas/v1/merge-evidence.schema.json` document (resolved by `schemaId`, checked against the reader's one explicitly supported `schemaVersion`, per `schemas/VERSIONING.md` reader behavior) before anything is written. Validation covers the full JSON Schema subset those schemas use: `type`, `const`, `enum`, `minLength`, `pattern`, `format: date-time`, `minItems`, `uniqueItems`, `items`, object `properties`/`required`/`additionalProperties`, `$ref` into local `$defs` (used for role-specific `details` shapes, `finding`, and `nonPass`), and `allOf` entries expressed as `{ if, then }` role/outcome-conditioned fragments (used for role-specific `details` and the FAIL/BLOCKED → `nonPass` requirement). A malformed or schema-invalid payload is rejected with a structured `EvidenceRejection` and never persisted. BOOT-025 additionally extended the validator's supported subset with JSON Schema's `integer` type and the `minimum`/`maximum` numeric keywords (used by `ipt.merge-evidence`'s `pullRequestNumber: { type: "integer", minimum: 1 }`), so a fractional, zero, or negative pull-request number is rejected by the runtime store itself, not only by the Python `Draft202012Validator` `schemas/validate_fixtures.py` uses.
+Every writable `record()` call is validated against the exact `schemas/v1/validation-evidence.schema.json`, `schemas/v1/review-result.schema.json`, or `schemas/v1/merge-evidence.schema.json` document (resolved by `schemaId`, checked against the reader's one explicitly supported `schemaVersion`, per `schemas/VERSIONING.md` reader behavior) before anything is written. Validation covers the full JSON Schema subset those schemas use: `type`, `const`, `enum`, `minLength`, `pattern`, `format: date-time`, `minItems`, `uniqueItems`, `items`, object `properties`/`required`/`additionalProperties`, `$ref` into local `$defs` (used for role-specific `details` shapes, `finding`, and `nonPass`), and `allOf` entries expressed as `{ if, then }` role/outcome-conditioned fragments (used for role-specific `details` and the FAIL/BLOCKED → `nonPass` requirement). A malformed or schema-invalid payload is rejected with a structured `EvidenceRejection` and never persisted. BOOT-025 additionally extended the validator's supported subset with JSON Schema's `integer` type and the `minimum`/`maximum` numeric keywords (used by `ipt.merge-evidence`'s `pullRequestNumber: { type: "integer", minimum: 1 }`), so a fractional, zero, or negative pull-request number is rejected by the runtime store itself, not only by the Python `Draft202012Validator` `schemas/validate_fixtures.py` uses.
 
 The validator's accept/reject behavior was cross-checked against the reference Python `jsonschema` `Draft202012Validator` (the same validator `schemas/validate_fixtures.py` uses) on every fixture in `schemas/fixtures/v1/` plus targeted edge cases (an unexpected property nested inside a `$ref`-resolved `details` shape, a `nonPass` missing `remediation`, an out-of-enum finding severity) and produced identical accept/reject results in every case.
 
@@ -59,6 +64,8 @@ Persistence is local-filesystem only (`node:fs`, `node:path`); `record()`/`getCu
 - BOOT-016 (developer validation gate) persists BOOT-014's `ValidationRunResult`/`ValidatorResult` output as `ipt.validation-evidence` here and gates lifecycle advancement on the recorded, revision-checked outcome rather than an in-memory run result alone.
 - BOOT-017 onward (QA/Architecture/UAT/Product/MergeController review) persists `ipt.review-result` records per task/role lineage here, and BOOT-021 (review rework/invalidation) uses `getHistory`/`checkRevision` to determine which prior approvals remain valid after a revision changes.
 - BOOT-025 (controlled merge and completion transition) persists one `ipt.merge-evidence` record per task via `mergeEvidenceLineageId(taskId)` immediately after a merge is confirmed. `getCurrent` is used only once, by the pre-write reuse check (finalize() deciding whether a prior, interrupted attempt already recorded this exact confirmed merge). Every read that answers a resumed or idempotent caller — finishing post-merge bookkeeping for a task lifecycle `MERGED` but not yet `DONE`, or answering a repeated call for a task already `DONE` — instead parses the exact `${lineageId}@${sequence}` reference the task's own `MERGED`/`DONE` lifecycle-history event recorded as its `evidenceRef`, and fetches that exact sequence via `getHistory`, verifying the returned record's schema, task identity, and revision match the event before trusting it. This is a deliberate, immutability-preserving distinction from `getCurrent`: a hypothetical later write to the same lineage (an administrative repair, a future bug) must never silently change what an already-persisted `MERGED` or `DONE` transition is understood to describe, which `getCurrent`'s "whatever is current right now" semantics cannot guarantee.
+
+- BOOT-030 (`control-plane.status-reporting`) requires read-only construction/querying without creating an absent root, sequence-ordered history with only the latest record `CURRENT`, and pure payload revalidation. It accepts empty/null/missing results, current/superseded records, validation success or structured rejection, and an exception on any attempted read-only write. Each of those outcomes must remain reachable; status must not gain writing authority from `validate()` success.
 
 ## Out-of-scope follow-up
 
