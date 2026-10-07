@@ -1,0 +1,182 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.local-agent-adapter",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "new FileManualAgentProvider(root: string, options?: { repositoryRoot?: string, pollIntervalMs?: number }) implements AgentProvider",
+      "providerId = 'local-manual-agent'; capabilities(): AgentProviderCapabilities",
+      "exportPacket(request: AgentRunRequest): LocalAgentPacket",
+      "packetPath(packetId: string): string; resultPath(packetId: string): string; readPacket(packetId: string): LocalAgentPacket",
+      "importResult(packetId: string, envelope: unknown): { result: LocalAgentResult, resultPath: string, reused: boolean }",
+      "run(request: AgentRunRequest): Promise<AgentRunResult>",
+      "LocalAgentPacket: ipt.local-agent-packet schemaVersion 1.0.0; identity, full contextPackage, toolPermissionPolicy, resultBinding, instructions",
+      "LocalAgentResult: ipt.local-agent-result schemaVersion 1.0.0; bound COMPLETED with AgentRunResult, CANCELLED with error.message, or ERROR with error.message and recoverable:false",
+      "LOCAL_MANUAL_PROVIDER_ID; MAX_LOCAL_AGENT_JSON_BYTES=4194304; MAX_LOCAL_AGENT_JSON_DEPTH=64"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "complete-role-packet-export",
+      "exact-context-and-input-binding",
+      "schema-and-result-validation",
+      "idempotent-local-exchange",
+      "atomic-result-publication",
+      "provider-compatible-manual-wait",
+      "typed-transport-interruption",
+      "offline-round-trip"
+    ],
+    "behavioralConstraints": [
+      "supports every neutral role: Developer, QA, Architect, UAT/Product, MergeController; support is transport capability, never role or merge authority",
+      "pollIntervalMs defaults to 250 and accepts integers 1..60000; optional timeoutMs accepts integers 1..2147483647 milliseconds; signal is never serialized",
+      "full contextPackage and toolPermissionPolicy are preserved; contextIdentity/inputIdentity are deterministic SHA-256 identities with canonical object-key order and significant array order",
+      "same logical task/role/revision/run/actor packet identity cannot be rebound to changed context or policy; waiting timeout/signal are not external work identity",
+      "packet IDs are 64 lowercase hexadecimal characters; flat exchange paths are <packetId>.packet.json and <packetId>.result.json",
+      "lossless JSON only: plain objects/dense arrays, null/boolean/string, finite numbers except negative zero; no undefined/functions/bigint/symbols/cycles/accessors/hidden properties/non-plain objects/sparse or augmented arrays",
+      "complete transport data is bounded to 4 MiB UTF-8, depth 64 and 100000 JSON nodes; this concrete adapter limit does not change the neutral runner range",
+      "imports validate schema, all envelope binding fields, packet integrity and nested AgentRunResult identity/semantics before atomic publication; shape-only validity never overrides a mismatch",
+      "exact export/import retries reuse accepted records; conflicting result imports cannot overwrite the first accepted result; symlinked/non-regular, corrupt or tampered files fail closed",
+      "COMPLETED preserves PASS, FAIL and BLOCKED; semantic FAIL/BLOCKED requires nonPass reason/remediation and never becomes retryable infrastructure failure",
+      "imported CANCELLED throws CANCELLED recoverable:false; imported terminal ERROR requires recoverable:false and throws PROVIDER_ERROR recoverable:false",
+      "local wait timeout throws TIMEOUT recoverable:true and abort throws CANCELLED recoverable:false; neither creates a terminal result file; later valid imports may satisfy explicit same-identity waits only",
+      "invalid requests/context-policy conflicts throw INVALID_REQUEST nonrecoverable; malformed identity/import/tamper/conflict throws MALFORMED_RESULT nonrecoverable; filesystem failures use PROVIDER_ERROR",
+      "operator must enforce external tool/network policy and fresh independent role sessions; cancellation cannot force-stop desktop tools",
+      "adapter preserves supplied compiled context but does not authenticate its producer, recompile role context, verify claimed evidence, or execute any authoritative workflow gate",
+      "schema validation uses an adapter-local evaluator for the authored schema vocabulary; unsupported keywords fail closed rather than being silently ignored"
+    ],
+    "invariants": [
+      "exchange packets/results are unauthenticated transport metadata, never evidence or lifecycle authority",
+      "adapter writes no validation/review evidence, mutates no lifecycle/assignment state, submits no review, creates no PR and performs no merge",
+      "one logical packet has at most one accepted immutable result; an exact repeat is reuse rather than a new judgment",
+      "transport COMPLETED is distinct from semantic PASS; FAIL and BLOCKED remain reachable",
+      "binding hashes and actor strings do not prove authentication, independent review, honest evidence or sandbox enforcement",
+      "dependency direction remains concrete adapter to neutral provider port; no vendor SDK/credentials, desktop UI automation or fantasy-product coupling"
+    ],
+    "examples": [
+      "offline export of complete QA context, fixture envelope copying resultBinding, valid import and AgentRunner return preserve task/role/revision/run",
+      "local wait timeout leaves the packet pending; explicit same-identity resume consumes a later imported result",
+      "QA COMPLETED with FAIL returns findings/nonPass unchanged for the existing QA gate and rework rules",
+      "wrong revision/context binding fails before publication and cannot replace an accepted result",
+      "duplicate identical import returns reused:true; imported external ERROR is immutable and nonrecoverable"
+    ],
+    "edgeCases": [
+      "Developer result keeps invocation packet revision even if implementation changes HEAD; existing deterministic validation resolves actual current HEAD afterward",
+      "bare AgentRunResult, free-form prose or a schema-valid envelope with mismatched nested result is rejected",
+      "late import cannot revive an already cancelled/timed-out promise or automatically resume a stopped orchestration engine",
+      "same JSON object content with different key order is equivalent; array order changes content identity",
+      "stale pending packet discovery is not permission to start another external session; confirm active workflow identity",
+      "transport acceptance does not waive review gate rules such as unresolved blocking findings on PASS"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.agent-provider",
+    "control-plane.context-compiler (types only)",
+    "schemas/v1/local-agent-packet.schema.json",
+    "schemas/v1/local-agent-result.schema.json",
+    "node:fs",
+    "node:path",
+    "node:crypto",
+    "standard timers and AbortSignal"
+  ],
+  "forbiddenDependencies": [
+    "authoritative evidence or lifecycle mutation",
+    "task assignment or role-gate submission",
+    "PR creation and merge implementations",
+    "AI vendor SDKs or credentials",
+    "desktop UI automation",
+    "fantasy-product/*",
+    "hidden conversation state"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "control-plane.agent-provider (AgentRunner calling injected AgentProvider)",
+      "expectations": [
+        "neutral result shape and identity are preserved",
+        "local cancellation stops polling without claiming forced external termination",
+        "semantic non-PASS remains a result, imported terminal failures are nonrecoverable"
+      ],
+      "requiredCapabilities": [
+        "provider-compatible-manual-wait",
+        "typed-transport-interruption",
+        "exact-context-and-input-binding"
+      ],
+      "acceptedRanges": [
+        "all five neutral roles",
+        "AgentRunResult outcome PASS, FAIL or BLOCKED",
+        "AgentProviderError with stable code/recoverable meaning"
+      ],
+      "requiredReachableRanges": [
+        "PASS, FAIL and BLOCKED judgments",
+        "pending TIMEOUT/CANCELLED and imported terminal CANCELLED/PROVIDER_ERROR",
+        "rejection of wrong task/role/revision/run/actor/context/input identities"
+      ]
+    },
+    {
+      "consumerId": "cli.manual",
+      "expectations": [
+        "export provides stable packet ID/path",
+        "import acknowledgement cannot imply workflow approval",
+        "exact duplicate imports are reusable and conflicts fail closed"
+      ],
+      "requiredCapabilities": [
+        "complete-role-packet-export",
+        "schema-and-result-validation",
+        "idempotent-local-exchange",
+        "atomic-result-publication",
+        "offline-round-trip"
+      ],
+      "acceptedRanges": [
+        "complete LocalAgentPacket",
+        "import {result,resultPath,reused}",
+        "AgentRunResult or typed errors"
+      ],
+      "requiredReachableRanges": [
+        "offline export/import/run without network or credentials",
+        "idempotent exact import and conflicting import rejection"
+      ]
+    },
+    {
+      "consumerId": "local-orchestration-composition",
+      "expectations": [
+        "existing injected AgentProvider option remains sufficient; orchestration domain never imports file adapter",
+        "stable engine stage identity survives pending timeout and same-key resume",
+        "persisted terminal external failure cannot consume automatic retry budget or be overwritten into success"
+      ],
+      "requiredCapabilities": [
+        "provider-compatible-manual-wait",
+        "idempotent-local-exchange",
+        "typed-transport-interruption"
+      ],
+      "acceptedRanges": [
+        "all neutral AgentRunResult semantic outcomes",
+        "typed recoverable wait TIMEOUT and nonrecoverable imported cancellation/error"
+      ],
+      "requiredReachableRanges": [
+        "same-identity result reuse across restart",
+        "unchanged semantic FAIL/BLOCKED for authoritative gate handling"
+      ]
+    },
+    {
+      "consumerId": "manual-external-session-operator",
+      "expectations": [
+        "whole role context/tool policy is available without conversation memory",
+        "resultBinding can be copied verbatim",
+        "fresh role sessions and requested tools/network are externally enforced"
+      ],
+      "requiredCapabilities": [
+        "complete-role-packet-export",
+        "exact-context-and-input-binding",
+        "schema-and-result-validation"
+      ],
+      "acceptedRanges": [
+        "every supported role packet",
+        "COMPLETED, CANCELLED or ERROR result envelope"
+      ],
+      "requiredReachableRanges": [
+        "fresh independent role handoff",
+        "honest cancellation/external-error reports without fabricated judgment"
+      ]
+    }
+  ]
+}

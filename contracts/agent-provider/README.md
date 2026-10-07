@@ -12,7 +12,7 @@
 
 `control-plane.agent-provider` defines a provider-neutral contract for invoking one AI/automation role session, so orchestration is never coupled to ChatGPT, Codex, Anthropic, or any other single vendor (`CONSTITUTION.md` section 8: "the core workflow domain must define replaceable boundaries around: agent runner/provider ... No single AI provider may become a durable architectural dependency of the control plane."). It defines two layers, mirroring the rest of this repository's port/wrapper pattern (`ReviewFramework` wrapping an injected evidence store; `ControlledMergeController` wrapping injected ports):
 
-1. **`AgentProvider`** — the pluggable, vendor-agnostic port a real vendor adapter implements later. BOOT-026 ships no such adapter, and no real AI vendor SDK is a dependency of this repository (`package.json` lists none, and this module must keep it that way).
+1. **`AgentProvider`** — the pluggable, vendor-agnostic port concrete adapters implement. BOOT-029 adds the separate [local/manual adapter](../local-agent-adapter/README.md); no real AI vendor SDK is a dependency of this repository (`package.json` lists none, and this module must keep it that way).
 2. **`AgentRunner`** — the orchestrator-facing wrapper that validates a run request, enforces its own timeout and cancellation regardless of provider cooperation, and normalizes every provider failure into one typed `AgentProviderError`.
 
 This module decides no role-specific judgment itself, calls no real AI vendor, and runs no sequential multi-role orchestration. It does not wire a CLI command.
@@ -186,6 +186,14 @@ Version `1.1.0` adds timeout/cancellation propagation without changing request/r
 The runner enforces prompt return from a hung provider by racing promises; it does not forcibly stop external tools. Adapters must honor abort, stop launching side effects after interruption, and deduplicate effects using stable task/role/revision/run identity. A noncooperative adapter may keep working after the runner returns; no exactly-once external execution guarantee is claimed. Capability flags do not turn cooperative cancellation into forced termination.
 
 BOOT-028 orchestration may retry only an actual recoverable `AgentProviderError` with code `TIMEOUT` or `PROVIDER_ERROR`, under a durable bounded budget. It passes the same stage `runId` on retry, caches successful structured results, and preserves their original timestamp during review submission. Providers must not convert a semantic `FAIL`/`BLOCKED` judgment into an infrastructure error to obtain another attempt. The runner itself has no retry loop and persists no state.
+
+## BOOT-029 local/manual consumer
+
+`control-plane.local-agent-adapter` implements the `AgentProvider` port without adding dependencies from this neutral module back to a concrete adapter. `FileManualAgentProvider` exports a JSON packet containing the exact role context and tool policy, then translates an identity-bound imported envelope into an `AgentRunResult` or typed provider interruption/failure. The manual CLI and orchestration composition wrap it in `AgentRunner` for the neutral runner's validation and timeout/cancellation enforcement.
+
+The manual adapter must preserve every semantic judgment (`PASS`, `FAIL`, `BLOCKED`), all five roles, stable task/role/revision/run identity, the existing result shape, and typed cancellation/timeout/error behavior. Actor/context/input binding is stronger transport validation in that separate adapter, not a change to the neutral `AgentRunResult` shape. JSON transport supports only JSON-safe values; the base runner's general structured-cloneable result range is unchanged.
+
+Tool-policy fields are carried as requested policy, not enforced by the neutral runner. With the manual adapter, the operator must enforce them externally and launch fresh independent role sessions. Cancellation can stop a local wait but cannot terminate desktop tools. Neither module grants evidence, lifecycle, or merge authority. See the [operator guide](../../docs/LOCAL_AGENT_ADAPTER.md) for exact schemas and retry limits.
 
 ## Change-impact checklist
 

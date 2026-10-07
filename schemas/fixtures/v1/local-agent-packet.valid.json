@@ -1,0 +1,73 @@
+{
+  "schemaId": "ipt.local-agent-packet",
+  "schemaVersion": "1.0.0",
+  "providerId": "local-manual-agent",
+  "taskId": "BOOT-029",
+  "role": "Developer",
+  "revisionIdentity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runId": "manual-fixture-1",
+  "actorId": "developer-1",
+  "packetId": "0af0e628c2c0592a1e9dc5e11ef8248feee188174151fea645d9a6fe10bf639e",
+  "contextIdentity": "9519289e6a813bec711652085e5c5bd6aa58a879227c8df26795e65aefa68f5b",
+  "inputIdentity": "29031eba2fcd64a1c23af595b46de9ce7ce55ff5577253005356ffc9f44a721f",
+  "contextPackage": {
+    "artifacts": [
+      {
+        "artifactId": "scenario-1",
+        "content": {
+          "description": "Read this exact packet and produce a structured result."
+        },
+        "kind": "scenario",
+        "sourcePath": "tests/offline.json"
+      }
+    ],
+    "manifest": {
+      "excluded": [],
+      "included": [
+        {
+          "artifactId": "scenario-1",
+          "kind": "scenario",
+          "sourcePath": "tests/offline.json"
+        }
+      ]
+    },
+    "role": "Developer",
+    "schemaVersion": "1.0.0",
+    "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "task": {
+      "objective": "Exercise an offline manual role round-trip.",
+      "taskId": "BOOT-029"
+    },
+    "taskId": "BOOT-029"
+  },
+  "toolPermissionPolicy": {
+    "allowedTools": [
+      "read_file"
+    ],
+    "deniedTools": [
+      "network"
+    ],
+    "networkAccess": "none"
+  },
+  "resultBinding": {
+    "providerId": "local-manual-agent",
+    "taskId": "BOOT-029",
+    "role": "Developer",
+    "revisionIdentity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runId": "manual-fixture-1",
+    "actorId": "developer-1",
+    "packetId": "0af0e628c2c0592a1e9dc5e11ef8248feee188174151fea645d9a6fe10bf639e",
+    "contextIdentity": "9519289e6a813bec711652085e5c5bd6aa58a879227c8df26795e65aefa68f5b",
+    "inputIdentity": "29031eba2fcd64a1c23af595b46de9ce7ce55ff5577253005356ffc9f44a721f"
+  },
+  "instructions": [
+    "Open this packet in a fresh external session for only its named role and actor. Use the complete contextPackage as supplied; do not add another role's private narrative.",
+    "The operator must enforce toolPermissionPolicy in the external session. This file adapter cannot sandbox or stop external tools, processes, or agents.",
+    "Start from the packet task and exact revision within its declared scope. Developer may implement and commit a new revision, but must retain the original invocation revision in the result binding; deterministic validation resolves actual HEAD afterward. Reviewers must not modify source or HEAD. Do not edit lifecycle state, forge evidence, approve your own implementation, or merge.",
+    "Create a JSON response by copying resultBinding unchanged and adding schemaId: ipt.local-agent-result, schemaVersion: 1.0.0, and status: COMPLETED, CANCELLED, or ERROR. See schemas/v1/local-agent-result.schema.json.",
+    "For COMPLETED add result with runId, providerId, taskId, role, revisionIdentity copied from the binding; supply outcome PASS/FAIL/BLOCKED, role-appropriate details, findings, evidenceRefs and occurredAt (RFC3339). FAIL/BLOCKED also require nonPass.reason and nonPass.remediation. A completed FAIL/BLOCKED is a semantic judgment, not an execution error.",
+    "For CANCELLED add error: {message: your explanation}. For ERROR add error: {message: your explanation, recoverable: false}. These are terminal external outcomes; a changed judgment requires a new run identity.",
+    "Import using agent manual import <packet-id> <result-file> <exchange-dir>. The waiting agent manual run <request-file> <exchange-dir> receives the result; exporting and importing alone never advance workflow state.",
+    "Keep the packet and published result unchanged. Exact retries reuse them; changed context, policy, binding, or result conflicts are rejected. A local cancellation/timeout only stops waiting, so stop external work separately if needed."
+  ]
+}

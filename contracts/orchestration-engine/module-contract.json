@@ -136,7 +136,7 @@
   ],
   "knownConsumers": [
     {
-      "consumerId": "cli-orchestrate-command (reserved, BOOT-029+)",
+      "consumerId": "cli-orchestrate-command (reserved, deferred beyond BOOT-029 manual transport)",
       "expectations": [
         "preserve idempotencyKey/ownerId/runId across explicit resumes and expose bounded-attempt exhaustion, conflicts, cancellation and recovery errors",
         "STOPPED carries non-empty stage/reason/remediation; semantic FAIL/BLOCKED must not become an automatic retry",
@@ -176,6 +176,31 @@
       "acceptedRanges": [
         "ordered possibly non-contiguous OrchestrationStageRecord[] with at most one entry per stage",
         "durable attempt counts and last-failure diagnostics including infrastructure, cancellation and preconditions"
+      ]
+    },
+    {
+      "consumerId": "local-manual-orchestration-composition",
+      "expectations": [
+        "existing LocalOrchestrationOptions.provider accepts FileManualAgentProvider without engine dependency on its file format",
+        "gate-generated context and stable stage identity flow unchanged into manual packets",
+        "imported transport result is handled only through existing runner and authoritative workflow gates",
+        "same-key explicit resume retains lifecycle checks and durable budgets; local pending timeout differs from immutable external failure"
+      ],
+      "requiredCapabilities": [
+        "local-composition-root",
+        "role-context-isolation-passthrough",
+        "distinct-run-identity-per-stage",
+        "deterministic-gate-delegation",
+        "lifecycle-driven-resume"
+      ],
+      "acceptedRanges": [
+        "OrchestrationRunResult COMPLETED or STOPPED",
+        "typed provider, workflow and run-store errors"
+      ],
+      "requiredReachableRanges": [
+        "unchanged semantic FAIL/BLOCKED stop/rework handling",
+        "pending provider interruption and safe explicit same-key resume",
+        "deterministic validation of actual HEAD after a Developer implementation changes it"
       ]
     }
   ]

@@ -1,0 +1,348 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaId",
+    "schemaVersion",
+    "packetId",
+    "providerId",
+    "taskId",
+    "role",
+    "revisionIdentity",
+    "runId",
+    "actorId",
+    "contextIdentity",
+    "inputIdentity",
+    "contextPackage",
+    "toolPermissionPolicy",
+    "resultBinding",
+    "instructions"
+  ],
+  "properties": {
+    "schemaId": {
+      "const": "ipt.local-agent-packet"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "packetId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "providerId": {
+      "const": "local-manual-agent"
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^[A-Z]+-[0-9]{3,}$"
+    },
+    "role": {
+      "enum": [
+        "Developer",
+        "QA",
+        "Architect",
+        "UAT/Product",
+        "MergeController"
+      ]
+    },
+    "revisionIdentity": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+    },
+    "actorId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+    },
+    "contextIdentity": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "inputIdentity": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "contextPackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "role",
+        "taskId",
+        "sourceRevision",
+        "task",
+        "artifacts",
+        "manifest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "1.0.0"
+        },
+        "role": {
+          "enum": [
+            "Developer",
+            "QA",
+            "Architect",
+            "UAT/Product",
+            "MergeController"
+          ]
+        },
+        "taskId": {
+          "type": "string",
+          "pattern": "^[A-Z]+-[0-9]{3,}$"
+        },
+        "sourceRevision": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+        },
+        "task": {
+          "type": "object"
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifactId",
+              "kind",
+              "sourcePath",
+              "content"
+            ],
+            "properties": {
+              "artifactId": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+              },
+              "kind": {
+                "enum": [
+                  "requirement",
+                  "contract",
+                  "consumer-requirement",
+                  "evidence",
+                  "diff",
+                  "fixture",
+                  "scenario",
+                  "policy",
+                  "task",
+                  "dependency-task"
+                ]
+              },
+              "sourcePath": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+              },
+              "content": {}
+            }
+          }
+        },
+        "manifest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "included",
+            "excluded"
+          ],
+          "properties": {
+            "included": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "artifactId",
+                  "kind",
+                  "sourcePath"
+                ],
+                "properties": {
+                  "artifactId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+                  },
+                  "kind": {
+                    "enum": [
+                      "requirement",
+                      "contract",
+                      "consumer-requirement",
+                      "evidence",
+                      "diff",
+                      "fixture",
+                      "scenario",
+                      "policy",
+                      "task",
+                      "dependency-task"
+                    ]
+                  },
+                  "sourcePath": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+                  }
+                }
+              }
+            },
+            "excluded": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "artifactId",
+                  "kind",
+                  "sourcePath",
+                  "reason"
+                ],
+                "properties": {
+                  "artifactId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+                  },
+                  "kind": {
+                    "enum": [
+                      "requirement",
+                      "contract",
+                      "consumer-requirement",
+                      "evidence",
+                      "diff",
+                      "fixture",
+                      "scenario",
+                      "policy"
+                    ]
+                  },
+                  "sourcePath": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+                  },
+                  "reason": {
+                    "enum": [
+                      "ROLE_POLICY",
+                      "UNRELATED",
+                      "REVISION_MISMATCH",
+                      "DEVELOPER_NARRATIVE_NOT_AUTHORITY"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "toolPermissionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowedTools",
+        "networkAccess"
+      ],
+      "properties": {
+        "allowedTools": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+          }
+        },
+        "deniedTools": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+          }
+        },
+        "networkAccess": {
+          "enum": [
+            "none",
+            "restricted",
+            "full"
+          ]
+        }
+      }
+    },
+    "resultBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packetId",
+        "providerId",
+        "taskId",
+        "role",
+        "revisionIdentity",
+        "runId",
+        "actorId",
+        "contextIdentity",
+        "inputIdentity"
+      ],
+      "properties": {
+        "packetId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "providerId": {
+          "const": "local-manual-agent"
+        },
+        "taskId": {
+          "type": "string",
+          "pattern": "^[A-Z]+-[0-9]{3,}$"
+        },
+        "role": {
+          "enum": [
+            "Developer",
+            "QA",
+            "Architect",
+            "UAT/Product",
+            "MergeController"
+          ]
+        },
+        "revisionIdentity": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+        },
+        "actorId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+        },
+        "contextIdentity": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "inputIdentity": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "instructions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])"
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iptfantasyfootball.dev/schemas/v1/local-agent-packet.schema.json",
+  "title": "Local/manual agent work packet v1"
+}

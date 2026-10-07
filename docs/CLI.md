@@ -1,9 +1,9 @@
 # Agent Control Plane CLI contract
 
-**Task:** BOOT-005 / issue #7, extended by BOOT-008 / issue #10, BOOT-013 / issue #15, and BOOT-016 / issue #18  
+**Task:** BOOT-005 / issue #7, extended by BOOT-008 / issue #10, BOOT-013 / issue #15, BOOT-016 / issue #18, and BOOT-029 / issue #31
 **Parent architecture:** issue #1
 
-The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic read-only next-task selection. BOOT-013 adds the canonical start-only Developer workflow. BOOT-016 adds the canonical developer validation gate. Later BOOT tasks still own independent review, PR/merge orchestration, automated agent invocation, and controlled completion.
+The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic read-only next-task selection. BOOT-013 adds the canonical start-only Developer workflow. BOOT-016 adds the canonical developer validation gate. BOOT-029 adds local/manual provider packet export, import, and waiting. Independent review, sequential orchestration, and controlled completion exist as library gates; their generic CLI surfaces remain reserved.
 
 ## Clean-checkout setup
 
@@ -42,13 +42,16 @@ Implemented:
 - `next` — BOOT-008
 - `start <owner-id> <run-id>` — BOOT-013
 - `validate <task-id> <actor-id> <run-id>` — BOOT-016
+- `manual export <request-file> <exchange-dir>` — BOOT-029
+- `manual import <packet-id> <result-file> <exchange-dir>` — BOOT-029
+- `manual run <request-file> <exchange-dir>` — BOOT-029
 
 Reserved commands deliberately fail until their owning task supplies behavior:
 
 - `review` — BOOT-017+
 - `status` — BOOT-030
 - `rework` — BOOT-021 (behavior implemented as `ReviewReworkGate`; CLI wiring owned by BOOT-026+)
-- `orchestrate` — BOOT-027 (behavior implemented as `SequentialOrchestrationEngine`; CLI wiring deferred until a real agent-provider adapter exists — see BOOT-029)
+- `orchestrate` — BOOT-027/028 (implemented as `SequentialOrchestrationEngine`; generic CLI wiring remains deferred. BOOT-029 supplies manual transport commands and a provider injectable into this library.)
 
 ## Manual-bootstrap authority
 
@@ -153,6 +156,28 @@ A `FAIL` outcome is a successful, deterministic command result (exit `0`, `ok: t
 
 A task that is not `IN_DEVELOPMENT`, a branch that does not match the task's canonical branch, or an unregistered task fails before any validator runs or any evidence is written. An empty or invalid resolved validator set, or an evidence record the BOOT-015 store rejects, also fails explicitly rather than silently producing a transition. BOOT-016 performs no QA/Architecture/UAT review, invokes no AI provider, and creates no pull request; those remain owned by BOOT-017 onward.
 
+## `manual` commands
+
+```sh
+npm run --silent agent -- --json manual export <request-file> <exchange-dir>
+npm run --silent agent -- --json manual import <packet-id> <result-file> <exchange-dir>
+npm run --silent agent -- --json manual run <request-file> <exchange-dir>
+```
+
+The [standalone local/manual operator guide](LOCAL_AGENT_ADAPTER.md) provides complete request/result examples, an offline fixture round-trip, external permission/session requirements, and existing orchestration-library integration. No AI vendor credentials or SDK are needed.
+
+A request file is one `AgentRunRequest` JSON object with exact `contextPackage` and `toolPermissionPolicy`; `signal` is forbidden in JSON. CLI request/result input files must be regular files within 4 MiB UTF-8, and the resulting complete packet/envelope must also fit the adapter's bound. Paths resolve relative to the CLI's repository root. Export validates/persists the complete role packet and returns `data: { packetId, packetPath, resultPath }`. It reuses the same packet for an identical request; changed context or policy under the same identity is rejected.
+
+An external result file is an `ipt.local-agent-result` envelope copying every `packet.resultBinding` field. Import validates shape and exact task/role/revision/run/actor/context/input identity before atomically publishing it, and returns `data: { packetId, resultPath, reused, status }`. Reimporting identical content is safe; replacing a published result is prohibited. Prepare responses outside the final exchange path and use import rather than manually writing exchange records.
+
+Run waits through `AgentRunner` for the imported result and returns an `AgentRunResult` directly as `data`. Export first to get its packet ID/path while run waits: JSON run emits only one final envelope. An import before run begins is also valid. Ctrl-C aborts the local wait gracefully; request `timeoutMs` controls its optional bounded duration. Neither interruption stops tools running in the external session, writes a terminal response, nor removes the pending packet.
+
+Transport `COMPLETED` preserves semantic `PASS | FAIL | BLOCKED`. Imported `CANCELLED` produces non-recoverable provider cancellation; imported `ERROR` must contain `recoverable: false` and produces a non-recoverable provider error. These terminal records cannot be overwritten by a retry. Local waiting timeout is recoverable and leaves the same pending packet reusable.
+
+Expected adapter errors use envelope `error.code: "MANUAL_ADAPTER_ERROR"`; the message begins with the specific provider code, such as `INVALID_REQUEST`, `MALFORMED_RESULT`, `CANCELLED`, or `TIMEOUT`. Invalid request/arguments use exit 2; other expected adapter failures use exit 4; unexpected failures use exit 70. The envelope command is `manual` for all three operations. An accepted `COMPLETED + FAIL/BLOCKED`, or importing an external cancellation/error record, can exit 0 because that command successfully transported the requested payload. Running against a cancelled/error record then returns the corresponding nonzero provider failure.
+
+These commands have no workflow authority: export/import/run neither grant assignment nor validate implementation, record review evidence, advance lifecycle, create a PR, or merge. The manual operator enforces requested tool/network permissions and fresh independent role sessions. Generic `orchestrate` stays reserved; an existing authorized library caller can inject `FileManualAgentProvider`.
+
 ## Machine-readable envelope
 
 `--json` emits exactly one JSON object to stdout for both successful command results and expected command errors:
@@ -184,11 +209,11 @@ Expected command errors remain machine-readable on stdout and are distinguished 
 | `0` | `SUCCESS` | Command completed successfully. |
 | `2` | `USAGE_ERROR` | Unknown command/option or invalid command arguments. |
 | `3` | `NOT_IMPLEMENTED` | Recognized reserved command whose owning BOOT task is not implemented. |
-| `4` | `WORKFLOW_BLOCKED` | `start` or `validate` was understood but a deterministic workflow prerequisite/conflict prevented it from completing. |
+| `4` | `WORKFLOW_BLOCKED` | A deterministic workflow prerequisite/conflict or an expected manual-adapter failure prevented completion. |
 | `70` | `INTERNAL_ERROR` | Unexpected runtime failure or repository input that cannot be trusted. |
 
-All errors are non-zero. The top-level JSON envelope remains unchanged by BOOT-013/BOOT-016; `WORKFLOW_BLOCKED` is an additive exit-code meaning and `start`/`validate` each have their own command-specific data shape.
+All errors are non-zero. The top-level JSON envelope remains unchanged; `start`, `validate`, and `manual` have command-specific data shapes.
 
 ## Provider neutrality
 
-The CLI imports no AI SDK and requires no provider credential. Provider runners/adapters belong to BOOT-026 and later. BOOT-013 and BOOT-016 compose repository-native state, source-control, task, lock, validation, and evidence boundaries only.
+The CLI imports no AI SDK and requires no provider credential. BOOT-029 uses the provider-neutral runner and local/manual file adapter. The operator controls the external role session; no desktop UI automation is provided. BOOT-013 and BOOT-016 retain their repository-native workflow boundaries.

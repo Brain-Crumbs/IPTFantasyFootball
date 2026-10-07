@@ -8,6 +8,12 @@ interface IptCliProcess {
   stdout: IptCliStream;
   stderr: IptCliStream;
   exitCode?: number;
+  on(event: "SIGINT" | "SIGTERM", listener: () => void): void;
+  removeListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
 }
 
 declare const process: IptCliProcess;
+
+declare module "node:path" {
+  export function resolve(...paths: string[]): string;
+}

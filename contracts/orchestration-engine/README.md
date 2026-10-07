@@ -106,7 +106,7 @@ Forbidden: direct lifecycle transitions or evidence writes by this engine, assig
 
 ## Known consumers and semantic compatibility
 
-- **Future CLI orchestrate command (BOOT-029+):** accepts `COMPLETED | STOPPED` results and typed errors from wrapped modules, `OrchestrationError`, and `RunStoreError`. It must preserve the key/owner/run on resume, expose exhausted budgets and conflicts, distinguish cancellation/infrastructure from semantic stops, and honor cooperative shutdown. `orchestrate` remains reserved; no real provider adapter or CLI wiring is introduced here.
+- **Future CLI orchestrate command (deferred):** accepts `COMPLETED | STOPPED` results and typed errors from wrapped modules, `OrchestrationError`, and `RunStoreError`. It must preserve the key/owner/run on resume, expose exhausted budgets and conflicts, distinguish cancellation/infrastructure from semantic stops, and honor cooperative shutdown. `orchestrate` remains reserved. BOOT-029 supplies a file-based provider and manual packet CLI commands; full-pipeline invocation still uses this library.
 - **Operator observability (BOOT-030+):** accepts an ordered, possibly non-contiguous stage summary, refreshed on resume, plus journal attempts/failure metadata. It must not interpret summary timestamps as authoritative gate-commit times, provider-supplied evidence references as verified store records, or missing summary entries as proof that no transition occurred.
 - **Injected stores and provider adapters:** stores preserve durable counters and lock exclusion; providers respect abort and stable identity. These are semantic requirements even when their TypeScript shapes still compile.
 
@@ -123,6 +123,14 @@ The producer still reaches `COMPLETED` for a fully green workflow and separate `
 
 Focused executable coverage is in `tests/orchestration-engine.test.mjs`, `tests/agent-provider.test.mjs`, and `tests/review-framework.test.mjs`; repository contract/schema checks validate this manifest. Developer checks are not independent QA/Architecture/UAT approval.
 
+## BOOT-029 manual-provider composition
+
+Inject `FileManualAgentProvider` from `control-plane.local-agent-adapter` as `createLocalOrchestrationEngine(repositoryRoot, { ...existingOptions, provider })`'s existing provider option. No engine or gate contract changes. For each requested stage the provider persists the exact context/tool policy under a stable packet identity and waits for a validated import. An operator monitors the exchange directory and executes each packet in a fresh independent external session. The [operator guide](../../docs/LOCAL_AGENT_ADAPTER.md) provides concrete setup and discovery commands.
+
+The engine remains the direct consumer of `AgentRunner`; it never depends on a particular file layout or desktop vendor. A standalone `manual import` makes a result available but does not itself resume a stopped engine or mutate lifecycle. An active engine wait sees the import automatically; after interruption the operator must explicitly resume the same original key/owner/run, subject to remaining durable attempts and existing recovery rules. Packet/result records must be retained, not edited to bypass conflicts.
+
+A completed envelope carrying semantic `FAIL`/`BLOCKED` follows the existing gate and rework rules. An externally cancelled session becomes non-recoverable provider `CANCELLED`. A local wait timeout preserves the pending packet so a same-identity retry can continue waiting. Persisted external errors are not erased by engine retry; retries cannot turn a terminal error result into success. The manual provider cannot force-stop an external session or enforce its requested tools; operators must do so. Ordinary role import does not replace deterministic validation, review persistence, exact-head readiness, or controlled merge. No live end-to-end merge or Bootstrap v1 cutover is established by the offline adapter demo.
+
 ## Out of scope
 
-Unlimited retries; distributed/high-availability or parallel multi-task scheduling; a real local/vendor agent adapter (BOOT-029); CLI orchestration/status/diagnostics; general administrative repair (BOOT-032); product implementation; Bootstrap v1 cutover.
+Unlimited retries; distributed/high-availability or parallel multi-task scheduling; vendor SDK adapters and desktop UI automation; CLI orchestration/status/diagnostics; general administrative repair (BOOT-032); product implementation; Bootstrap v1 cutover.

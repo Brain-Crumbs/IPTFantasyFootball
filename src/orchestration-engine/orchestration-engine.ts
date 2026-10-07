@@ -597,10 +597,9 @@ export class SequentialOrchestrationEngine {
 }
 
 export interface LocalOrchestrationOptions {
-  /** No real AI vendor adapter ships in this repository (BOOT-026 ships
-   * only `FakeAgentProvider`); a caller must supply a concrete
-   * `AgentProvider` (a future BOOT-029 adapter, or a fake for local/manual
-   * use) to drive the Developer/QA/Architecture/UAT agent runs. */
+  /** Supply a concrete neutral provider: BOOT-029's FileManualAgentProvider
+   * supports operator-managed role handoffs; FakeAgentProvider is for tests.
+   * No AI vendor SDK or automatic desktop UI driver ships here. */
   readonly provider: AgentProvider;
   readonly retryPolicy?: OrchestrationRetryPolicy;
   readonly owner: string;
