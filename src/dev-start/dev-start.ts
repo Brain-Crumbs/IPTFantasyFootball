@@ -64,6 +64,8 @@ export class DeveloperStartError extends Error {
 }
 
 export interface DeveloperStartRequest {
+  /** Resume only an existing assignment for this task; never select new work. */
+  readonly expectedTaskId?: string;
   readonly ownerId: string;
   readonly runId: string;
   readonly occurredAt: string;
@@ -130,6 +132,10 @@ export class DeveloperStartWorkflow {
     validateStartRequest(request);
 
     const owned = this.findOwnedAssignment(request);
+    if (request.expectedTaskId !== undefined && owned?.task.taskId !== request.expectedTaskId) {
+      throw new DeveloperStartError("RECOVERY_REQUIRED",
+        `Expected existing assignment for '${request.expectedTaskId}' with this owner/run; refusing to select or acquire another task.`);
+    }
     const states = this.lifecycleSnapshot();
     const task = owned?.task ?? this.selectTask(states);
     const initialRecord = this.lifecycleRecord(task.taskId);
@@ -566,6 +572,9 @@ export async function createLocalDeveloperStartWorkflow(
 }
 
 function validateStartRequest(request: DeveloperStartRequest): void {
+  if (request.expectedTaskId !== undefined && (typeof request.expectedTaskId !== "string" || !/^[A-Z]+-[0-9]{3,}$/.test(request.expectedTaskId))) {
+    throw new DeveloperStartError("INVALID_REQUEST", "Developer resume expectedTaskId must be a schema-valid task identifier.", false);
+  }
   if (request.ownerId.trim().length === 0 || request.ownerId !== request.ownerId.trim()) {
     throw new DeveloperStartError("INVALID_REQUEST", "Developer start ownerId must be non-empty and trimmed.", false);
   }

@@ -176,7 +176,8 @@ export interface AgentRunnerDependencies {
  *    calling the provider (`CANCELLED`);
  * 5. races the provider's `run()` promise against a real timer (when
  *    `timeoutMs` is set) and the `signal` (when supplied) — never trusting
- *    the provider to self-enforce either — normalizing a timeout to
+ *    the provider to self-enforce either — and aborts the composed signal
+ *    passed to the provider when either interrupts the run, normalizing a timeout to
  *    `TIMEOUT` (recoverable) and a cancellation to `CANCELLED`
  *    (not recoverable, since a cancelled run should not be blindly retried
  *    without a fresh decision);
@@ -272,65 +273,60 @@ export class AgentRunner {
   }
 
   private async invokeProvider(request: AgentRunRequest, providerId: string): Promise<unknown> {
-    const racers: Array<Promise<unknown>> = [
-      Promise.resolve()
-        .then(() => this.dependencies.provider.run(request))
-        .catch((error: unknown) => {
-          throw normalizeProviderError(error, providerId);
-        }),
-    ];
-
-    // Deliberately not `.unref()`ed, unlike this repository's other
-    // background/heartbeat timers (validation-framework, controlled-merge):
-    // this timer is not a background safety net alongside other work that
-    // keeps the process alive on its own — it is the entire mechanism by
-    // which run()'s own TIMEOUT guarantee is kept. A provider whose run()
-    // call genuinely never touches the event loop again (the exact case
-    // FakeAgentProvider.hangIndefinitely() exists to exercise) leaves this
-    // timer as the only remaining scheduled work; unref'ing it would let the
-    // process exit before the timer ever fires, silently breaking the
-    // documented timeout contract instead of enforcing it.
+    // A provider gets its own signal so caller cancellation AND runner
+    // timeout reach the adapter, without aborting the caller's controller.
+    const controller = new AbortController();
+    const providerRequest = Object.freeze({ ...request, signal: controller.signal });
+    let interruption: AgentProviderError | undefined;
     let timer: IptTimeoutHandle | undefined;
-    if (request.timeoutMs !== undefined) {
-      const timeoutMs = request.timeoutMs;
-      racers.push(
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => {
-            reject(
-              new AgentProviderError(
-                "TIMEOUT",
-                `Agent run '${request.runId}' for task '${request.taskId}' role '${request.role}' timed out after ${timeoutMs}ms.`,
-                true,
-                providerId,
-              ),
-            );
-          }, timeoutMs);
-        }),
-      );
-    }
-
     let onAbort: (() => void) | undefined;
-    if (request.signal !== undefined) {
-      const signal = request.signal;
-      racers.push(
-        new Promise<never>((_resolve, reject) => {
-          onAbort = () => {
-            reject(
-              new AgentProviderError(
-                "CANCELLED",
-                `Agent run '${request.runId}' for task '${request.taskId}' role '${request.role}' was cancelled.`,
-                false,
-                providerId,
-              ),
-            );
-          };
-          signal.addEventListener("abort", onAbort);
-        }),
-      );
-    }
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      const interrupt = (error: AgentProviderError): void => {
+        if (interruption !== undefined) return;
+        interruption = error;
+        // Settle the runner before notifying the provider: an adapter may
+        // synchronously reject with AbortError or resolve from its listener.
+        // Neither may replace the runner's typed TIMEOUT/CANCELLED result.
+        reject(error);
+        controller.abort(error);
+      };
+      if (request.signal !== undefined) {
+        onAbort = () => interrupt(new AgentProviderError(
+          "CANCELLED",
+          `Agent run '${request.runId}' for task '${request.taskId}' role '${request.role}' was cancelled.`,
+          false,
+          providerId,
+        ));
+        request.signal.addEventListener("abort", onAbort, { once: true });
+        if (request.signal.aborted) onAbort();
+      }
+      if (request.timeoutMs !== undefined && interruption === undefined) {
+        const timeoutMs = request.timeoutMs;
+        // Keep referenced: a hung provider may leave this timer as the only
+        // scheduled work, and run() must still enforce its timeout.
+        timer = setTimeout(() => interrupt(new AgentProviderError(
+          "TIMEOUT",
+          `Agent run '${request.runId}' for task '${request.taskId}' role '${request.role}' timed out after ${timeoutMs}ms.`,
+          true,
+          providerId,
+        )), timeoutMs);
+      }
+    });
 
+    const providerResult = Promise.resolve()
+      .then(() => {
+        // A caller can abort after run() returns its promise but before this
+        // microtask starts. Never invoke a provider for that cancelled run.
+        if (interruption !== undefined) throw interruption;
+        return this.dependencies.provider.run(providerRequest);
+      })
+      .catch((error: unknown) => {
+        throw normalizeProviderError(error, providerId);
+      });
     try {
-      return await Promise.race(racers);
+      // Both promises retain rejection handlers after the winner settles;
+      // a late provider result or error is ignored, never surfaced as work.
+      return await Promise.race([interrupted, providerResult]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       if (onAbort !== undefined) request.signal?.removeEventListener("abort", onAbort);
@@ -391,7 +387,12 @@ function validateRequest(request: AgentRunRequest): void {
       false,
     );
   }
-  if (request.signal !== undefined && typeof request.signal.aborted !== "boolean") {
+  if (request.signal !== undefined && (
+    request.signal === null ||
+    typeof request.signal.aborted !== "boolean" ||
+    typeof request.signal.addEventListener !== "function" ||
+    typeof request.signal.removeEventListener !== "function"
+  )) {
     throw new AgentProviderError("INVALID_REQUEST", "Agent run signal must be an AbortSignal when provided.", false);
   }
 }

@@ -1,199 +1,128 @@
-# Sequential Orchestration Engine
+# Sequential Orchestration Engine and Runner Resilience
 
-**Task:** BOOT-027 / issue #29
+**Tasks:** BOOT-027 / issue #29; BOOT-028 / issue #30
 **Parent architecture:** issue #1
 **Module ID:** `control-plane.orchestration-engine`
+**Module version:** `2.0.0`
+**Manifest:** `./module-contract.json`
 
 ## Identity and purpose
 
-- **Module ID:** `control-plane.orchestration-engine`
-- **Module version:** `1.0.0`
-- **Manifest:** `./module-contract.json`
+The engine coordinates Developer start → Developer agent → deterministic validation → required QA/Architecture/UAT reviews → merge readiness → controlled merge. Each authoritative gate still owns its judgment, evidence, and lifecycle transitions. BOOT-028 adds bounded provider retries, durable request identity, cancellation propagation, and resumption of that sequential pipeline.
 
-`control-plane.orchestration-engine` coordinates the complete task lifecycle — Developer start, a Developer agent run, deterministic Dev Validation, QA, Architecture, UAT, Merge Readiness, and Controlled Merge — by calling the already-authoritative BOOT-013/016/018/019/020/021/024/025/026 modules in sequence, exactly as issue #1's "deterministic control plane" invariant requires: *"AI may write code, reason about requirements, and perform semantic reviews. AI must not be the authority that decides whether deterministic gates passed. State transitions must be made by the CLI/orchestrator after verifiable prerequisites are satisfied."*
-
-This module decides no PASS/FAIL/BLOCKED/ready judgment itself, mutates no lifecycle state directly, persists no evidence of its own, and reimplements no rule any wrapped module already owns. Its entire job is sequencing: call the right module next, with the right role-scoped context and a distinct run identity, and stop cleanly — with a structured, actionable diagnostic — the moment any wrapped module reports a non-PASS/non-ready outcome.
+The orchestration journal records execution intent, provider results, retry counts, and diagnostics. It is not review evidence or lifecycle authority. On resume, the engine reads the actual lifecycle record to determine the next valid stage; it never promotes a task merely because a journal entry or agent says a stage passed.
 
 ## Structural contract
 
-Primary API:
-
 - `new SequentialOrchestrationEngine(dependencies: OrchestrationDependencies)`
-- `SequentialOrchestrationEngine.run(request: OrchestrationRunRequest): Promise<OrchestrationRunResult>`
-- `OrchestrationRunRequest { ownerId, runId, occurredAt }`
+- `run(request: OrchestrationRunRequest): Promise<OrchestrationRunResult>`
+- `OrchestrationRunRequest { ownerId, runId, occurredAt, idempotencyKey?, signal?, timeoutMs? }`
 - `OrchestrationRunResult { taskId, runId, status: 'COMPLETED' | 'STOPPED', finalLifecycleState, stages, stopped?, pullRequestNumber?, mergeCommitSha? }`
-- `OrchestrationStageRecord { stage, role, runId, outcome, startedAt, finishedAt, summary, evidenceRefs, lifecycleState? }` — one immutable audit-trail entry per stage that actually ran
+- `OrchestrationStageRecord { stage, role, runId, outcome, startedAt, finishedAt, summary, evidenceRefs, lifecycleState? }`
 - `OrchestrationStopDetail { stage, reason, remediation }`
-- `OrchestrationStageId` — the twelve stage identifiers, in pipeline order: `developer-start`, `developer-agent`, `dev-validation`, `qa-agent`, `qa-review`, `architecture-agent`, `architecture-review`, `uat-agent`, `uat-review`, `review-rework`, `merge-readiness`, `controlled-merge`
-- `ORCHESTRATION_STAGE_IDS: readonly OrchestrationStageId[]`
-- `OrchestrationStageOutcome = 'PASS' | 'FAIL' | 'BLOCKED'`
-- `OrchestrationErrorCode = 'INVALID_REQUEST'`
-- `OrchestrationError { code, recoverable }`
-- `OrchestrationDependencies` — every wrapped module accepted as a narrow `Pick<...>` of only the method(s) this module calls (`developerStart`, `developerValidation`, `qaReview`, `architectureReview`, `uatReview`, `reviewRework`, `mergeReadiness`, `controlledMerge`, `agentRunner`), plus deployment-policy hooks (`toolPermissionPolicyFor?`, `timeoutMsFor?`, `actorIdFor?`, `now?`)
-- `createLocalOrchestrationEngine(repositoryRoot: string, options: LocalOrchestrationOptions): Promise<SequentialOrchestrationEngine>` — local composition root wiring every wrapped module's own `createLocal*` factory plus a real `AgentRunner`
-- `LocalOrchestrationOptions { provider: AgentProvider, owner, repo, token, apiBaseUrl?, fetchImpl?, integrationTarget?, requiredCiChecks?, toolPermissionPolicyFor?, timeoutMsFor?, actorIdFor?, now? }`
+- `OrchestrationRetryPolicy { maxAttempts, delayMs }`
+- `classifyOrchestrationFailure(error): OrchestrationFailure`, where `OrchestrationFailure { kind: 'INFRASTRUCTURE' | 'CANCELLED' | 'PRECONDITION', code, retryable }`
+- `OrchestrationError { code, recoverable }`; codes: `INVALID_REQUEST`, `IDEMPOTENCY_CONFLICT`, `RECOVERY_REQUIRED`, `RETRY_EXHAUSTED`, `CANCELLED`, `TIMEOUT`
+- Required dependencies: `taskRegistry.get`, read-only `lifecycleState.get`, `runStore`, and narrow wrapped-module ports `developerStart.start`, `developerValidation.validate`, `qaReview.prepareContext/review`, `architectureReview.prepareContext/review`, `uatReview.prepareContext/review`, `reviewRework.enterRework`, `mergeReadiness.evaluate`, `controlledMerge.merge`, `agentRunner.run`
+- Optional dependencies: `retryPolicy`, `toolPermissionPolicyFor`, `timeoutMsFor`, `actorIdFor`, `now`
+- `OrchestrationRunStore { get(idempotencyKey), save(journal), withLock(action) }`; `FileOrchestrationRunStore` is the local durable implementation and `MemoryOrchestrationRunStore` is for isolated tests
+- `OrchestrationRunJournal { schemaVersion: 1, idempotencyKey, ownerId, runId, occurredAt, values, attempts, pendingStage?, lastFailure? }`
+- `RunStoreError { code, recoverable }` reports `INVALID_JOURNAL | STATE_IO_FAILED | STATE_CONFLICT | IDEMPOTENCY_CONFLICT | RUN_ACTIVE`
+- `createLocalOrchestrationEngine(repositoryRoot, options): Promise<SequentialOrchestrationEngine>`
+- `LocalOrchestrationOptions { provider, owner, repo, token, apiBaseUrl?, fetchImpl?, integrationTarget?, requiredCiChecks?, retryPolicy?, toolPermissionPolicyFor?, timeoutMsFor?, actorIdFor?, now? }`
+
+`ORCHESTRATION_STAGE_IDS` defines the twelve stage identifiers in report order: `developer-start`, `developer-agent`, `dev-validation`, `qa-agent`, `qa-review`, `architecture-agent`, `architecture-review`, `uat-agent`, `uat-review`, `review-rework`, `merge-readiness`, `controlled-merge`. Outcomes remain `PASS | FAIL | BLOCKED`; failures to execute a stage are typed errors, not invented semantic outcomes.
 
 ## Capabilities
 
-- Sequential role-pipeline coordination: Developer start → Developer agent run → Dev Validation → QA → Architecture → UAT → Merge Readiness → Controlled Merge, calling only the already-authoritative BOOT-013/016/018/019/020/021/024/025/026 modules for each stage.
-- Deterministic gate delegation: every PASS/FAIL/BLOCKED/ready judgment is read back from the wrapped module that owns it; this module never decides one itself.
-- Role-context isolation passthrough: every agent-driven stage uses the exact `ContextPackage` the relevant gate's own `prepareContext()` (or `DeveloperStartWorkflow.start()`) compiled, unmodified — this module compiles no context of its own and cannot narrow or widen any role's context.
-- Distinct run identity per stage: every `OrchestrationStageRecord.runId`, and every `AgentRunRequest.runId` this module issues, is unique within one `run()` call, deterministically derived from the caller's own `request.runId`.
-- Fail-closed stop on a non-PASS/non-ready gate: a failed or blocked required gate is never skipped, and a later stage is never reached in the same `run()` call once an earlier one has failed or blocked.
-- QA/Architecture/UAT → rework routing: a non-PASS QA/Architecture/UAT review is routed through the unmodified BOOT-021 `ReviewReworkGate.enterRework()` before the run stops.
-- Merge-readiness gate before merge invocation: `ControlledMergeController.merge()` is called only after `MergeReadinessPolicyEngine.evaluate()` returned `ready: true` in the same `run()` call.
-- Structured stop diagnostics: a stopped run's result names the exact stage, the reason, and a concrete remediation/retry path — never only a thrown exception with a message to parse.
-- A local composition root (`createLocalOrchestrationEngine`) wiring every wrapped module's real, file-backed `createLocal*` factory plus a real `AgentRunner`, for a caller that supplies a concrete `AgentProvider`.
+- Sequential role-pipeline coordination and deterministic gate delegation
+- Unmodified role-specific context passthrough and distinct stage identities
+- Durable idempotency binding, provider-result reuse, and lifecycle-driven resume
+- Bounded, configurable retry of explicitly recoverable provider infrastructure failures
+- Provider cancellation propagation and an overall cooperative deadline
+- Fail-closed semantic stops and QA/Architecture/UAT-to-rework routing
+- Controlled-merge recovery without repeating a merge based on runner memory
+- Structured results, failure classification, and a local composition root
 
-## Behavioral constraints and ranges
+## Request identity and local persistence
 
-See `module-contract.json`'s `semanticContract.behavioralConstraints` for the complete, authoritative list. Summary:
+`ownerId`, `runId`, and an explicit `idempotencyKey` must be non-empty trimmed strings. `occurredAt` must be an RFC 3339 date-time. The default key is `runId`. The first accepted request binds that key to its owner/run identity and original timestamp; using the same key with a different owner or run is `IDEMPOTENCY_CONFLICT`. A later request timestamp does not replace the original one. A `runId` cannot be rebound to another key to reset retry counts or replay work. Retries and explicit resumes must keep the same key, owner, and run.
 
-1. `run()` validates its own request (`ownerId`/`runId` non-empty and trimmed, `occurredAt` an RFC 3339 date-time) before touching any dependency, as `OrchestrationError('INVALID_REQUEST')`.
-2. **Developer start** — `DeveloperStartWorkflow.start()` is called first and unconditionally trusted for task selection/assignment/branch/context; this module reimplements none of it.
-3. **Developer agent run** — `AgentRunner.run()` is called for role `Developer` with the Developer context `start()` compiled. Its outcome is recorded for traceability only; it is **never** treated as authoritative (issue #1: *"AI must not be the authority that decides whether deterministic gates passed"*), so the run always proceeds to Dev Validation regardless of what the Developer agent itself reported.
-4. **Dev Validation** — `DeveloperValidationGate.validate()` is the sole authority for the Developer stage. A non-PASS outcome stops the run at `dev-validation`. No `ReviewReworkGate` call happens here: `DEV_VALIDATION_FAILED` is explicitly out of `ReviewReworkGate.enterRework()`'s own scope (only `QA_FAILED`/`ARCHITECTURE_FAILED`/`UAT_FAILED` are reworkable — see `src/review-rework/review-rework.ts`), and this module does not invent that transition itself.
-5. **QA / Architecture / UAT** — each stage: `prepareContext()` → `AgentRunner.run()` for that role with the prepared context → the gate's own `review()` with the agent's outcome/findings/details/evidenceRefs/nonPass passed through verbatim. A non-PASS result is routed through `ReviewReworkGate.enterRework()` and the run stops at that stage; no later review stage runs in the same call. A PASS result's own returned `lifecycleState` (`ARCHITECTURE_REVIEW` / `UAT_REVIEW` / `MERGE_READY`) — not this module inspecting `task.requiredReviewRoles` — decides whether Architecture and/or UAT run next, since the already-shipped review gates already own that sequencing rule (see `nextStateAfterQaPass`/`nextStateAfterArchitecturePass` in `src/qa-review/qa-review.ts` / `src/architecture-review/architecture-review.ts`).
-6. **Merge Readiness** — `MergeReadinessPolicyEngine.evaluate()` runs once every required review has passed. `ready: false` stops the run at `merge-readiness`; `ControlledMergeController.merge()` is **never** called in that case.
-7. **Controlled Merge** — called only immediately after a `ready: true` evaluation in the same `run()` call. `status: 'COMPLETED'` only once it returns `lifecycleState: 'DONE'`.
-8. **Run identity** — every stage's `runId` is `` `${request.runId}::<stage-id>` ``, guaranteeing distinctness within one call and across calls with different `request.runId`s.
-9. **Actor identity / self-approval avoidance** — the default `actorIdFor(role, ownerId)` returns `ownerId` unchanged for `Developer` and `` `${ownerId}::${role}` `` for every other role. This is not cosmetic: `ReviewFramework.submit()` rejects a review whose `reviewerId` equals the Developer identity bridged from Dev Validation evidence (`SELF_APPROVAL_REJECTED`) — the default guarantees, by construction, that a QA/Architecture/UAT/MergeController identity is never textually equal to the Developer identity, without this module needing to know anything about `ReviewFramework`'s own self-approval rule.
-10. **Tool/network policy** — the default `toolPermissionPolicyFor(role)` is the most conservative envelope (`allowedTools: []`, `networkAccess: 'none'`) for every role; this is a deliberate refusal to embed provider/deployment policy in the orchestration core (issue #29's own "out of scope: embedding provider-specific behavior in orchestration core"), left fully overridable by the caller.
-11. **Errors vs. stops** — a legitimate non-PASS/non-ready outcome from a wrapped module is never thrown; it is returned as `status: 'STOPPED'`. Only a genuine infrastructure/precondition failure (a malformed request the wrapped module itself rejects, a stale lock, an IO failure, a provider timeout/cancellation, etc.) propagates as that module's own typed, unmodified error.
+Each stage record and provider session has a stable identity derived as `${runId}::<stage-id>`. A review submission uses its cached provider result's original `runId` and `occurredAt`, preserving the exact review payload on retry. A genuinely new review attempt after rework needs a new run identity; changing the identity is not a way to bypass a failed lifecycle gate.
 
-## Invariants
+The local factory uses `.agent/state/orchestration/` for the journal and repository-wide orchestration lock, beside the existing lifecycle/evidence/assignment stores. Journal filenames are SHA-256 hashes of keys with a `.run.json` suffix; the lock is `.orchestration.lock`. Journal replacement uses a same-directory temporary file, file fsync, atomic rename, and directory fsync. Malformed, non-JSON, oversized (over 16 Mi characters), wrong-identity, or symlinked journal files fail closed. Counts cannot decrease and completed start/provider checkpoints cannot be replaced or erased. Writes require the owning `withLock` callback and its verified lock token; reads return detached snapshots. The exclusive lock spans a whole orchestration call, including asynchronous provider and gate work. A concurrent invocation, even with another key, is rejected rather than executing against the same repository checkout concurrently. Normal return, cancellation, and error release the lock. This is single-repository, single-host coordination, not a distributed scheduler or an exactly-once guarantee for arbitrary external provider tools.
 
-- This module decides no PASS/FAIL/BLOCKED/ready judgment itself.
-- This module never calls `transitionLifecycle` or any lifecycle-state store directly.
-- A failed or blocked required gate, or a not-ready merge check, is never skipped: the next stage never runs in the same `run()` call once an earlier one has failed, blocked, or reported not-ready.
-- `ControlledMergeController.merge()` is invoked only after `MergeReadinessPolicyEngine.evaluate()` was invoked in the same `run()` call and returned `ready: true`.
-- The Architecture stage never runs after a non-PASS QA review in the same call; the UAT stage never runs after a non-PASS Architecture review in the same call.
-- Every `OrchestrationStageRecord` in one returned result carries a `runId` distinct from every other stage's `runId` in that same result.
-- Every agent-driven stage passes the wrapped gate's own compiled `ContextPackage` through unmodified to both the agent run and the subsequent review call.
-- This module embeds no provider-specific (vendor) behavior; `AgentRunner` alone resolves which concrete `AgentProvider` executes a role's run.
+## Retry policy and failure taxonomy
 
-## Dependencies
+- `maxAttempts` defaults to **3**, must be an integer in **1..10**, and counts the first call. Counts are persisted before each provider invocation, per stage and key, and remain consumed across process restarts and explicit resumes.
+- `delayMs` defaults to **100**, must be an integer in **0..60000**, and is a fixed, abortable delay between eligible attempts. There is no unbounded retry or hidden backoff.
+- Only an actual `AgentProviderError` with `recoverable: true` and code `TIMEOUT` or `PROVIDER_ERROR` is automatically retried. Merely giving an arbitrary error a matching `code` is insufficient.
+- `CANCELLED`, invalid requests, unsupported roles, context mismatch, malformed provider results, and nonrecoverable provider errors are not automatically retried. Wrapped lifecycle/evidence/merge/IO failures propagate for explicit recovery, rather than blindly repeating a mutating gate.
+- QA/Architecture/UAT `FAIL` or `BLOCKED` and deterministic validation failures are semantic results. They are never classified as retryable infrastructure, and never consume an automatic semantic retry loop. The Developer agent's own outcome remains traceability only; deterministic Developer Validation is still authoritative.
+- The final failed provider attempt propagates its typed provider error. A later resume with no budget left raises `RETRY_EXHAUSTED`. An operator may explicitly raise `maxAttempts` after inspection, up to the absolute ceiling of 10; restarting a process or changing only `occurredAt` does not reset the counter.
 
-### Allowed
+`classifyOrchestrationFailure` reports `CANCELLED` separately; typed recoverable provider failures as retryable `INFRASTRUCTURE`; known IO/merge-provider/deadline/budget errors as non-automatically-retryable `INFRASTRUCTURE`; and other failures as `PRECONDITION`. Its `retryable` means eligibility for the bounded provider loop, not permission to repeat any failed operation. A result with `status: 'STOPPED'` retains stage/reason/remediation; an exception is not rewritten as a review rejection.
 
-- `control-plane.dev-start` (BOOT-013)
-- `control-plane.dev-validation` (BOOT-016)
-- `control-plane.qa-review` (BOOT-018)
-- `control-plane.architecture-review` (BOOT-019)
-- `control-plane.uat-review` (BOOT-020)
-- `control-plane.review-rework` (BOOT-021)
-- `control-plane.merge-readiness` (BOOT-024)
-- `control-plane.controlled-merge` (BOOT-025)
-- `control-plane.agent-provider` (BOOT-026)
-- `control-plane.context-compiler` (type-only reuse of `ContextPackage`)
-- `control-plane.review-framework` (type-only reuse of `ReviewFinding`/`ReviewNonPassDetail`/`ReviewOutcome`)
-- `control-plane.task-registry` (type-only reuse of `TaskLifecycleState`)
+## Timeout and cancellation
 
-### Forbidden
+`request.timeoutMs`, when supplied, is an integer in **1..2147483647** milliseconds and bounds this invocation cooperatively. `timeoutMsFor(role)` separately configures the AgentRunner's per-attempt provider timeout. The request's abort signal and overall timer feed a composed signal passed to `AgentRunner`; the runner also propagates its own per-attempt timeout to the concrete provider.
 
-- `fantasy-product/*`
-- `ci-enforcement/*`
-- Any direct `evidence-store`/`lifecycle-state-machine`/`assignment-lock`/`git-branch-lifecycle` access outside of what an injected wrapped-module dependency already performs — this module opens no store of its own.
-- Any concrete AI vendor SDK.
+Cancellation/deadline checks run before stages and provider attempts and after gate calls. An already-aborted request does no work. Retry delay can be interrupted. An active state-changing gate is **allowed to settle while the repository lock remains held**, so the engine does not launch a competing resume while validation, evidence persistence, or controlled merge is still mutating state. A deadline therefore does not promise an immediate return from an uncooperative gate. Settled durable state determines what the next explicit resume may do; cancellation never rolls back an already-confirmed merge.
 
-This module persists no evidence, opens no lifecycle/evidence/lock store, and calls no GitHub API directly; `createLocalOrchestrationEngine` composes those exclusively from each wrapped module's own already-shipped `createLocal*` factory.
+The runner can reject a timed-out/cancelled provider call and ignore its late result, but cannot forcibly terminate external tools. Adapters must honor the supplied signal and deduplicate side effects using stable task/role/revision/run identity. A noncooperative adapter can continue external work after rejection; this boundary is not a claim of exactly-once remote execution. `CANCELLED` requires an explicit new decision to resume; an overall `TIMEOUT` remains distinct from provider `TIMEOUT` and does not initiate an automatic whole-pipeline retry.
 
-## Known consumers
+## Resume and authoritative stage selection
 
-### cli-orchestrate-command (reserved, BOOT-029+)
+1. Acquire the repository-wide run lock and load or create the key's journal. Reuse the original task/start binding when available; a fresh start delegates task selection, assignment, canonical branch, and Developer context to BOOT-013.
+2. Read the bound task's lifecycle state. A missing/mismatched record or unsupported recovery state fails closed with `RECOVERY_REQUIRED`. The engine does not write lifecycle records.
+3. On a resumed `IN_DEVELOPMENT` task, call BOOT-013 with `expectedTaskId` to revalidate the already-owned assignment, canonical branch, and current context before any provider or validation call. A changed task/branch/lock binding fails closed. If the Developer provider result is not yet cached, a changed revision or context is `RECOVERY_REQUIRED`; stale context cannot start another provider attempt. If that provider result was already cached, keep it as historical traceability and skip provider execution, even if the Developer changed HEAD while implementing; BOOT-016 independently validates the actual current canonical revision. A fresh task obtains its Developer result and then calls BOOT-016 validation. In `DEV_VALIDATION_FAILED`, return a semantic stop; BOOT-021 does not own recovery from this state.
+4. In the valid review entry state, run only the task's declared required role, compiling fresh context through that role's gate. Reuse a cached provider result only when task, role, exact revision, actor, and context content identity still match. Changed review input fails closed with `RECOVERY_REQUIRED`; stale judgments are never replayed. The completed Developer-result traceability case above is not review approval. Existing lifecycle advancement skips the completed stage rather than appending another transition.
+5. A recorded `QA_FAILED`, `ARCHITECTURE_FAILED`, or `UAT_FAILED` resumes into BOOT-021 rework routing. `REWORK_REQUIRED` remains stopped until explicit rework; no semantic failure is automatically resubmitted. Each gate remains authoritative for review sequencing and revision checks.
+6. With no pending merge intent, evaluate readiness and stop on `ready: false`. That stop may be re-evaluated on a same-key resume after CI/PR/dependency blockers change.
+7. If the journal records a pending controlled-merge call, or lifecycle is already `MERGED`/`DONE`, delegate directly to BOOT-025. Do not require a preliminary open-PR-only readiness query after a merge may already have closed the PR. BOOT-025 itself rechecks readiness/exact head for a fresh merge or confirms the already-merged revision and performs only missing local bookkeeping. The orchestration layer never repeats the merge HTTP operation itself.
+8. Return `COMPLETED` only through controlled merge's confirmed `DONE` result. A same-key rerun reuses the recorded merge and cannot re-run completed review/validation transitions.
 
-Why this consumer depends on the module:
+Provider results, attempt counters, stage summaries, and pending operation intent are journaled. The stage list is a persisted summary with at most one entry per stage, ordered by `ORCHESTRATION_STAGE_IDS`; repeated diagnostics can refresh an entry. It is not an append-only history of every retry and may omit a completed stage summary if the process stopped between its authoritative gate commit and journal update. Evidence and lifecycle remain authoritative in that window.
 
-- A human/agent operator needs one command that drives the full pipeline without hand-invoking each BOOT-013/016/018/019/020/021/024/025 command in sequence.
+## Recovery and migration limits
 
-Required capabilities:
+The `2.0.0` module version reflects the new required `runStore` and read-only `lifecycleState` dependencies. Custom constructors must provide both (and the existing `taskRegistry`); production stores must preserve identity, bounded attempts, atomic durable writes, and exclusivity. `MemoryOrchestrationRunStore` does not survive process exit. The local factory supplies the file implementation automatically.
 
-- `sequential-role-pipeline-coordination`
-- `structured-stop-diagnostics`
-- `local-composition-root`
+BOOT-027 runs did not have this journal. Do not infer or manufacture a journal for an older run that has already advanced: this version does not migrate arbitrary in-progress runs, repair corrupt journals, or reset failed lifecycle/evidence. ReviewFramework `2.0.0` also requires injected evidence stores to implement `validate` and `getHistory`; unchanged `FileEvidenceStore` already does so. Existing on-disk evidence schemas are unchanged. DeveloperStart `1.1.0` adds optional `expectedTaskId`; injected start adapters used for orchestration resume must honor that strict guard before selecting or changing any task.
 
-**Not wired into the CLI by BOOT-027.** `createLocalOrchestrationEngine` requires a concrete `AgentProvider` to drive the Developer/QA/Architecture/UAT agent runs, and — mirroring `contracts/agent-provider/README.md`'s own note that "BOOT-026 ships no such adapter, and no real AI vendor SDK is a dependency of this repository" — no real vendor adapter exists yet; that is explicitly BOOT-029's scope ("Initial local/manual agent adapter"). Wiring a CLI `orchestrate` command today would have no usable provider behind it. Consistent with how `review`/`rework` remain reserved in `src/cli/commands.ts` until their own CLI-usable preconditions land, `orchestrate` is listed in `RESERVED_COMMANDS` (see `src/cli/commands.ts`) rather than `IMPLEMENTED_COMMANDS`; this also matches issue #1's guardrail #1, "do not overbuild the bootstrap UI," and guardrail #10, "prefer a small, enforceable v1 over a broad workflow with unenforced conventions." Issue #29's own acceptance criteria and validation scenarios do not require a CLI entry point.
+After abrupt process death, a file lock can remain intentionally. Before removing a stale orchestration lock, an operator must stop and verify that **all runners for this repository are no longer executing**, inspect the lock, retain the journal, and remove **only that verified stale `.agent/state/orchestration/.orchestration.lock`**. Then rerun with the original key/owner/run and compatible role policy. Never delete journals, evidence, assignment locks, or lifecycle records to make a run look new. There is no automatic time/PID lock stealing and no general repair command; generalized recovery tooling remains BOOT-032 scope. An uncertain writer or malformed persisted record is a blocker, not permission to force through recovery.
 
-### operator-observability (BOOT-030+)
+## Dependencies and invariants
 
-Why this consumer depends on the module:
+Allowed producers: `control-plane.dev-start`, `dev-validation`, `qa-review`, `architecture-review`, `uat-review`, `review-rework`, `merge-readiness`, `controlled-merge`, `agent-provider`; `task-registry` for declared roles; read-only lifecycle types/state; `context-compiler` types; `review-framework` types and `computeContextPackageId`; Node filesystem/path/crypto and async context for local journal persistence and exclusive locking.
 
-- Project-status/diagnostics reporting needs one place to read what an orchestration run did, stage by stage, without re-deriving it from raw lifecycle history.
+Forbidden: direct lifecycle transitions or evidence writes by this engine, assignment/branch mutation outside the owning gates, direct GitHub merge calls, concrete AI vendor SDKs, fantasy product dependencies, and distributed scheduling.
 
-Required capabilities:
+- Required review/validation failures cannot be skipped or reclassified into success.
+- Each reviewer receives its gate's exact compiled context; provider output does not decide deterministic gate results.
+- Default tool policy remains `allowedTools: []`, `networkAccess: 'none'`; default actors remain owner for Developer and `${ownerId}::${role}` otherwise. Deployment hooks must preserve role separation and stable actor/policy identity across resumes.
+- A journal is execution metadata, never evidence of approval or completion.
+- Merge authorization/recovery remains BOOT-025's responsibility, including exact revision and original assignment identity.
 
-- `structured-stop-diagnostics`
-- `distinct-run-identity-per-stage`
+## Known consumers and semantic compatibility
 
-## Consumer expectations and accepted ranges
+- **Future CLI orchestrate command (BOOT-029+):** accepts `COMPLETED | STOPPED` results and typed errors from wrapped modules, `OrchestrationError`, and `RunStoreError`. It must preserve the key/owner/run on resume, expose exhausted budgets and conflicts, distinguish cancellation/infrastructure from semantic stops, and honor cooperative shutdown. `orchestrate` remains reserved; no real provider adapter or CLI wiring is introduced here.
+- **Operator observability (BOOT-030+):** accepts an ordered, possibly non-contiguous stage summary, refreshed on resume, plus journal attempts/failure metadata. It must not interpret summary timestamps as authoritative gate-commit times, provider-supplied evidence references as verified store records, or missing summary entries as proof that no transition occurred.
+- **Injected stores and provider adapters:** stores preserve durable counters and lock exclusion; providers respect abort and stable identity. These are semantic requirements even when their TypeScript shapes still compile.
 
-### cli-orchestrate-command
+The producer still reaches `COMPLETED` for a fully green workflow and separate `STOPPED` outcomes at Developer Validation, QA, Architecture, UAT, and readiness. It adds conflict/recovery/deadline/budget/store errors and narrows duplicate execution into safe reuse or rejection. Consumers must accept the expanded error range and the persisted summary semantics; every consumer-required reachable outcome must remain reachable, not merely overlap with one success path.
 
-Expectations:
+## Examples and validation evidence
 
-- `SequentialOrchestrationEngine.run()` never throws an error that is not one of the typed errors named in `module-contract.json`.
-- A `status: 'STOPPED'` result always carries a `stopped.stage` that is one of `OrchestrationStageId` and non-empty `stopped.reason`/`stopped.remediation`.
+- Provider timeout then success: same provider-stage run ID, two durable attempts, one submitted review.
+- Cancellation during QA: provider signal aborts; no late result advances QA; explicit same-key resume uses the persisted lifecycle and remaining budget.
+- Concurrent duplicate invocation: repository lock rejects overlap; later same-key invocation resumes without duplicate completed transitions.
+- QA `FAIL`: evidence is retained, task enters rework, and no Architecture/UAT provider retry occurs.
+- Merge accepted remotely before local completion is interrupted: persisted merge intent routes recovery to BOOT-025, including when the PR is already closed.
+- Same review identity with changed payload, or an old approval superseded by a later judgment: ReviewFramework rejects reuse instead of appending an old PASS.
 
-Accepted producer-output ranges:
+Focused executable coverage is in `tests/orchestration-engine.test.mjs`, `tests/agent-provider.test.mjs`, and `tests/review-framework.test.mjs`; repository contract/schema checks validate this manifest. Developer checks are not independent QA/Architecture/UAT approval.
 
-- An `OrchestrationRunResult` whose `status` is `'COMPLETED'` or `'STOPPED'`.
-- A thrown error that is one of `DeveloperStartError`, `DeveloperValidationError`, `QaReviewError`, `ArchitectureReviewError`, `UatReviewError`, `ReviewReworkError`, `MergeReadinessError`, `ControlledMergeError`, `AgentProviderError`, or `OrchestrationError`.
+## Out of scope
 
-Compatibility rule: the producer's reachable output range must be contained by the consumer's accepted range.
-
-### operator-observability
-
-Expectations:
-
-- Every `OrchestrationStageRecord.evidenceRefs` entry, when present, names an evidence lineage/sequence a wrapped module's own evidence store already persisted.
-
-Accepted producer-output ranges:
-
-- An ordered `OrchestrationStageRecord[]` whose `stage` values are a (possibly non-contiguous) subsequence of `ORCHESTRATION_STAGE_IDS` in pipeline order.
-
-## Consumer-required reachable ranges
-
-### cli-orchestrate-command
-
-Required reachable producer-output ranges:
-
-- A `status: 'COMPLETED'` result is reachable for a task whose every gate passes and whose merge readiness is satisfied.
-- A `status: 'STOPPED'` result at every one of `dev-validation`, `qa-review`, `architecture-review`, `uat-review`, and `merge-readiness` is independently reachable and distinguishable by `stopped.stage`.
-
-Compatibility rule: every required reachable range must be contained by the producer's reachable output range. Mere overlap is insufficient.
-
-## Examples
-
-- A happy-path `run()` call with a fake `AgentProvider` returning `PASS` for every role visits every `ORCHESTRATION_STAGE_IDS` entry except `review-rework`, ends `status: 'COMPLETED'` with `finalLifecycleState: 'DONE'`, and returns the merged pull request's number and merge commit SHA.
-- A `run()` call whose `DeveloperValidationGate.validate()` call returns `outcome: 'FAIL'` returns `status: 'STOPPED'` with `stopped.stage: 'dev-validation'`; `AgentRunner.run()` is never called for role `QA`.
-- A `run()` call whose QA agent run reports `outcome: 'FAIL'` causes `QaReviewGate.review()` to record that `FAIL`, `ReviewReworkGate.enterRework()` to route the task to `REWORK_REQUIRED`, and returns `status: 'STOPPED'` with `stopped.stage: 'qa-review'`; `AgentRunner.run()` is never called for role `Architect` or `UAT/Product` in that same call.
-- A `run()` call whose Architecture agent run reports `outcome: 'BLOCKED'` returns `status: 'STOPPED'` with `stopped.stage: 'architecture-review'` after routing to rework; `AgentRunner.run()` is never called for role `UAT/Product` in that same call.
-- A `run()` call that reaches Merge Readiness with `ready: false` (for example a pull-request base mismatch) returns `status: 'STOPPED'` with `stopped.stage: 'merge-readiness'`, `finalLifecycleState` remains `'MERGE_READY'`, and `ControlledMergeController.merge()` is never called.
-- Two `run()` calls for the same task with `request.runId` `'run-a'` and `'run-b'` produce entirely disjoint stage/agent-run `runId` sets.
-
-## Edge cases
-
-- A task whose `requiredReviewRoles` omits `Architect` never reaches an `architecture-agent`/`architecture-review` stage, because `QaReviewGate.review()`'s own returned `lifecycleState` routes straight past it — this module never inspects `requiredReviewRoles` itself to make that decision.
-- The Developer agent run reporting `outcome: 'FAIL'` or `'BLOCKED'` does not stop the run or skip Dev Validation; it is recorded in the returned `stages` list with that outcome, and Dev Validation's own deterministic result remains the sole authority for the Developer stage.
-- A genuine infrastructure failure from any wrapped module (for example `DeveloperStartError('LOCK_REJECTED')` on a lock already held by a different owner/run) propagates out of `run()` as that module's own typed error, not as an `OrchestrationRunResult` with `status: 'STOPPED'`.
-- Calling `run()` twice with the same `request.runId` against a task already past `IN_DEVELOPMENT` on the second call surfaces whatever error `DeveloperStartWorkflow.start()` itself raises for a task in a state it does not accept; this module performs no idempotency/resume handling of its own beyond what `DeveloperStartWorkflow.start()` already provides (full retry/resume/cancellation behavior is BOOT-028's own scope, not BOOT-027's).
-
-## Out-of-scope follow-up
-
-- **Retry, timeout, cancellation, and idempotent resume** of an interrupted orchestration run — explicitly BOOT-028 ("Retry, timeout, cancellation, and idempotency behavior").
-- **A real agent-provider adapter** to drive the Developer/QA/Architecture/UAT agent runs against an actual AI vendor or a local/manual desktop workflow — explicitly BOOT-029 ("Initial local/manual agent adapter").
-- **CLI wiring** (`agent orchestrate`) — deferred until a real adapter exists to drive it usefully; see "Known consumers" above.
-- **Complex parallel multi-task scheduling** — explicitly out of scope per issue #29; this module drives exactly one task through the pipeline per `run()` call, sequentially.
-
-## Change-impact checklist
-
-- [ ] Did a public interface/type/schema change?
-- [ ] Did a capability disappear or become conditional?
-- [ ] Did a behavioral range narrow or expand (for example, which stage a non-PASS outcome stops at, or whether a stage's outcome now gates a later stage it previously did not)?
-- [ ] Did an invariant change?
-- [ ] Did an edge-case behavior change?
-- [ ] Did dependency direction change?
-- [ ] Is the producer reachable range still contained by each relevant consumer accepted range?
-- [ ] Is each consumer-required reachable range still contained by the producer reachable range?
-
-If structural compatibility remains but semantic behavior changes (for example, which stage a given wrapped-module outcome stops at, or whether a stage's context package is still passed through unmodified), explicitly route the change for downstream semantic compatibility review — the CLI `orchestrate` command (BOOT-029+) and operator-observability reporting (BOOT-030+) are the named known consumers above.
+Unlimited retries; distributed/high-availability or parallel multi-task scheduling; a real local/vendor agent adapter (BOOT-029); CLI orchestration/status/diagnostics; general administrative repair (BOOT-032); product implementation; Bootstrap v1 cutover.

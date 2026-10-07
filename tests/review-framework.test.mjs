@@ -315,3 +315,254 @@ test("the recorded review-result evidence carries the reviewerId and contextPack
     assert.equal(record.payload.contextPackageId, result.contextPackageId);
   });
 });
+
+test("an exact retry reuses the current Developer and QA evidence after framework recreation", () => {
+  withFramework((framework, evidenceStore) => {
+    const developer = developerRequest();
+    const qa = qaRequest();
+    const firstDeveloper = framework.submit(developer);
+    const firstQa = framework.submit(qa);
+    const recreated = new ReviewFramework({
+      evidenceStore: new FileEvidenceStore(join(firstQa.evidenceLocation, "evidence"), { repositoryRoot }),
+      evidenceLocation: firstQa.evidenceLocation,
+    });
+    assert.deepEqual(recreated.submit(structuredClone(developer)), firstDeveloper);
+    assert.deepEqual(recreated.submit(structuredClone(qa)), firstQa);
+    assert.equal(evidenceStore.getHistory(firstDeveloper.evidenceLineageId).length, 1);
+    assert.equal(evidenceStore.getHistory(firstQa.evidenceLineageId).length, 1);
+  });
+});
+
+test("exact FAIL and BLOCKED retries reuse one durable record without erasing the failed judgment", () => {
+  for (const outcome of ["FAIL", "BLOCKED"]) {
+    withFramework((framework, evidenceStore) => {
+      framework.submit(developerRequest());
+      const request = qaRequest({
+        outcome,
+        findings: [{ findingId: "f1", severity: "HIGH", observed: "Broken behavior", expected: "Correct behavior" }],
+        nonPass: { reason: "Unmet requirement", remediation: "Repair the behavior" },
+      });
+      const first = framework.submit(request);
+      assert.deepEqual(framework.submit(structuredClone(request)), first);
+      assert.equal(first.blockingFindings.length, 1);
+      assert.equal(evidenceStore.getHistory(first.evidenceLineageId).length, 1);
+      assert.equal(evidenceStore.getCurrent(first.evidenceLineageId).payload.outcome, outcome);
+    });
+  }
+});
+
+test("retry identity comparison is independent of object key ordering", () => {
+  withFramework((framework, evidenceStore) => {
+    framework.submit(developerRequest());
+    const request = qaRequest();
+    const first = framework.submit(request);
+    const reordered = { ...request, details: Object.fromEntries(Object.entries(request.details).reverse()) };
+    assert.deepEqual(framework.submit(reordered), first);
+    assert.equal(evidenceStore.getHistory(first.evidenceLineageId).length, 1);
+  });
+});
+
+test("same review identity with a different payload fails closed without appending", () => {
+  withFramework((framework, evidenceStore) => {
+    framework.submit(developerRequest());
+    const request = qaRequest();
+    const first = framework.submit(request);
+    const conflicts = [
+      { reviewerId: "different-independent-reviewer" },
+      { occurredAt: "2026-09-09T12:00:01Z" },
+      { evidenceRefs: ["another-evidence-record"] },
+      { details: { ...request.details, acceptanceCriteriaScenarios: ["different scenario"] } },
+      { contextPackage: contextPackage("QA", { task: { taskId, title: "Changed context" } }) },
+      { findings: [{ findingId: "f1", severity: "LOW", observed: "Naming", expected: "Consistent naming" }] },
+      { outcome: "FAIL", nonPass: { reason: "Changed judgment", remediation: "Fix the regression" } },
+    ];
+    for (const conflict of conflicts) {
+      assert.throws(() => framework.submit({ ...request, ...conflict }), (error) =>
+        error instanceof ReviewFrameworkError && error.code === "REVIEW_ID_CONFLICT" && error.recoverable === false);
+    }
+    assert.equal(evidenceStore.getHistory(first.evidenceLineageId).length, 1);
+    assert.equal(evidenceStore.getCurrent(first.evidenceLineageId).payload.outcome, "PASS");
+  });
+});
+
+test("retrying a superseded PASS cannot hide a newer FAIL at the same revision", () => {
+  withFramework((framework, evidenceStore) => {
+    framework.submit(developerRequest());
+    const request = qaRequest();
+    const first = framework.submit(request);
+    const latest = framework.submit(qaRequest({
+      runId: "new-review-attempt", outcome: "FAIL",
+      nonPass: { reason: "Found a regression", remediation: "Fix before a new attempt" },
+    }));
+    assert.throws(() => framework.submit(request), (error) =>
+      error instanceof ReviewFrameworkError && error.code === "EVIDENCE_REJECTED" && error.recoverable === false);
+    const history = evidenceStore.getHistory(first.evidenceLineageId);
+    assert.equal(history.length, 2);
+    assert.equal(history[0].status, "SUPERSEDED");
+    assert.equal(history[1].payload.reviewId, latest.reviewId);
+    assert.equal(history[1].payload.outcome, "FAIL");
+  });
+});
+
+test("retrying a superseded Developer handoff cannot restore approval for an old revision", () => {
+  withFramework((framework, evidenceStore) => {
+    const request = developerRequest();
+    const first = framework.submit(request);
+    const nextRevision = "0000000000000000000000000000000000000000";
+    const latest = framework.submit(developerRequest({
+      runId: "new-development-attempt", revisionIdentity: nextRevision,
+      contextPackage: contextPackage("Developer", { sourceRevision: nextRevision }),
+    }));
+    assert.throws(() => framework.submit(request), (error) =>
+      error instanceof ReviewFrameworkError && error.code === "EVIDENCE_REJECTED");
+    assert.equal(evidenceStore.getHistory(first.evidenceLineageId).length, 2);
+    assert.equal(evidenceStore.getCurrent(first.evidenceLineageId).payload.reviewId, latest.reviewId);
+  });
+});
+
+test("a duplicate persisted review identity is rejected without appending another record", () => {
+  withFramework((framework, evidenceStore) => {
+    framework.submit(developerRequest());
+    const request = qaRequest();
+    const first = framework.submit(request);
+    evidenceStore.record(evidenceStore.getCurrent(first.evidenceLineageId).payload);
+    assert.throws(() => framework.submit(request), (error) =>
+      error instanceof ReviewFrameworkError && error.code === "EVIDENCE_REJECTED" && error.recoverable === false);
+    assert.equal(evidenceStore.getHistory(first.evidenceLineageId).length, 2);
+  });
+});
+
+test("a retry still enforces the current Developer handoff rather than trusting old QA evidence", () => {
+  withFramework((framework, evidenceStore) => {
+    framework.submit(developerRequest());
+    const request = qaRequest();
+    const first = framework.submit(request);
+    framework.submit(developerRequest({
+      runId: "changed-developer-handoff", outcome: "FAIL",
+      nonPass: { reason: "Validation regressed", remediation: "Fix validation" },
+    }));
+    assert.throws(() => framework.submit(request), (error) =>
+      error instanceof ReviewFrameworkError && error.code === "DEVELOPER_HANDOFF_NOT_PASSED");
+    assert.equal(evidenceStore.getHistory(first.evidenceLineageId).length, 1);
+  });
+});
+
+function evidenceStorePort(store, overrides) {
+  return {
+    record: (payload) => store.record(payload),
+    validate: (payload) => store.validate(payload),
+    getCurrent: (lineageId) => store.getCurrent(lineageId),
+    getHistory: (lineageId) => store.getHistory(lineageId),
+    checkRevision: (lineageId, revisionIdentity) => store.checkRevision(lineageId, revisionIdentity),
+    ...overrides,
+  };
+}
+
+test("retry rejects persisted payload, lineage, or sequence corruption instead of trusting its identity fields", () => {
+  const corruptions = [
+    (record) => ({ ...record, payload: { ...record.payload, schemaVersion: "9.9.9" } }),
+    (record) => ({ ...record, lineageId: "BOOT-999::role::QA" }),
+    (record) => ({ ...record, sequence: 0 }),
+    (record) => ({ ...record, sequence: 1.5 }),
+  ];
+  for (const corrupt of corruptions) {
+    withFramework((framework, evidenceStore) => {
+      framework.submit(developerRequest());
+      const request = qaRequest();
+      const first = framework.submit(request);
+      const corrupted = new ReviewFramework({
+        evidenceLocation: "test",
+        evidenceStore: evidenceStorePort(evidenceStore, {
+          getHistory: (lineageId) => evidenceStore.getHistory(lineageId).map(corrupt),
+        }),
+      });
+      assert.throws(() => corrupted.submit(request), (error) =>
+        error instanceof ReviewFrameworkError && error.code === "EVIDENCE_REJECTED" && error.recoverable === false);
+      assert.equal(evidenceStore.getHistory(first.evidenceLineageId).length, 1);
+    });
+  }
+});
+
+test("persisted readback must match the exact current review, not merely its revision", () => {
+  withFramework((framework, evidenceStore) => {
+    framework.submit(developerRequest());
+    const request = qaRequest();
+    const first = framework.submit(request);
+    const current = evidenceStore.getCurrent(first.evidenceLineageId);
+    const replacements = [
+      { ...current, status: "SUPERSEDED" },
+      { ...current, sequence: current.sequence + 1 },
+      { ...current, payload: { ...current.payload, reviewId: `${current.payload.reviewId}:replacement` } },
+    ];
+    for (const record of replacements) {
+      const changedReadback = new ReviewFramework({
+        evidenceLocation: "test",
+        evidenceStore: evidenceStorePort(evidenceStore, { checkRevision: () => ({ status: "CURRENT", record }) }),
+      });
+      assert.throws(() => changedReadback.submit(request), (error) =>
+        error instanceof ReviewFrameworkError && error.code === "EVIDENCE_REJECTED" && error.recoverable === false);
+    }
+    assert.equal(evidenceStore.getHistory(first.evidenceLineageId).length, 1);
+  });
+});
+
+test("retry resumes from evidence persisted before an interrupted acknowledgement without appending", () => {
+  withFramework((framework, evidenceStore) => {
+    framework.submit(developerRequest());
+    const request = qaRequest();
+    const interruption = Object.assign(new Error("Connection lost after durable append"), { code: "EIO" });
+    const interrupted = new ReviewFramework({
+      evidenceLocation: "test",
+      evidenceStore: evidenceStorePort(evidenceStore, {
+        record(payload) {
+          const recorded = evidenceStore.record(payload);
+          assert.equal(recorded.ok, true);
+          throw interruption;
+        },
+      }),
+    });
+    assert.throws(() => interrupted.submit(request), (error) => error === interruption);
+    const result = framework.submit(request);
+    assert.equal(result.evidenceSequence, 1);
+    assert.equal(result.outcome, "PASS");
+    assert.equal(evidenceStore.getHistory(result.evidenceLineageId).length, 1);
+  });
+});
+
+test("retry refuses invalid current Developer handoff evidence even when matching QA evidence exists", () => {
+  const corruptions = [
+    (record) => ({ ...record, status: "SUPERSEDED" }),
+    (record) => ({ ...record, payload: { ...record.payload, reviewerId: undefined } }),
+    (record) => ({ ...record, payload: { ...record.payload, taskId: "BOOT-999" } }),
+  ];
+  for (const corrupt of corruptions) {
+    withFramework((framework, evidenceStore) => {
+      framework.submit(developerRequest());
+      const request = qaRequest();
+      const first = framework.submit(request);
+      const changedHandoff = new ReviewFramework({
+        evidenceLocation: "test",
+        evidenceStore: evidenceStorePort(evidenceStore, {
+          getCurrent: (lineageId) => corrupt(evidenceStore.getCurrent(lineageId)),
+        }),
+      });
+      assert.throws(() => changedHandoff.submit(request), (error) =>
+        error instanceof ReviewFrameworkError && error.code === "EVIDENCE_REJECTED" && error.recoverable === false);
+      assert.equal(evidenceStore.getHistory(first.evidenceLineageId).length, 1);
+    });
+  }
+});
+
+test("exact retry comparison preserves JSON __proto__ keys in the compiled context identity", () => {
+  withFramework((framework, evidenceStore) => {
+    framework.submit(developerRequest());
+    const request = qaRequest();
+    const first = framework.submit({ ...request, contextPackage: contextPackage("QA", {
+      task: JSON.parse('{"taskId":"BOOT-017","__proto__":{"requirement":"first"}}'),
+    }) });
+    assert.throws(() => framework.submit({ ...request, contextPackage: contextPackage("QA", {
+      task: JSON.parse('{"taskId":"BOOT-017","__proto__":{"requirement":"changed"}}'),
+    }) }), (error) => error instanceof ReviewFrameworkError && error.code === "REVIEW_ID_CONFLICT");
+    assert.equal(evidenceStore.getHistory(first.evidenceLineageId).length, 1);
+  });
+});

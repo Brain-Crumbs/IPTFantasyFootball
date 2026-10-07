@@ -1,12 +1,14 @@
 # Generic Review Framework and Structured Findings
 
-**Task:** BOOT-017 / issue #19
+**Tasks:** BOOT-017 / issue #19; BOOT-028 / issue #30
 **Parent architecture:** issue #1
 **Module ID:** `control-plane.review-framework`
+**Module version:** `2.0.0`
+**Manifest:** `./module-contract.json`
 
 ## Identity and purpose
 
-`control-plane.review-framework` is the role-independent review substrate used by the Developer's own structured handoff and by the QA, Architecture, and UAT/Product review workflows (BOOT-018 through BOOT-020). It defines no role-specific judgment logic of its own: a caller has already decided a PASS/FAIL/BLOCKED outcome and structured findings for one role; the framework's job is to bind that judgment to the exact task/revision/context package under review, enforce the cross-role invariants in `docs/ROLE_MODEL.md`, and persist the result through the unmodified BOOT-015 evidence store so every attempt remains separately auditable.
+`control-plane.review-framework` is the role-independent review substrate used by the Developer's own structured handoff and by the QA, Architecture, and UAT/Product review workflows (BOOT-018 through BOOT-020). It defines no role-specific judgment logic of its own: a caller has already decided a PASS/FAIL/BLOCKED outcome and structured findings for one role; the framework's job is to bind that judgment to the exact task/revision/context package under review, enforce the cross-role invariants in `docs/ROLE_MODEL.md`, and persist the result through the unmodified BOOT-015 evidence store so distinct attempts remain separately auditable and exact retries do not append duplicate records.
 
 The framework does not run QA/Architecture/UAT logic, does not invoke an agent provider, and does not compute merge readiness or mutate lifecycle state. Those remain owned by BOOT-018 through BOOT-025.
 
@@ -15,6 +17,7 @@ The framework does not run QA/Architecture/UAT logic, does not invoke an agent p
 Primary API:
 
 - `new ReviewFramework(dependencies)`
+- `ReviewFrameworkEvidenceStore { record, validate, getHistory, getCurrent, checkRevision }` — all five operations are required; `validate` checks payload schema without writing and `getHistory` exposes the complete role lineage.
 - `ReviewFramework.submit(request: ReviewSubmissionRequest): ReviewSubmissionResult`
 - `ReviewSubmissionRequest { taskId, role, revisionIdentity, reviewerId, runId, contextPackage, outcome, details, findings, evidenceRefs, nonPass?, occurredAt }` — the review invocation envelope: `role` is one of the five `docs/ROLE_MODEL.md` roles, `reviewerId` identifies the actor/session issuing the judgment, and `contextPackage` is the exact BOOT-012 `ContextPackage` the reviewer was handed.
 - `ReviewFinding { findingId, severity, observed, expected, requirementRef?, contractRef?, evidenceRef?, remediation? }`
@@ -22,7 +25,7 @@ Primary API:
 - `BLOCKING_FINDING_SEVERITIES` — `["MEDIUM", "HIGH", "CRITICAL"]`; `isBlockingSeverity(severity)`, `blockingFindings(findings)`
 - `computeContextPackageId(contextPackage): string` — deterministic SHA-256 content identity of a context package
 - `ReviewSubmissionResult { reviewId, taskId, role, outcome, revisionIdentity, contextPackageId, blockingFindings, evidenceLineageId, evidenceSequence, recordedAt, evidenceLocation }`
-- `ReviewFrameworkError` — structured failure with a stable `code`
+- `ReviewFrameworkError` — structured failure with a stable `code`, including `REVIEW_ID_CONFLICT` for changed content under an existing identity and `EVIDENCE_REJECTED` for invalid or superseded evidence
 - `createLocalReviewFramework(repositoryRoot?)` — local composition root, mirroring BOOT-016's `createLocalDeveloperValidationGate`
 
 `agent review` remains reserved (BOOT-018 through BOOT-021 own the CLI entry points and role-specific context/finding generation that will call this framework); BOOT-017 ships the library boundary those commands compose over.
@@ -47,7 +50,24 @@ Every `ReviewFinding` carries a `severity`. `MEDIUM`, `HIGH`, and `CRITICAL` are
 
 ## Revision-bound, append-only persistence
 
-Every accepted submission is persisted as an `ipt.review-result` record through the unmodified BOOT-015 `EvidenceStore`, keyed by `reviewResultLineageId(taskId, role)`. As with BOOT-016, the framework never trusts the in-memory submission alone: after `record()` succeeds it reads the persisted record back through `checkRevision` and only returns success once that read confirms a `CURRENT` record bound to the exact `revisionIdentity` submitted. Because the store is append-only and sequence-numbered per lineage, a repeated review attempt for the same task/role (a rerun, a resubmission after rework) creates a new, separately sequenced, independently auditable record rather than overwriting the prior one; `getHistory` still exposes every prior attempt as `SUPERSEDED`.
+A logical review identity is `${taskId}:${role}:${revisionIdentity}:${runId}`. A fresh identity is schema-validated and appended as an `ipt.review-result` record through the unchanged BOOT-015 store, under `reviewResultLineageId(taskId, role)`. Before writing, `submit()` searches the complete lineage history for that identity:
+
+- No match: append a new record.
+- One match with the identical canonical payload: reuse its original evidence sequence only if an independent `checkRevision` confirms that exact sequence/payload is still `CURRENT` for the requested revision. All fields, including `reviewerId`, context content hash, details, findings, references, and `occurredAt`, are part of payload equality; property ordering is not.
+- One match with changed content: reject as `REVIEW_ID_CONFLICT`; use a new `runId` for an intentional new judgment.
+- A superseded identity, invalid stored record, multiple records with the same identity, or a readback returning a different current review: reject as `EVIDENCE_REJECTED`. An old PASS must never be appended again over a newer FAIL, even at the same source revision.
+
+The framework validates the incoming payload, the current Developer handoff, and any reused/read-back record through the injected evidence store. It checks lineage and positive safe-integer sequence, verifies current Developer task/role/reviewer identity, and retains all revision/context/self-approval/PASS-with-blocking-finding rules. Revision equality alone is insufficient evidence of an exact retry.
+
+A genuine new attempt uses a distinct run identity and appends a new sequence; prior records stay readable as `SUPERSEDED`. An exact retry appends nothing and returns its original evidence reference. Callers must therefore retain the complete accepted payload, especially the original timestamp, instead of regenerating it on recovery.
+
+## BOOT-028 compatibility and migration
+
+Module `2.0.0` adds required `validate` and `getHistory` methods to `ReviewFrameworkEvidenceStore`; custom stores/test doubles must implement them faithfully. Existing `FileEvidenceStore` already exposes both and needs no schema migration. The evidence schema remains `ipt.review-result` `1.1.0`; the module version bump reflects the injected port and changed duplicate-submission behavior, not a stored-schema bump.
+
+QA/Architecture/UAT gates and Developer handoff producers must distinguish an exact retry from a new attempt. BOOT-028 orchestration caches provider results and submits the original run identity/timestamp so an interrupted gate can reuse current evidence. BOOT-021 rework still sees every distinct review attempt and supersession; it must not require another record for an identical retry. Existing duplicate historical identities or malformed legacy handoffs fail closed and are not rewritten or repaired automatically.
+
+This read-check-write protocol is not a distributed compare-and-swap store. Callers retain their existing per-task gate exclusion; orchestration adds repository-wide run exclusion. The framework does not claim safe arbitrary concurrent standalone submissions across writers that bypass those locks.
 
 ## Schema change: `ipt.review-result` 1.0.0 → 1.1.0
 

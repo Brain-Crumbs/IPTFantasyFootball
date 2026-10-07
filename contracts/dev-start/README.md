@@ -1,8 +1,10 @@
 # Developer Task-Start Workflow
 
-**Task:** BOOT-013 / issue #15  
-**Parent architecture:** issue #1  
+**Tasks:** BOOT-013 / issue #15; BOOT-028 / issue #30
+**Parent architecture:** issue #1
 **Module ID:** `control-plane.dev-start`
+
+**Module version:** `1.1.0`
 
 ## Identity and purpose
 
@@ -21,7 +23,7 @@ During the manual bootstrap regime, GitHub issue #1 and the explicitly assigned 
 Primary API:
 
 - `DeveloperStartWorkflow.start(request): DeveloperStartResult`
-- `DeveloperStartRequest { ownerId, runId, occurredAt }`
+- `DeveloperStartRequest { ownerId, runId, occurredAt, expectedTaskId? }`
 - `DeveloperStartResult { kind, taskId, title, canonicalBranch, sourceRevision, lifecycleState, branchCreated, assignment, acceptanceCriteria, contextLocation, context, nextInstructions }`
 - `DeveloperStartStateStore.get/save` — lifecycle persistence boundary used by start orchestration
 - `DeveloperStartContextSource.artifactsFor` — repository-artifact discovery boundary
@@ -56,6 +58,12 @@ The identity `(taskId, ownerId, runId, lockId, canonicalBranch)` is stable for a
 
 A different owner/run cannot adopt the active lock. Expired/stale assignments remain subject to the explicit recovery semantics owned by `control-plane.assignment-lock`; `start` does not silently steal them.
 
+### Strict resume guard (BOOT-028)
+
+`expectedTaskId`, when present, must match the task-ID pattern `^[A-Z]+-[0-9]{3,}$`; malformed input is `INVALID_REQUEST`. The workflow first resolves the existing assignment owned by this exact owner/run. If none exists or its task differs from `expectedTaskId`, it returns `RECOVERY_REQUIRED` before selecting work, acquiring a new assignment, or changing a branch. A matching assignment still passes every normal lifecycle, lock, branch, revision, and context check. The guard is not permission to adopt or recover someone else's assignment.
+
+The BOOT-028 orchestrator uses this guard when an interrupted task remains `IN_DEVELOPMENT`, before any resumed Developer provider call or validation. This additive `1.1.0` capability does not change fresh starts when `expectedTaskId` is omitted and adds no CLI argument. Callers that retain a task binding should use the guard rather than assume a generic owner/run retry cannot select new work after an assignment disappears.
+
 ## Context behavior
 
 The local context source discovers requirement records and module contracts from repository JSON artifacts, then delegates all role-policy enforcement and required-artifact checks to `control-plane.context-compiler`. Artifact content is read from the exact resolved source revision (via Git), not the working tree, so a locally dirty requirement or contract file cannot be labeled with a `sourceRevision` it does not actually belong to.
@@ -85,7 +93,7 @@ A pre-commit lock is released on abort only when this invocation is the one that
 ## Known consumers
 
 - the BOOT-014/016 developer validation flow will consume the active task/revision/assignment identity established here;
-- the BOOT-027 orchestrator can use this workflow as its start-only Developer entry boundary;
+- the BOOT-027/028 orchestrator uses this workflow as its start-only Developer entry and strict-resume revalidation boundary; it accepts `RECOVERY_REQUIRED` when the bound assignment no longer exists instead of selecting another task;
 - the CLI exposes the human/agent command without embedding agent-provider logic in this module.
 
 ## Out-of-scope follow-up

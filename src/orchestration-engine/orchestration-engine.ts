@@ -1,19 +1,22 @@
-import type { AgentProvider, AgentRunnerRole, AgentRunRequest, AgentRunResult, AgentToolPermissionPolicy } from "../agent-provider/index.js";
-import { AgentRunner } from "../agent-provider/index.js";
+import { join } from "node:path";
+import type { LifecycleRecord } from "../lifecycle/index.js";
+import { FileOrchestrationRunStore, type OrchestrationRunJournal, type OrchestrationRunStore } from "./run-store.js";
+import type { AgentProvider, AgentRunnerRole, AgentRunResult, AgentToolPermissionPolicy } from "../agent-provider/index.js";
+import { AgentProviderError, AgentRunner } from "../agent-provider/index.js";
 import type { ArchitectureReviewGate } from "../architecture-review/index.js";
 import { createLocalArchitectureReviewGate } from "../architecture-review/index.js";
 import type { ContextPackage } from "../context-compiler/index.js";
 import type { ControlledMergeController } from "../controlled-merge/index.js";
 import { createLocalControlledMergeController } from "../controlled-merge/index.js";
 import type { DeveloperStartResult, DeveloperStartWorkflow } from "../dev-start/index.js";
-import { createLocalDeveloperStartWorkflow } from "../dev-start/index.js";
+import { FileDeveloperStartStateStore, LOCAL_AGENT_STATE_RELATIVE_PATH, createLocalDeveloperStartWorkflow } from "../dev-start/index.js";
 import type { DeveloperValidationGate } from "../dev-validation/index.js";
 import { createLocalDeveloperValidationGate } from "../dev-validation/index.js";
 import type { MergeReadinessPolicyEngine, FetchLike } from "../merge-readiness/index.js";
 import { createLocalMergeReadinessPolicyEngine } from "../merge-readiness/index.js";
 import type { QaReviewGate } from "../qa-review/index.js";
 import { createLocalQaReviewGate } from "../qa-review/index.js";
-import type { ReviewFinding, ReviewNonPassDetail, ReviewOutcome } from "../review-framework/index.js";
+import { computeContextPackageId } from "../review-framework/index.js";
 import type { ReviewReworkGate } from "../review-rework/index.js";
 import { createLocalReviewReworkGate } from "../review-rework/index.js";
 import type { TaskLifecycleState, TaskRegistry } from "../task-registry/index.js";
@@ -22,7 +25,7 @@ import type { UatReviewGate } from "../uat-review/index.js";
 import { createLocalUatReviewGate } from "../uat-review/index.js";
 
 /**
- * BOOT-027 sequential orchestration engine. Coordinates the full task
+ * BOOT-027/028 sequential orchestration engine with durable resume. Coordinates the full task
  * lifecycle — Developer start, a Developer agent run, deterministic Dev
  * Validation, QA, Architecture, UAT, Merge Readiness, and Controlled Merge —
  * strictly by calling the already-authoritative BOOT-013/016/018/019/020/021/
@@ -66,14 +69,14 @@ export type OrchestrationStageId = (typeof ORCHESTRATION_STAGE_IDS)[number];
 export type OrchestrationStageOutcome = "PASS" | "FAIL" | "BLOCKED";
 
 /**
- * One immutable entry in an orchestration run's audit trail. Every stage
- * (agent-driven or deterministic) that actually ran gets exactly one record,
+ * One stage summary in an orchestration run's persisted report. Each reported stage
+ * (agent-driven or deterministic) has at most one record; an interrupted
+ * journal write can omit a stage whose authoritative gate already committed,
  * in the order it ran, carrying its own distinct `runId` and — for an
  * agent-driven stage — the `role` its compiled context package was bound to.
  * `evidenceRefs` reproduces whatever evidence lineage the wrapped module
  * itself already produced (a validation-evidence check, a review-result
- * lineage, a rework/merge evidence record); this module writes no evidence
- * of its own.
+ * lineage, a rework/merge evidence record); the journal itself is not evidence authority.
  */
 export interface OrchestrationStageRecord {
   readonly stage: OrchestrationStageId;
@@ -102,8 +105,9 @@ export interface OrchestrationStopDetail {
  * to advance a task is an expected, first-class control-plane outcome, not
  * an orchestration fault. Only a genuine infrastructure/precondition failure
  * from a wrapped module (a malformed request, an IO failure, a stale lock, a
- * provider timeout, etc.) propagates as a thrown error, unchanged and
- * unnormalized, from whichever module raised it.
+ * provider timeout, etc.) throws a typed error; explicitly recoverable
+ * provider failures alone receive bounded retries. Overall interruption is
+ * normalized as OrchestrationError and recorded in the durable journal.
  */
 export interface OrchestrationRunResult {
   readonly taskId: string;
@@ -133,9 +137,39 @@ export interface OrchestrationRunRequest {
    * start stage's own `occurredAt`; every later stage calls the injected
    * `now()` clock (or the default wall clock) for its own `occurredAt`. */
   readonly occurredAt: string;
+  /** Defaults to runId. A key binds one immutable owner/run identity. */
+  readonly idempotencyKey?: string;
+  readonly signal?: AbortSignal;
+  /** Overall cooperative deadline; active state-changing gates drain safely. */
+  readonly timeoutMs?: number;
 }
 
-export type OrchestrationErrorCode = "INVALID_REQUEST";
+export type OrchestrationErrorCode = "INVALID_REQUEST" | "IDEMPOTENCY_CONFLICT" | "RECOVERY_REQUIRED" | "RETRY_EXHAUSTED" | "CANCELLED" | "TIMEOUT";
+
+export interface OrchestrationRetryPolicy {
+  /** Total provider attempts per stage/key, including the first, across resumes (1..10). */
+  readonly maxAttempts: number;
+  readonly delayMs: number;
+}
+
+export interface OrchestrationFailure {
+  readonly kind: "INFRASTRUCTURE" | "CANCELLED" | "PRECONDITION";
+  readonly code: string;
+  readonly retryable: boolean;
+}
+
+/** Never classify a role FAIL/BLOCKED or validator failure as infrastructure. */
+export function classifyOrchestrationFailure(error: unknown): OrchestrationFailure {
+  const code = error instanceof Error && "code" in error ? String(error.code) : "UNKNOWN_ERROR";
+  if (code === "CANCELLED") return { kind: "CANCELLED", code, retryable: false };
+  if (error instanceof AgentProviderError && error.recoverable && (code === "TIMEOUT" || code === "PROVIDER_ERROR")) {
+    return { kind: "INFRASTRUCTURE", code, retryable: true };
+  }
+  if (["STATE_IO_FAILED", "RUN_STORE_IO_FAILED", "MERGE_PROVIDER_FAILED", "TIMEOUT", "RETRY_EXHAUSTED"].includes(code)) {
+    return { kind: "INFRASTRUCTURE", code, retryable: false };
+  }
+  return { kind: "PRECONDITION", code, retryable: false };
+}
 
 export class OrchestrationError extends Error {
   readonly code: OrchestrationErrorCode;
@@ -149,40 +183,11 @@ export class OrchestrationError extends Error {
   }
 }
 
-/** Structurally identical across QA/Architecture/UAT (`{taskId}` in,
- * `{taskId, revision, context}` out); expressed once here so one generic
- * helper can drive all three gates without redeclaring their nominal types. */
-interface ReviewContextResult {
-  readonly taskId: string;
-  readonly revision: string;
-  readonly context: ContextPackage;
-}
-
-interface ReviewRequest {
-  readonly taskId: string;
-  readonly reviewerId: string;
-  readonly runId: string;
-  readonly occurredAt: string;
-  readonly context: ContextPackage;
-  readonly outcome: ReviewOutcome;
-  readonly findings: readonly ReviewFinding[];
-  readonly details: Readonly<Record<string, unknown>>;
-  readonly evidenceRefs?: readonly string[];
-  readonly nonPass?: ReviewNonPassDetail;
-}
-
-interface ReviewResult {
-  readonly taskId: string;
-  readonly outcome: ReviewOutcome;
-  readonly lifecycleState: TaskLifecycleState;
-  readonly revision: string;
-  readonly reviewId: string;
-  readonly blockingFindings: readonly ReviewFinding[];
-  readonly evidenceLineageId: string;
-  readonly evidenceSequence: number;
-}
-
 export interface OrchestrationDependencies {
+  /** Read-only authoritative lifecycle view; never written by the orchestrator. */
+  readonly lifecycleState: { get(taskId: string): LifecycleRecord | null };
+  readonly runStore: OrchestrationRunStore;
+  readonly retryPolicy?: OrchestrationRetryPolicy;
   readonly developerStart: Pick<DeveloperStartWorkflow, "start">;
   readonly developerValidation: Pick<DeveloperValidationGate, "validate">;
   /** The same BOOT-011 task registry every wrapped gate already reads its
@@ -293,470 +298,301 @@ function freezeStage(record: OrchestrationStageRecord): OrchestrationStageRecord
 }
 
 function validateRunRequest(request: OrchestrationRunRequest): void {
-  if (request.ownerId.trim().length === 0 || request.ownerId !== request.ownerId.trim()) {
+  if (request === null || typeof request !== "object") {
+    throw new OrchestrationError("INVALID_REQUEST", "Orchestration request must be an object.");
+  }
+  if (typeof request.ownerId !== "string" || request.ownerId.trim().length === 0 || request.ownerId !== request.ownerId.trim()) {
     throw new OrchestrationError("INVALID_REQUEST", "Orchestration ownerId must be non-empty and trimmed.");
   }
-  if (request.runId.trim().length === 0 || request.runId !== request.runId.trim()) {
+  if (typeof request.runId !== "string" || request.runId.trim().length === 0 || request.runId !== request.runId.trim()) {
     throw new OrchestrationError("INVALID_REQUEST", "Orchestration runId must be non-empty and trimmed.");
   }
-  if (!isValidOrchestrationRfc3339DateTime(request.occurredAt)) {
+  if (request.signal !== undefined && (request.signal === null ||
+      typeof request.signal.aborted !== "boolean" || typeof request.signal.addEventListener !== "function" ||
+      typeof request.signal.removeEventListener !== "function")) {
+    throw new OrchestrationError("INVALID_REQUEST", "Orchestration signal must be an AbortSignal.");
+  }
+  if (typeof request.occurredAt !== "string" || !isValidOrchestrationRfc3339DateTime(request.occurredAt)) {
     throw new OrchestrationError("INVALID_REQUEST", "Orchestration occurredAt must be an RFC 3339 date-time.");
   }
 }
 
-type ReviewStageOutcome =
-  | { readonly stopped: OrchestrationRunResult }
-  | { readonly stopped: null; readonly revision: string; readonly lifecycleState: TaskLifecycleState };
+interface RunExecution {
+  readonly request: OrchestrationRunRequest;
+  readonly journal: OrchestrationRunJournal;
+  readonly signal: AbortSignal;
+  readonly check: () => void;
+  readonly now: () => string;
+  readonly stages: OrchestrationStageRecord[];
+}
 
 export class SequentialOrchestrationEngine {
   constructor(private readonly dependencies: OrchestrationDependencies) {}
 
   async run(request: OrchestrationRunRequest): Promise<OrchestrationRunResult> {
     validateRunRequest(request);
-
-    const now = this.dependencies.now ?? (() => new Date().toISOString());
-    const actorIdFor = this.dependencies.actorIdFor ?? defaultActorIdFor;
-    const developerActorId = actorIdFor("Developer", request.ownerId);
-    const stages: OrchestrationStageRecord[] = [];
-
-    // 1. Developer start (BOOT-013) — deterministic: selects/resumes the
-    // task, acquires the lock, ensures the branch, and compiles the
-    // Developer-scoped context package. No agent judgment.
-    const startRunId = stageRunId(request.runId, "developer-start");
-    const startStartedAt = now();
-    const startResult: DeveloperStartResult = this.dependencies.developerStart.start({
-      ownerId: developerActorId,
-      runId: startRunId,
-      occurredAt: request.occurredAt,
-    });
-    stages.push(
-      freezeStage({
-        stage: "developer-start",
-        role: "Developer",
-        runId: startRunId,
-        outcome: "PASS",
-        startedAt: startStartedAt,
-        finishedAt: now(),
-        summary: `${startResult.kind === "resumed" ? "Resumed" : "Started"} ${startResult.taskId} on '${startResult.canonicalBranch}' at ${startResult.sourceRevision}.`,
-        evidenceRefs: [],
-        lifecycleState: startResult.lifecycleState,
-      }),
-    );
-
-    const taskId = startResult.taskId;
-
-    // 2. Developer agent run (BOOT-026) — the Developer's own self-reported
-    // outcome is never treated as authoritative (CONSTITUTION.md: "AI must
-    // not be the authority that decides whether deterministic gates
-    // passed"); it is recorded for traceability only. Dev Validation below
-    // is the sole authority for the Developer stage, so the run always
-    // proceeds to it regardless of what this stage reports.
-    const developerAgentRunId = stageRunId(request.runId, "developer-agent");
-    const developerAgentStartedAt = now();
-    const developerAgentResult = await this.dependencies.agentRunner.run(
-      this.agentRequest("Developer", taskId, startResult.sourceRevision, startResult.context, developerAgentRunId, developerActorId),
-    );
-    stages.push(
-      freezeStage({
-        stage: "developer-agent",
-        role: "Developer",
-        runId: developerAgentRunId,
-        outcome: developerAgentResult.outcome,
-        startedAt: developerAgentStartedAt,
-        finishedAt: now(),
-        summary: summarizeAgentResult("Developer", developerAgentResult),
-        evidenceRefs: developerAgentResult.evidenceRefs,
-      }),
-    );
-
-    // 3. Dev Validation (BOOT-016) — deterministic build/test gate; the sole
-    // authority for whether the Developer stage passed.
-    const validationRunId = stageRunId(request.runId, "dev-validation");
-    const validationStartedAt = now();
-    const validationResult = await this.dependencies.developerValidation.validate({
-      taskId,
-      actorId: developerActorId,
-      runId: validationRunId,
-      occurredAt: now(),
-    });
-    stages.push(
-      freezeStage({
-        stage: "dev-validation",
-        role: null,
-        runId: validationRunId,
-        outcome: validationResult.outcome,
-        startedAt: validationStartedAt,
-        finishedAt: now(),
-        summary:
-          validationResult.outcome === "PASS"
-            ? `Developer validation PASS at ${validationResult.revision}.`
-            : `Developer validation FAILED: ${validationResult.failedCheckIds.join(", ") || "see checks"}.`,
-        evidenceRefs: validationResult.checks.map((check) => `${check.evidenceLineageId}@${check.evidenceSequence}`),
-        lifecycleState: validationResult.lifecycleState,
-      }),
-    );
-    if (validationResult.outcome !== "PASS") {
-      // No BOOT-021 rework routing here by design: DEV_VALIDATION_FAILED is
-      // explicitly out of ReviewReworkGate's scope (only QA_FAILED/
-      // ARCHITECTURE_FAILED/UAT_FAILED are reworkable — see
-      // src/review-rework/review-rework.ts), so this orchestrator does not
-      // invent that transition itself. Nor is "re-run orchestration" itself
-      // an executable retry path from here: `DeveloperStartWorkflow.start()`
-      // (this orchestrator's own first stage) only accepts a task currently
-      // in PLANNED/READY/ASSIGNED/IN_DEVELOPMENT — see its
-      // `TASK_STATE_NOT_STARTABLE` check in src/dev-start/dev-start.ts — and
-      // rejects DEV_VALIDATION_FAILED the same as any other unsupported
-      // state, so a bare `run()` retry cannot resume this task either. The
-      // only lifecycle rule that can move a task out of
-      // DEV_VALIDATION_FAILED (`DEV_VALIDATION_FAILED -> REWORK_REQUIRED` in
-      // `src/lifecycle/state-machine.ts`) is therefore not reachable through
-      // any module this orchestrator calls; the remediation says so plainly
-      // instead of naming a retry this module cannot actually perform.
-      return this.stoppedResult(
-        taskId,
-        request.runId,
-        stages,
-        validationResult.lifecycleState,
-        "dev-validation",
-        `Developer validation failed: ${validationResult.failedCheckIds.join(", ") || "see checks"}.`,
-        "No automated recovery is available from this orchestrator: DEV_VALIDATION_FAILED accepts no further transition through Developer start, QA, Architecture, UAT, or review-rework (all require a different starting state). Fix the failing required validators on the task branch, then use an explicit out-of-band lifecycle transition to REWORK_REQUIRED (or an equivalent manual recovery) before development, and therefore orchestration, can resume this task.",
-      );
+    const key = request.idempotencyKey ?? request.runId;
+    const policy = this.dependencies.retryPolicy ?? { maxAttempts: 3, delayMs: 100 };
+    if (typeof key !== "string" || !key.trim() || key !== key.trim() ||
+        !Number.isInteger(policy.maxAttempts) || policy.maxAttempts < 1 || policy.maxAttempts > 10 ||
+        !Number.isInteger(policy.delayMs) || policy.delayMs < 0 || policy.delayMs > 60_000 ||
+        (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1 || request.timeoutMs > 2_147_483_647))) {
+      throw new OrchestrationError("INVALID_REQUEST", "Invalid idempotency key, deadline, or bounded retry policy.");
     }
-
-    // 4-6. QA/Architecture/UAT (BOOT-018/019/020) — invoked only for the
-    // review roles the task's own `requiredReviewRoles` actually names, read
-    // from the same BOOT-011 task registry every one of these gates already
-    // reads that field from itself (e.g. `nextStateAfterQaPass()` in
-    // src/qa-review/qa-review.ts) — never QA unconditionally. Calling a
-    // review gate whose role the task does not require would not only waste
-    // an agent run and persist an unwanted review-result record, it is also
-    // guaranteed to be rejected by the lifecycle state machine itself
-    // (`REVIEW_SEQUENCE_MISMATCH` — see `nextReviewTarget()` in
-    // src/lifecycle/state-machine.ts) *after* that unwanted record has
-    // already been persisted as a side effect. This only decides which gate
-    // to call; it never reimplements what a gate's own PASS/FAIL/BLOCKED
-    // judgment routes to next (still delegated entirely to each stage's own
-    // `lifecycleState` result below, exactly as before QA/Architecture/UAT
-    // has run).
-    const activeTask = this.dependencies.taskRegistry.get(taskId);
-    if (activeTask === undefined) {
-      throw new Error(
-        `Orchestration invariant violated: task '${taskId}' was resolved by Developer start but is absent from the task registry.`,
-      );
-    }
-    const requiredRoles = new Set(activeTask.requiredReviewRoles);
-    let lifecycleState: TaskLifecycleState = validationResult.lifecycleState;
-
-    if (requiredRoles.has("QA")) {
-      const qaOutcome = await this.runReviewStage({
-        role: "QA",
-        agentStage: "qa-agent",
-        reviewStage: "qa-review",
-        taskId,
-        request,
-        reviewerId: actorIdFor("QA", request.ownerId),
-        now,
-        stages,
-        prepareContext: (req) => this.dependencies.qaReview.prepareContext(req),
-        review: (req) => this.dependencies.qaReview.review(req),
-      });
-      if (qaOutcome.stopped !== null) return qaOutcome.stopped;
-      lifecycleState = qaOutcome.lifecycleState;
-    }
-
-    // Architecture — whenever QA's own routing target was
-    // ARCHITECTURE_REVIEW, or (QA not required, so lifecycleState is still
-    // DEV_VALIDATED) the task's own requiredReviewRoles names Architect as
-    // the first required review.
-    if (lifecycleState === "ARCHITECTURE_REVIEW" || (lifecycleState === "DEV_VALIDATED" && requiredRoles.has("Architect"))) {
-      const architectureOutcome = await this.runReviewStage({
-        role: "Architect",
-        agentStage: "architecture-agent",
-        reviewStage: "architecture-review",
-        taskId,
-        request,
-        reviewerId: actorIdFor("Architect", request.ownerId),
-        now,
-        stages,
-        prepareContext: (req) => this.dependencies.architectureReview.prepareContext(req),
-        review: (req) => this.dependencies.architectureReview.review(req),
-      });
-      if (architectureOutcome.stopped !== null) return architectureOutcome.stopped;
-      lifecycleState = architectureOutcome.lifecycleState;
-    }
-
-    // UAT — whenever the prior stage's own routing target was UAT_REVIEW, or
-    // (QA and Architecture both not required, so lifecycleState is still
-    // DEV_VALIDATED) the task's own requiredReviewRoles names UAT/Product as
-    // the first required review. An Architecture FAIL/BLOCKED above already
-    // returned a STOPPED result, so this line is never reached in that case.
-    if (lifecycleState === "UAT_REVIEW" || (lifecycleState === "DEV_VALIDATED" && requiredRoles.has("UAT/Product"))) {
-      const uatOutcome = await this.runReviewStage({
-        role: "UAT/Product",
-        agentStage: "uat-agent",
-        reviewStage: "uat-review",
-        taskId,
-        request,
-        reviewerId: actorIdFor("UAT/Product", request.ownerId),
-        now,
-        stages,
-        prepareContext: (req) => this.dependencies.uatReview.prepareContext(req),
-        review: (req) => this.dependencies.uatReview.review(req),
-      });
-      if (uatOutcome.stopped !== null) return uatOutcome.stopped;
-      lifecycleState = uatOutcome.lifecycleState;
-    }
-
-    // 7. Merge Readiness (BOOT-024) — deterministic; no agent invocation.
-    const mergeReadinessRunId = stageRunId(request.runId, "merge-readiness");
-    const mergeReadinessStartedAt = now();
-    const readiness = await this.dependencies.mergeReadiness.evaluate({ taskId });
-    stages.push(
-      freezeStage({
-        stage: "merge-readiness",
-        role: null,
-        runId: mergeReadinessRunId,
-        outcome: readiness.ready ? "PASS" : "FAIL",
-        startedAt: mergeReadinessStartedAt,
-        finishedAt: now(),
-        summary: readiness.ready
-          ? `Merge readiness satisfied for PR #${String(readiness.pullRequestNumber)}.`
-          : `Merge not ready: ${readiness.reasons.map((reason) => reason.message).join("; ") || "see reasons"}.`,
-        evidenceRefs: [],
-      }),
-    );
-    if (!readiness.ready) {
-      return this.stoppedResult(
-        taskId,
-        request.runId,
-        stages,
-        lifecycleState,
-        "merge-readiness",
-        `Merge readiness reasons: ${readiness.reasons.map((reason) => reason.message).join("; ") || "see reasons"}.`,
-        "Resolve the listed merge-readiness reasons (CI checks, pull-request identity, dependencies, or unresolved review findings) before Controlled Merge is attempted; controlled-merge is never invoked while merge readiness is false.",
-      );
-    }
-
-    // 8. Controlled Merge (BOOT-025) — the only path that may transition the
-    // task to DONE, and only ever reached once merge readiness confirmed
-    // ready:true for the exact current revision.
-    const mergeRunId = stageRunId(request.runId, "controlled-merge");
-    const mergeStartedAt = now();
-    const mergeActorId = actorIdFor("MergeController", request.ownerId);
-    const mergeResult = await this.dependencies.controlledMerge.merge({
-      taskId,
-      actorId: mergeActorId,
-      runId: mergeRunId,
-      occurredAt: now(),
-    });
-    stages.push(
-      freezeStage({
-        stage: "controlled-merge",
-        role: "MergeController",
-        runId: mergeRunId,
-        outcome: "PASS",
-        startedAt: mergeStartedAt,
-        finishedAt: now(),
-        summary: `Merged PR #${mergeResult.pullRequestNumber} as ${mergeResult.mergeCommitSha}.`,
-        evidenceRefs: [`${mergeResult.evidenceLineageId}@${mergeResult.evidenceSequence}`],
-        lifecycleState: mergeResult.lifecycleState,
-      }),
-    );
-
-    return Object.freeze({
-      taskId,
-      runId: request.runId,
-      status: "COMPLETED" as const,
-      finalLifecycleState: mergeResult.lifecycleState,
-      stages: Object.freeze([...stages]),
-      pullRequestNumber: mergeResult.pullRequestNumber,
-      mergeCommitSha: mergeResult.mergeCommitSha,
-    });
-  }
-
-  private agentRequest(
-    role: AgentRunnerRole,
-    taskId: string,
-    revision: string,
-    contextPackage: ContextPackage,
-    runId: string,
-    actorId: string,
-  ): AgentRunRequest {
-    const toolPermissionPolicy = (this.dependencies.toolPermissionPolicyFor ?? defaultToolPermissionPolicy)(role);
-    const timeoutMs = this.dependencies.timeoutMsFor?.(role);
-    return {
-      taskId,
-      role,
-      revisionIdentity: revision,
-      runId,
-      actorId,
-      contextPackage,
-      toolPermissionPolicy,
-      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    const controller = new AbortController();
+    let timedOut = false;
+    const cancel = () => controller.abort();
+    request.signal?.addEventListener("abort", cancel, { once: true });
+    if (request.signal?.aborted) cancel();
+    const timer = request.timeoutMs === undefined ? undefined : setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, request.timeoutMs);
+    const check = () => {
+      if (controller.signal.aborted) throw new OrchestrationError(timedOut ? "TIMEOUT" : "CANCELLED",
+        timedOut ? "Orchestration deadline elapsed; resume the same key from durable state." : "Orchestration cancelled; resume the same key explicitly when ready.", timedOut);
     };
+    try {
+      check();
+      return await this.dependencies.runStore.withLock(async () => {
+        check();
+        const journal = this.dependencies.runStore.get(key) ?? {
+          schemaVersion: 1 as const, idempotencyKey: key, ownerId: request.ownerId, runId: request.runId,
+          occurredAt: request.occurredAt, values: {}, attempts: {},
+        };
+        if (journal.ownerId !== request.ownerId || journal.runId !== request.runId) {
+          throw new OrchestrationError("IDEMPOTENCY_CONFLICT", "This idempotency key belongs to a different owner/run identity.");
+        }
+        this.dependencies.runStore.save(journal);
+        const execution: RunExecution = {
+          request: { ...request, occurredAt: journal.occurredAt }, journal, signal: controller.signal, check,
+          now: this.dependencies.now ?? (() => new Date().toISOString()), stages: [...((journal.values.stages as OrchestrationStageRecord[] | undefined) ?? [])],
+        };
+        try {
+          const result = await this.runPipeline(execution);
+          journal.values.result = result;
+          delete journal.lastFailure;
+          this.dependencies.runStore.save(journal);
+          return result;
+        } catch (error: unknown) {
+          // Persist the public cause as well as throwing it: a deadline
+          // aborts the provider signal, but is not an explicit cancellation.
+          let cause = error;
+          try { check(); } catch (interruption: unknown) { cause = interruption; }
+          const failure = classifyOrchestrationFailure(cause);
+          journal.lastFailure = { kind: failure.kind, code: failure.code, message: cause instanceof Error ? cause.message : String(cause) };
+          this.dependencies.runStore.save(journal);
+          throw cause;
+        }
+      });
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      request.signal?.removeEventListener("abort", cancel);
+    }
   }
 
-  /**
-   * Drives one QA/Architecture/UAT agent run followed by that role's own
-   * review gate, routing a non-PASS outcome through BOOT-021's
-   * `ReviewReworkGate.enterRework()` and stopping. QA/Architecture/UAT
-   * gates are structurally identical (`prepareContext({taskId}) ->
-   * {taskId, revision, context}`, `review(request) -> result`), so one
-   * generic helper drives all three without reimplementing any of their
-   * rules.
-   */
-  private async runReviewStage(options: {
-    readonly role: "QA" | "Architect" | "UAT/Product";
-    readonly agentStage: OrchestrationStageId;
-    readonly reviewStage: OrchestrationStageId;
-    readonly taskId: string;
-    readonly request: OrchestrationRunRequest;
-    readonly reviewerId: string;
-    readonly now: () => string;
-    readonly stages: OrchestrationStageRecord[];
-    readonly prepareContext: (req: { readonly taskId: string }) => ReviewContextResult;
-    readonly review: (req: ReviewRequest) => ReviewResult;
-  }): Promise<ReviewStageOutcome> {
-    const { role, agentStage, reviewStage, taskId, request, reviewerId, now, stages, prepareContext, review } = options;
+  private async runPipeline(x: RunExecution): Promise<OrchestrationRunResult> {
+    const { request, journal, now, stages } = x;
+    const actor = (role: AgentRunnerRole) => (this.dependencies.actorIdFor ?? defaultActorIdFor)(role, request.ownerId);
+    let start = journal.values.start as DeveloperStartResult | undefined;
+    const resuming = start !== undefined;
+    if (start === undefined) {
+      start = await this.operation(x, "developer-start", () => this.dependencies.developerStart.start({
+        ownerId: actor("Developer"), runId: stageRunId(request.runId, "developer-start"), occurredAt: request.occurredAt,
+      }));
+      journal.values.start = start;
+      this.dependencies.runStore.save(journal);
+    }
+    const taskId = start.taskId;
+    const task = this.dependencies.taskRegistry.get(taskId);
+    if (task === undefined) throw new OrchestrationError("RECOVERY_REQUIRED", `Bound task '${taskId}' no longer exists.`);
+    const state = (): TaskLifecycleState => {
+      const record = this.dependencies.lifecycleState.get(taskId);
+      if (record === null || record.taskId !== taskId) throw new OrchestrationError("RECOVERY_REQUIRED", "Bound task lifecycle is missing or mismatched; no stage may be replayed.");
+      return record.currentState;
+    };
+    this.addStage(x, "developer-start", "Developer", "PASS", `Resumed ${taskId} on '${start.canonicalBranch}'.`, [], start.lifecycleState);
 
-    const prepared = prepareContext({ taskId });
+    // Only a persisted lifecycle record determines the next stage. Journal
+    // results are replay inputs/audit, never a replacement for gate authority.
+    if (state() === "IN_DEVELOPMENT") {
+      if (resuming) {
+        x.check();
+        // Reuse BOOT-013's own assignment/branch/context gates, with a bound
+        // task guard so a missing assignment can never select unrelated work.
+        const refreshed = await this.dependencies.developerStart.start({
+          ownerId: actor("Developer"), runId: stageRunId(request.runId, "developer-start"),
+          occurredAt: request.occurredAt, expectedTaskId: taskId,
+        });
+        if (refreshed.taskId !== taskId || refreshed.canonicalBranch !== start.canonicalBranch ||
+            refreshed.assignment.lockId !== start.assignment.lockId) {
+          throw new OrchestrationError("RECOVERY_REQUIRED", "Resumed Developer assignment differs from its persisted task binding.");
+        }
+        if (journal.values["developer-agent"] === undefined &&
+            (refreshed.sourceRevision !== start.sourceRevision || computeContextPackageId(refreshed.context) !== computeContextPackageId(start.context))) {
+          throw new OrchestrationError("RECOVERY_REQUIRED", "Incomplete Developer run inputs changed; reconcile the interrupted provider before starting a new run identity.");
+        }
+        x.check();
+      }
+      const result = await this.runAgent(x, "developer-agent", "Developer", taskId, start.sourceRevision, start.context, actor("Developer"));
+      this.addStage(x, "developer-agent", "Developer", result.outcome, summarizeAgentResult("Developer", result), result.evidenceRefs);
+      const validation = await this.operation(x, "dev-validation", () => this.dependencies.developerValidation.validate({
+        taskId, actorId: actor("Developer"), runId: stageRunId(request.runId, "dev-validation"), occurredAt: now(),
+      }));
+      this.addStage(x, "dev-validation", null, validation.outcome,
+        validation.outcome === "PASS" ? `Developer validation PASS at ${validation.revision}.` : `Developer validation failed: ${validation.failedCheckIds.join(", ")}.`,
+        validation.checks.map(c => `${c.evidenceLineageId}@${c.evidenceSequence}`), validation.lifecycleState);
+    }
+    if (state() === "DEV_VALIDATION_FAILED") return this.stoppedResult(taskId, request.runId, stages, state(), "dev-validation",
+      "Developer validation failed; recorded deterministic evidence remains authoritative.",
+      "No automated recovery is available from DEV_VALIDATION_FAILED. Fix the required validators, then use explicit lifecycle recovery; re-running this request cannot bypass the failed gate.");
 
-    const agentRunId = stageRunId(request.runId, agentStage);
-    const agentStartedAt = now();
-    const agentResult = await this.dependencies.agentRunner.run(
-      this.agentRequest(role, taskId, prepared.revision, prepared.context, agentRunId, reviewerId),
-    );
-    stages.push(
-      freezeStage({
-        stage: agentStage,
-        role,
-        runId: agentRunId,
-        outcome: agentResult.outcome,
-        startedAt: agentStartedAt,
-        finishedAt: now(),
-        summary: summarizeAgentResult(role, agentResult),
-        evidenceRefs: agentResult.evidenceRefs,
-      }),
-    );
-
-    // `runId`/`occurredAt` here are the agent run's own — not a freshly
-    // minted orchestration-stage id — because `ReviewFramework.submit()`
-    // (via each gate's `review()`) builds its persisted `reviewId` as
-    // `${taskId}:${role}:${revisionIdentity}:${runId}`, which
-    // `contracts/agent-provider/README.md` documents as always reproducing
-    // `AgentRunResult`'s own composite identity: "a successful
-    // `AgentRunResult` always carries `taskId`/`role`/`revisionIdentity`/
-    // `runId` exactly equal to the request that produced it, so
-    // `${result.taskId}:${result.role}:${result.revisionIdentity}:
-    // ${result.runId}` always reproduces the same composite identity
-    // `ReviewFramework.submit()` builds for its own `reviewId`". Reusing
-    // `agentResult.runId`/`.occurredAt` (rather than this stage's own
-    // `reviewRunId`/`now()`, which remain this module's own audit-record
-    // identity below) is what makes the persisted review-result record
-    // durably traceable back to the exact agent invocation that produced
-    // its judgment, even when `evidenceRefs` is empty.
-    const reviewRunId = stageRunId(request.runId, reviewStage);
-    const reviewStartedAt = now();
-    const reviewResult = review({
-      taskId,
-      reviewerId,
-      runId: agentResult.runId,
-      occurredAt: agentResult.occurredAt,
-      context: prepared.context,
-      outcome: agentResult.outcome,
-      findings: agentResult.findings,
-      details: agentResult.details,
-      evidenceRefs: agentResult.evidenceRefs,
-      ...(agentResult.nonPass === undefined ? {} : { nonPass: agentResult.nonPass }),
-    });
-    stages.push(
-      freezeStage({
-        stage: reviewStage,
-        role,
-        runId: reviewRunId,
-        outcome: reviewResult.outcome,
-        startedAt: reviewStartedAt,
-        finishedAt: now(),
-        summary: `${role} review ${reviewResult.outcome} (reviewId=${reviewResult.reviewId}).`,
-        evidenceRefs: [`${reviewResult.evidenceLineageId}@${reviewResult.evidenceSequence}`],
-        lifecycleState: reviewResult.lifecycleState,
-      }),
-    );
-
-    if (reviewResult.outcome !== "PASS") {
-      const reworkRunId = stageRunId(request.runId, "review-rework");
-      const reworkStartedAt = now();
-      const reworkResult = this.dependencies.reviewRework.enterRework({
-        taskId,
-        actorId: request.ownerId,
-        runId: reworkRunId,
-        occurredAt: now(),
-      });
-      stages.push(
-        freezeStage({
-          stage: "review-rework",
-          role: null,
-          runId: reworkRunId,
-          // Propagates ReviewReworkGate's own authoritative judgment
-          // (`reworkResult.failedOutcome`, "FAIL" or "BLOCKED") rather than
-          // hardcoding "FAIL": a BLOCKED review is a different judgment than
-          // a FAIL one, and this stage record must not fabricate one the
-          // review itself never made.
-          outcome: reworkResult.failedOutcome,
-          startedAt: reworkStartedAt,
-          finishedAt: now(),
-          summary: `Task routed to rework after ${role} ${reworkResult.failedOutcome} (${reviewResult.blockingFindings.length} blocking finding(s)).`,
-          evidenceRefs: [`${reworkResult.evidenceLineageId}@${reworkResult.evidenceSequence}`],
-          lifecycleState: reworkResult.lifecycleState,
-        }),
-      );
-
-      // A BLOCKED agent result often carries no `findings` at all — the
-      // provider explains the block exclusively via `nonPass.reason`/
-      // `.remediation` (see `AgentRunResult`/`ReviewNonPassDetail` in
-      // src/agent-provider/agent-provider.ts) — so falling back to a bare
-      // "<role> review BLOCKED." with a generic remediation would silently
-      // discard the only actionable information the provider gave. Prefer
-      // the real blocking findings when present (unchanged from before);
-      // otherwise fall back to the provider's own `nonPass.reason`; only use
-      // the generic wording when the provider gave neither. Likewise prefer
-      // the provider's own `nonPass.remediation` over the generic templated
-      // remediation whenever the provider supplied one.
-      const findingSummary = reviewResult.blockingFindings.map((finding) => finding.observed).join("; ");
-      const nonPassReason = agentResult.nonPass?.reason;
-      const reason = findingSummary
-        ? `${role} review ${reviewResult.outcome}: ${findingSummary}.`
-        : nonPassReason
-          ? `${role} review ${reviewResult.outcome}: ${nonPassReason}.`
-          : `${role} review ${reviewResult.outcome}.`;
-      const remediation =
-        agentResult.nonPass?.remediation ??
-        `Task moved to REWORK_REQUIRED. Resume development to address the ${role} findings, then re-run orchestration from Developer validation; later review stages do not run.`;
-      return {
-        stopped: this.stoppedResult(taskId, request.runId, stages, reworkResult.lifecycleState, reviewStage, reason, remediation),
-      };
+    const roles = new Set(task.requiredReviewRoles);
+    const reviewSpecs = [
+      { role: "QA" as const, agent: "qa-agent" as const, stage: "qa-review" as const, entry: "DEV_VALIDATED", failed: "QA_FAILED", gate: this.dependencies.qaReview },
+      { role: "Architect" as const, agent: "architecture-agent" as const, stage: "architecture-review" as const, entry: "ARCHITECTURE_REVIEW", failed: "ARCHITECTURE_FAILED", gate: this.dependencies.architectureReview },
+      { role: "UAT/Product" as const, agent: "uat-agent" as const, stage: "uat-review" as const, entry: "UAT_REVIEW", failed: "UAT_FAILED", gate: this.dependencies.uatReview },
+    ];
+    for (const spec of reviewSpecs) {
+      if (state() === spec.failed) return this.routeRework(x, taskId, spec.stage, spec.role);
+      if (!roles.has(spec.role) || !(state() === spec.entry || state() === "DEV_VALIDATED")) continue;
+      x.check();
+      const prepared = spec.gate.prepareContext({ taskId });
+      const result = await this.runAgent(x, spec.agent, spec.role, taskId, prepared.revision, prepared.context, actor(spec.role));
+      this.addStage(x, spec.agent, spec.role, result.outcome, summarizeAgentResult(spec.role, result), result.evidenceRefs);
+      const reviewed = await this.operation(x, spec.stage, () => spec.gate.review({
+        taskId, reviewerId: actor(spec.role), runId: result.runId, occurredAt: result.occurredAt,
+        context: prepared.context, outcome: result.outcome, findings: result.findings, details: result.details,
+        evidenceRefs: result.evidenceRefs, ...(result.nonPass === undefined ? {} : { nonPass: result.nonPass }),
+      }));
+      this.addStage(x, spec.stage, spec.role, reviewed.outcome, `${spec.role} review ${reviewed.outcome} (reviewId=${reviewed.reviewId}).`,
+        [`${reviewed.evidenceLineageId}@${reviewed.evidenceSequence}`], reviewed.lifecycleState);
+      if (reviewed.outcome !== "PASS") return this.routeRework(x, taskId, spec.stage, spec.role);
+    }
+    if (state() === "REWORK_REQUIRED") {
+      const previous = journal.values.result as OrchestrationRunResult | undefined;
+      if (previous?.status === "STOPPED") return previous;
+      const failed = this.dependencies.lifecycleState.get(taskId)?.history.slice().reverse().find(e => ["QA_FAILED", "ARCHITECTURE_FAILED", "UAT_FAILED"].includes(e.toState));
+      const spec = reviewSpecs.find(s => s.failed === failed?.toState);
+      return this.stoppedResult(taskId, request.runId, stages, state(), spec?.stage ?? "review-rework", "The recorded review requires rework.", "Address the recorded review findings through the explicit rework workflow; no review is automatically retried.");
     }
 
-    return { stopped: null, revision: reviewResult.revision, lifecycleState: reviewResult.lifecycleState };
+    const current = state();
+    const mergeRecovery = current === "MERGED" || current === "DONE" || journal.pendingStage === "controlled-merge";
+    if (current !== "MERGE_READY" && current !== "MERGED" && current !== "DONE" && current !== "DEV_VALIDATED") {
+      throw new OrchestrationError("RECOVERY_REQUIRED", `Lifecycle state '${current}' has no valid next orchestration stage.`);
+    }
+    if (!mergeRecovery) {
+      const readiness = await this.operation(x, "merge-readiness", () => this.dependencies.mergeReadiness.evaluate({ taskId }));
+      this.addStage(x, "merge-readiness", null, readiness.ready ? "PASS" : "FAIL",
+        readiness.ready ? `Merge readiness satisfied for PR #${String(readiness.pullRequestNumber)}.` : readiness.reasons.map(r => r.message).join("; "), []);
+      if (!readiness.ready) return this.stoppedResult(taskId, request.runId, stages, state(), "merge-readiness",
+        `Merge readiness reasons: ${readiness.reasons.map(r => r.message).join("; ")}.`, "Resolve the listed CI, pull-request identity, dependency, or review blockers, then resume this same request.");
+    }
+    // A durable merge intent bypasses only the open-PR-only preliminary
+    // diagnostic. BOOT-025 still validates exact-head readiness or confirms
+    // an already-completed merge itself; never replay the merge HTTP call here.
+    const merged = await this.operation(x, "controlled-merge", () => this.dependencies.controlledMerge.merge({
+      taskId, actorId: actor("MergeController"), runId: stageRunId(request.runId, "controlled-merge"), occurredAt: now(),
+    }));
+    this.addStage(x, "controlled-merge", "MergeController", "PASS", `Merged PR #${merged.pullRequestNumber} as ${merged.mergeCommitSha}.`,
+      [`${merged.evidenceLineageId}@${merged.evidenceSequence}`], merged.lifecycleState);
+    return Object.freeze({ taskId, runId: request.runId, status: "COMPLETED", finalLifecycleState: merged.lifecycleState,
+      stages: Object.freeze([...stages]), pullRequestNumber: merged.pullRequestNumber, mergeCommitSha: merged.mergeCommitSha });
   }
 
-  private stoppedResult(
-    taskId: string,
-    runId: string,
-    stages: readonly OrchestrationStageRecord[],
-    finalLifecycleState: TaskLifecycleState,
-    stage: OrchestrationStageId,
-    reason: string,
-    remediation: string,
-  ): OrchestrationRunResult {
-    return Object.freeze({
-      taskId,
-      runId,
-      status: "STOPPED" as const,
-      finalLifecycleState,
-      stages: Object.freeze([...stages]),
-      stopped: Object.freeze({ stage, reason, remediation }),
-    });
+  private async routeRework(x: RunExecution, taskId: string, stage: OrchestrationStageId, role: AgentRunnerRole): Promise<OrchestrationRunResult> {
+    const result = await this.operation(x, "review-rework", () => this.dependencies.reviewRework.enterRework({
+      taskId, actorId: x.request.ownerId, runId: stageRunId(x.request.runId, "review-rework"), occurredAt: x.now(),
+    }));
+    this.addStage(x, "review-rework", null, result.failedOutcome, `Task routed to rework after ${role} ${result.failedOutcome}.`,
+      [`${result.evidenceLineageId}@${result.evidenceSequence}`], result.lifecycleState);
+    const agentStage = stage.replace("-review", "-agent");
+    const agent = x.journal.values[agentStage] as { result: AgentRunResult } | undefined;
+    return this.stoppedResult(taskId, x.request.runId, x.stages, result.lifecycleState, stage,
+      `${role} review ${result.failedOutcome}: ${agent?.result.findings.map(f => f.observed).join("; ") || agent?.result.nonPass?.reason || "see recorded evidence"}.`,
+      agent?.result.nonPass?.remediation ?? "Task moved to REWORK_REQUIRED. Address the recorded findings through the explicit rework workflow.");
+  }
+
+  private async operation<T>(x: RunExecution, stage: OrchestrationStageId, action: () => T | Promise<T>): Promise<T> {
+    x.check();
+    x.journal.pendingStage = stage;
+    this.dependencies.runStore.save(x.journal);
+    // Do not race a mutating gate with cancellation: retain exclusivity until
+    // it settles. Its durable lifecycle/evidence decides recovery afterward.
+    const result = await action();
+    // Bind the selected task before honoring an interruption; otherwise a
+    // cancelled start could lose its task identity after the assignment
+    // eventually completes through another authorized workflow.
+    if (stage === "developer-start") x.journal.values.start = result;
+    delete x.journal.pendingStage;
+    this.dependencies.runStore.save(x.journal);
+    x.check();
+    return result;
+  }
+
+  private async runAgent(x: RunExecution, stage: OrchestrationStageId, role: AgentRunnerRole, taskId: string,
+    revision: string, contextPackage: ContextPackage, actorId: string): Promise<AgentRunResult> {
+    x.check();
+    const contextId = computeContextPackageId(contextPackage);
+    const cached = x.journal.values[stage] as { contextId: string; actorId: string; result: AgentRunResult } | undefined;
+    if (cached !== undefined) {
+      if (cached.contextId !== contextId || cached.actorId !== actorId || cached.result.taskId !== taskId || cached.result.role !== role || cached.result.revisionIdentity !== revision) {
+        throw new OrchestrationError("RECOVERY_REQUIRED", `Persisted ${stage} inputs no longer match the valid task revision/context. Do not replay stale evidence.`);
+      }
+      return cached.result;
+    }
+    const policy = this.dependencies.retryPolicy ?? { maxAttempts: 3, delayMs: 100 };
+    while ((x.journal.attempts[stage] ?? 0) < policy.maxAttempts) {
+      x.check();
+      x.journal.pendingStage = stage;
+      x.journal.attempts[stage] = (x.journal.attempts[stage] ?? 0) + 1;
+      this.dependencies.runStore.save(x.journal);
+      try {
+        const timeoutMs = this.dependencies.timeoutMsFor?.(role);
+        const result = await this.dependencies.agentRunner.run({ taskId, role, revisionIdentity: revision, contextPackage,
+          actorId, runId: stageRunId(x.request.runId, stage), signal: x.signal,
+          toolPermissionPolicy: (this.dependencies.toolPermissionPolicyFor ?? defaultToolPermissionPolicy)(role),
+          ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        });
+        x.check();
+        x.journal.values[stage] = { contextId, actorId, result };
+        delete x.journal.pendingStage;
+        this.dependencies.runStore.save(x.journal);
+        return result;
+      } catch (error: unknown) {
+        const failure = classifyOrchestrationFailure(error);
+        x.journal.lastFailure = { kind: failure.kind, code: failure.code, message: error instanceof Error ? error.message : String(error) };
+        this.dependencies.runStore.save(x.journal);
+        x.check();
+        if (!failure.retryable || (x.journal.attempts[stage] ?? 0) >= policy.maxAttempts) throw error;
+        await new Promise<void>((resolve) => {
+          const done = () => { clearTimeout(timer); x.signal.removeEventListener("abort", done); resolve(); };
+          const timer = setTimeout(done, policy.delayMs);
+          x.signal.addEventListener("abort", done, { once: true });
+          if (x.signal.aborted) done();
+        });
+      }
+    }
+    throw new OrchestrationError("RETRY_EXHAUSTED", `The durable retry budget for ${stage} is exhausted. Inspect failure evidence before explicitly increasing maxAttempts (maximum 10).`);
+  }
+
+  private addStage(x: RunExecution, stage: OrchestrationStageId, role: AgentRunnerRole | null,
+    outcome: OrchestrationStageOutcome, summary: string, evidenceRefs: readonly string[], lifecycleState?: TaskLifecycleState): void {
+    const previous = x.stages.findIndex(record => record.stage === stage);
+    const record = freezeStage({ stage, role, outcome, summary, evidenceRefs, runId: stageRunId(x.request.runId, stage),
+      startedAt: x.now(), finishedAt: x.now(), ...(lifecycleState === undefined ? {} : { lifecycleState }) });
+    if (previous >= 0) x.stages[previous] = record;
+    else x.stages.push(record);
+    x.stages.sort((a, b) => ORCHESTRATION_STAGE_IDS.indexOf(a.stage) - ORCHESTRATION_STAGE_IDS.indexOf(b.stage));
+    x.journal.values.stages = x.stages;
+    this.dependencies.runStore.save(x.journal);
+  }
+
+  private stoppedResult(taskId: string, runId: string, stages: readonly OrchestrationStageRecord[], finalLifecycleState: TaskLifecycleState,
+    stage: OrchestrationStageId, reason: string, remediation: string): OrchestrationRunResult {
+    return Object.freeze({ taskId, runId, status: "STOPPED", finalLifecycleState, stages: Object.freeze([...stages]),
+      stopped: Object.freeze({ stage, reason, remediation }) });
   }
 }
 
@@ -766,6 +602,7 @@ export interface LocalOrchestrationOptions {
    * `AgentProvider` (a future BOOT-029 adapter, or a fake for local/manual
    * use) to drive the Developer/QA/Architecture/UAT agent runs. */
   readonly provider: AgentProvider;
+  readonly retryPolicy?: OrchestrationRetryPolicy;
   readonly owner: string;
   readonly repo: string;
   readonly token: string;
@@ -784,7 +621,7 @@ export interface LocalOrchestrationOptions {
  * `createLocal*` factory. Wires the real `.agent/state/lifecycle`,
  * `.agent/state/evidence`, and `.agent/state/assignments` stores every
  * earlier gate already uses (via each module's own `createLocal*`
- * constructor — this module opens none of those stores itself), plus a real
+ * constructor — lifecycle is also read through its existing file adapter), plus a real
  * `AgentRunner` wrapping the caller-supplied `provider`.
  */
 export async function createLocalOrchestrationEngine(
@@ -817,6 +654,9 @@ export async function createLocalOrchestrationEngine(
   const agentRunner = new AgentRunner({ provider: options.provider });
 
   return new SequentialOrchestrationEngine({
+    lifecycleState: new FileDeveloperStartStateStore(join(repositoryRoot, LOCAL_AGENT_STATE_RELATIVE_PATH, "lifecycle")),
+    runStore: new FileOrchestrationRunStore(join(repositoryRoot, LOCAL_AGENT_STATE_RELATIVE_PATH, "orchestration")),
+    ...(options.retryPolicy === undefined ? {} : { retryPolicy: options.retryPolicy }),
     taskRegistry,
     developerStart,
     developerValidation,

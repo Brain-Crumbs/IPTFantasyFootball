@@ -411,3 +411,21 @@ test("RepositoryDeveloperContextSource reads requirement and contract artifacts 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("expectedTaskId resumes only the already-owned assignment and cannot select new work", () => {
+  const value = fixture();
+  const request = { ownerId: "agent-a", runId: "run-resume", occurredAt };
+  try {
+    assert.throws(() => value.workflow.start({ ...request, expectedTaskId: task.taskId }), error => error.code === "RECOVERY_REQUIRED");
+    assert.equal(value.branchLifecycle.current, "main");
+    assert.equal(value.lockStore.get(task.taskId), null);
+    const first = value.workflow.start(request);
+    assert.throws(() => value.workflow.start({ ...request, expectedTaskId: dependency.taskId }), error => error.code === "RECOVERY_REQUIRED");
+    const history = value.stateStore.get(task.taskId).history;
+    const resumed = value.workflow.start({ ...request, expectedTaskId: task.taskId });
+    assert.equal(resumed.kind, "resumed");
+    assert.equal(resumed.assignment.lockId, first.assignment.lockId);
+    assert.deepEqual(value.stateStore.get(task.taskId).history, history);
+    assert.throws(() => value.workflow.start({ ...request, expectedTaskId: "../invalid" }), error => error.code === "INVALID_REQUEST");
+  } finally { cleanup(value); }
+});

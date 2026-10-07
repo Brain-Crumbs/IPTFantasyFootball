@@ -9,6 +9,7 @@ import {
   type RecordResult,
   type RevisionCheckResult,
   type StoredEvidenceRecord,
+  type ValidateResult,
 } from "../evidence-store/index.js";
 import type { ReviewRole } from "../lifecycle/index.js";
 
@@ -76,7 +77,8 @@ export type ReviewFrameworkErrorCode =
   | "SELF_APPROVAL_REJECTED"
   | "PASS_WITH_BLOCKING_FINDINGS"
   | "NON_PASS_MISSING_DETAIL"
-  | "EVIDENCE_REJECTED";
+  | "EVIDENCE_REJECTED"
+  | "REVIEW_ID_CONFLICT";
 
 export class ReviewFrameworkError extends Error {
   readonly code: ReviewFrameworkErrorCode;
@@ -128,6 +130,8 @@ export interface ReviewSubmissionResult {
 
 export interface ReviewFrameworkEvidenceStore {
   record(payload: unknown): RecordResult;
+  validate(payload: unknown): ValidateResult;
+  getHistory(lineageId: string): readonly StoredEvidenceRecord[];
   getCurrent(lineageId: string): StoredEvidenceRecord | null;
   checkRevision(lineageId: string, expectedRevisionIdentity: string): RevisionCheckResult;
 }
@@ -147,7 +151,8 @@ export interface ReviewFrameworkDependencies {
  * `docs/ROLE_MODEL.md` (no self-approval, no PASS over unresolved blocking
  * findings, independent review only after a passed Developer handoff for the
  * exact revision), and persists the result through the unmodified BOOT-015
- * evidence store so repeated attempts remain separately auditable.
+ * evidence store so distinct attempts remain separately auditable while
+ * exact retries reuse their original current record.
  *
  * It does not decide what a QA/Architecture/UAT/Product judgment should be,
  * does not invoke an agent provider, and does not compute merge readiness or
@@ -190,6 +195,15 @@ export class ReviewFramework {
           "DEVELOPER_HANDOFF_MISSING",
           `Task '${request.taskId}' has no recorded Developer handoff; independent '${request.role}' review cannot begin.`,
         );
+      }
+      this.assertValidRecord(developerRecord, developerLineageId);
+      if (
+        developerRecord.status !== "CURRENT" ||
+        developerRecord.payload.taskId !== request.taskId ||
+        developerRecord.payload.role !== "Developer" ||
+        !isNonEmptyTrimmedString(developerRecord.payload.reviewerId)
+      ) {
+        throw new ReviewFrameworkError("EVIDENCE_REJECTED", "Developer handoff identity is not a valid current record.", false);
       }
       const developerRevision = developerRecord.payload.revisionIdentity;
       if (developerRevision !== request.revisionIdentity) {
@@ -252,22 +266,67 @@ export class ReviewFramework {
       payload.nonPass = request.nonPass;
     }
 
-    const recorded = this.dependencies.evidenceStore.record(payload);
-    if (!recorded.ok) {
+    const validation = this.dependencies.evidenceStore.validate(payload);
+    if (!validation.ok) {
       throw new ReviewFrameworkError(
         "EVIDENCE_REJECTED",
-        `Task '${request.taskId}' role '${request.role}' review evidence was rejected: ${recorded.rejection.code}: ${recorded.rejection.reasons.join("; ")}`,
+        `Task '${request.taskId}' role '${request.role}' review evidence was rejected: ${validation.rejection.code}: ${validation.rejection.reasons.join("; ")}`,
         false,
       );
     }
 
-    // As with BOOT-016, the framework trusts only the persisted record read
-    // back through checkRevision, never the in-memory recorded.record alone.
+    // Search history, not only CURRENT: an earlier identity may have been
+    // superseded by a genuinely new review attempt. Retrying it must never
+    // append the old PASS again and hide that newer judgment.
+    const matches = this.dependencies.evidenceStore.getHistory(lineageId)
+      .filter((record) => record.payload.reviewId === reviewId);
+    if (matches.length > 1) {
+      throw new ReviewFrameworkError("EVIDENCE_REJECTED", `Review '${reviewId}' has multiple persisted records.`, false);
+    }
+    const existing = matches[0];
+    let sequence: number;
+    if (existing !== undefined) {
+      this.assertValidRecord(existing, lineageId);
+      if (canonicalJson(existing.payload) !== canonicalJson(payload)) {
+        throw new ReviewFrameworkError(
+          "REVIEW_ID_CONFLICT",
+          `Review '${reviewId}' is already bound to a different payload; a new attempt requires a distinct runId.`,
+          false,
+        );
+      }
+      sequence = existing.sequence;
+    } else {
+      const recorded = this.dependencies.evidenceStore.record(payload);
+      if (!recorded.ok) {
+        throw new ReviewFrameworkError(
+          "EVIDENCE_REJECTED",
+          `Task '${request.taskId}' role '${request.role}' review evidence was rejected: ${recorded.rejection.code}: ${recorded.rejection.reasons.join("; ")}`,
+          false,
+        );
+      }
+      sequence = recorded.record.sequence;
+    }
+
+    // Trust only the exact persisted CURRENT record. Revision equality alone
+    // cannot prove this is the same review: another attempt at the same
+    // revision may have replaced it (including a FAIL replacing a PASS).
     const revisionCheck = this.dependencies.evidenceStore.checkRevision(lineageId, request.revisionIdentity);
     if (revisionCheck.status !== "CURRENT") {
       throw new ReviewFrameworkError(
         "EVIDENCE_REJECTED",
-        `Task '${request.taskId}' role '${request.role}' review evidence is not bound to revision '${request.revisionIdentity}' after recording (${revisionCheck.status}).`,
+        `Task '${request.taskId}' role '${request.role}' review evidence is not bound to revision '${request.revisionIdentity}' (${revisionCheck.status}).`,
+        false,
+      );
+    }
+    this.assertValidRecord(revisionCheck.record, lineageId);
+    if (
+      revisionCheck.record.status !== "CURRENT" ||
+      revisionCheck.record.sequence !== sequence ||
+      canonicalJson(revisionCheck.record.payload) !== canonicalJson(payload)
+    ) {
+      throw new ReviewFrameworkError(
+        "EVIDENCE_REJECTED",
+        `Review '${reviewId}' is not the exact current persisted review; superseded evidence cannot be reused.`,
         false,
       );
     }
@@ -279,12 +338,25 @@ export class ReviewFramework {
       outcome: request.outcome,
       revisionIdentity: request.revisionIdentity,
       contextPackageId,
-      blockingFindings: blocking,
+      blockingFindings: blockingFindings(revisionCheck.record.payload.findings as unknown as readonly ReviewFinding[]),
       evidenceLineageId: lineageId,
       evidenceSequence: revisionCheck.record.sequence,
       recordedAt: request.occurredAt,
       evidenceLocation: this.dependencies.evidenceLocation,
     });
+  }
+
+  private assertValidRecord(record: StoredEvidenceRecord, lineageId: string): void {
+    const validated = this.dependencies.evidenceStore.validate(record.payload);
+    if (
+      !validated.ok ||
+      record.lineageId !== lineageId ||
+      !Number.isSafeInteger(record.sequence) ||
+      record.sequence < 1 ||
+      record.payload.schemaId !== "ipt.review-result"
+    ) {
+      throw new ReviewFrameworkError("EVIDENCE_REJECTED", `Persisted review evidence for '${lineageId}' is invalid.`, false);
+    }
   }
 }
 
@@ -310,7 +382,10 @@ function sortKeysDeep(value: unknown): unknown {
   }
   if (value !== null && typeof value === "object") {
     const source = value as Record<string, unknown>;
-    const sorted: Record<string, unknown> = {};
+    // JSON objects may contain an own "__proto__" key. A normal object's
+    // inherited setter would discard that key and let distinct persisted
+    // payloads/context packages compare equal on an idempotent retry.
+    const sorted: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const key of Object.keys(source).sort()) {
       sorted[key] = sortKeysDeep(source[key]);
     }

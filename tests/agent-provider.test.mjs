@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import test from "node:test";
 import {
   AGENT_RUNNER_ROLES,
@@ -83,7 +84,11 @@ test("a fake provider produces a successful structured PASS result carrying ever
   const composite = `${result.taskId}:${result.role}:${result.revisionIdentity}:${result.runId}`;
   assert.equal(composite, `${taskId}:Developer:${revision}:run-1`);
   assert.equal(provider.requests.length, 1);
-  assert.equal(provider.requests[0], request);
+  assert.notEqual(provider.requests[0], request);
+  assert.deepEqual(provider.requests[0], { ...request, signal: provider.requests[0].signal });
+  assert.ok(provider.requests[0].signal instanceof AbortSignal);
+  assert.equal(provider.requests[0].signal.aborted, false);
+  assert.ok(Object.isFrozen(provider.requests[0]));
 });
 
 test("a raw provider throw is normalized into a typed, recoverable PROVIDER_ERROR", async () => {
@@ -466,4 +471,136 @@ test("a FakeAgentProvider run() with no queued result, handler, or error configu
     () => runner.run(runRequest()),
     (error) => error instanceof AgentProviderError && error.code === "PROVIDER_ERROR",
   );
+});
+
+test("timeout aborts the adapter's composed signal without aborting the caller's signal", async () => {
+  const provider = new FakeAgentProvider();
+  const caller = new AbortController();
+  let adapterRequest;
+  let adapterReason;
+  provider.setHandler((request) => new Promise((_resolve, reject) => {
+    adapterRequest = request;
+    request.signal.addEventListener("abort", () => {
+      adapterReason = request.signal.reason;
+      reject(new DOMException("Adapter stopped", "AbortError"));
+    }, { once: true });
+  }));
+  const request = runRequest({ timeoutMs: 10, signal: caller.signal });
+  const runner = new AgentRunner({ provider });
+  const error = await runner.run(request).then(() => assert.fail("Expected timeout"), (failure) => failure);
+
+  assert.ok(error instanceof AgentProviderError);
+  assert.equal(error.code, "TIMEOUT");
+  assert.equal(error.recoverable, true);
+  assert.notEqual(adapterRequest.signal, caller.signal);
+  assert.equal(adapterRequest.contextPackage, request.contextPackage);
+  assert.equal(adapterRequest.toolPermissionPolicy, request.toolPermissionPolicy);
+  assert.equal(adapterRequest.signal.aborted, true);
+  assert.equal(adapterReason, error);
+  assert.equal(caller.signal.aborted, false);
+  assert.equal(getEventListeners(caller.signal, "abort").length, 0);
+});
+
+test("cancellation propagates to the adapter and cannot be replaced by its abort-listener PASS", async () => {
+  const provider = new FakeAgentProvider();
+  const caller = new AbortController();
+  let adapterSignal;
+  provider.setHandler((request) => new Promise((resolve) => {
+    adapterSignal = request.signal;
+    request.signal.addEventListener("abort", () => resolve(passResult(request)), { once: true });
+    caller.abort("User stopped this review");
+  }));
+  const runner = new AgentRunner({ provider });
+  const error = await runner.run(runRequest({ role: "QA", signal: caller.signal }))
+    .then(() => assert.fail("Expected cancellation"), (failure) => failure);
+
+  assert.ok(error instanceof AgentProviderError);
+  assert.equal(error.code, "CANCELLED");
+  assert.equal(error.recoverable, false);
+  assert.equal(adapterSignal.aborted, true);
+  assert.equal(adapterSignal.reason, error);
+  assert.equal(caller.signal.reason, "User stopped this review");
+  assert.equal(getEventListeners(caller.signal, "abort").length, 0);
+});
+
+test("cancellation before the invocation microtask skips the provider", async () => {
+  const provider = new FakeAgentProvider();
+  const caller = new AbortController();
+  const pending = new AgentRunner({ provider }).run(runRequest({ signal: caller.signal }));
+  caller.abort();
+  await assert.rejects(pending, (error) => error instanceof AgentProviderError && error.code === "CANCELLED");
+  assert.equal(provider.requests.length, 0);
+  assert.equal(getEventListeners(caller.signal, "abort").length, 0);
+});
+
+test("settled success and provider failure both remove the caller listener and clear the timeout", async (t) => {
+  for (const fails of [false, true]) {
+    await t.test(fails ? "provider failure" : "success", async () => {
+      const caller = new AbortController();
+      const provider = new FakeAgentProvider();
+      let adapterSignal;
+      provider.setHandler((request) => {
+        adapterSignal = request.signal;
+        if (fails) throw new Error("Transient provider failure");
+        return passResult(request);
+      });
+      const pending = new AgentRunner({ provider }).run(runRequest({ signal: caller.signal, timeoutMs: 10 }));
+      if (fails) await assert.rejects(pending, (error) => error.code === "PROVIDER_ERROR");
+      else assert.equal((await pending).outcome, "PASS");
+      assert.equal(getEventListeners(caller.signal, "abort").length, 0);
+      caller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(adapterSignal.aborted, false, "Completed runs must not receive a later cancellation/timeout");
+    });
+  }
+});
+
+test("a late provider rejection after timeout is consumed and an explicit retry can succeed", async () => {
+  const provider = new FakeAgentProvider();
+  let rejectLate;
+  provider.setHandler(() => new Promise((_resolve, reject) => { rejectLate = reject; }));
+  const runner = new AgentRunner({ provider });
+  const request = runRequest({ timeoutMs: 10 });
+  await assert.rejects(runner.run(request), (error) => error.code === "TIMEOUT");
+  rejectLate(new Error("Late result from the abandoned invocation"));
+  provider.setHandler((retryRequest) => passResult(retryRequest));
+  const retried = await runner.run(request);
+  assert.equal(retried.outcome, "PASS");
+  assert.equal(provider.requests.length, 2);
+  assert.notEqual(provider.requests[0].signal, provider.requests[1].signal);
+  assert.equal(provider.requests[0].signal.aborted, true);
+  assert.equal(provider.requests[1].signal.aborted, false);
+});
+
+test("AgentRunner preserves typed nonretryable provider failures without automatically retrying", async () => {
+  const provider = new FakeAgentProvider();
+  const failure = new AgentProviderError("PROVIDER_ERROR", "Permanent adapter configuration error", false, provider.providerId);
+  provider.queueError(failure);
+  await assert.rejects(new AgentRunner({ provider }).run(runRequest()), (error) => error === failure);
+  assert.equal(provider.requests.length, 1);
+});
+
+test("semantic QA FAIL and BLOCKED outcomes remain values, never infrastructure errors or automatic retries", async (t) => {
+  for (const outcome of ["FAIL", "BLOCKED"]) {
+    await t.test(outcome, async () => {
+      const provider = new FakeAgentProvider();
+      provider.setHandler((request) => passResult(request, {
+        outcome,
+        nonPass: { reason: "Review prerequisite or expectation is not met.", remediation: "Resolve it before another attempt." },
+      }));
+      const result = await new AgentRunner({ provider }).run(runRequest({ role: "QA" }));
+      assert.equal(result.outcome, outcome);
+      assert.equal(provider.requests.length, 1);
+    });
+  }
+});
+
+test("malformed cancellation signals are nonretryable INVALID_REQUEST before adapter invocation", async () => {
+  const provider = new FakeAgentProvider();
+  const runner = new AgentRunner({ provider });
+  for (const signal of [null, {}, { aborted: false }, { aborted: false, addEventListener() {} }]) {
+    await assert.rejects(runner.run(runRequest({ signal })), (error) =>
+      error instanceof AgentProviderError && error.code === "INVALID_REQUEST" && error.recoverable === false);
+  }
+  assert.equal(provider.requests.length, 0);
 });

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { AgentRunner, FakeAgentProvider } from "../dist/agent-provider/index.js";
+import { AgentProviderError, AgentRunner, FakeAgentProvider } from "../dist/agent-provider/index.js";
 import { ArchitectureReviewError, ArchitectureReviewGate } from "../dist/architecture-review/index.js";
 import { FileAssignmentLockStore } from "../dist/assignment-lock/index.js";
 import { ControlledMergeController } from "../dist/controlled-merge/index.js";
@@ -13,6 +13,8 @@ import { FileEvidenceStore, reviewResultLineageId } from "../dist/evidence-store
 import { MergeReadinessPolicyEngine } from "../dist/merge-readiness/index.js";
 import {
   ORCHESTRATION_STAGE_IDS,
+  classifyOrchestrationFailure,
+  FileOrchestrationRunStore,
   OrchestrationError,
   SequentialOrchestrationEngine,
 } from "../dist/orchestration-engine/index.js";
@@ -362,7 +364,11 @@ function buildFixture(options = {}) {
   const provider = new FakeAgentProvider();
   const agentRunner = new AgentRunner({ provider });
 
-  const engine = new SequentialOrchestrationEngine({
+  const dependencies = {
+    lifecycleState: stateStore,
+    runStore: options.runStore ?? new FileOrchestrationRunStore(join(root, "runs")),
+    ...(options.retryPolicy ? { retryPolicy: options.retryPolicy } : {}),
+    ...(options.timeoutMsFor ? { timeoutMsFor: options.timeoutMsFor } : {}),
     taskRegistry: registry,
     developerStart,
     developerValidation,
@@ -374,9 +380,10 @@ function buildFixture(options = {}) {
     controlledMerge,
     agentRunner,
     now: makeClock(occurredAt),
-  });
+  };
+  const engine = new SequentialOrchestrationEngine(dependencies);
 
-  return { root, task: activeTask, stateStore, provider, engine, prState, mergePullRequestCalls, evidenceStore };
+  return { root, task: activeTask, stateStore, provider, engine, prState, mergePullRequestCalls, evidenceStore, dependencies, controlledMergePrPort, branchLifecycle };
 }
 
 function cleanup(fixture) {
@@ -751,4 +758,288 @@ test("a BLOCKED review with no findings preserves BLOCKED through rework and sur
   } finally {
     cleanup(fixture);
   }
+});
+
+const resilientRequest = { ownerId: "resilience-owner", runId: "resilience-run", idempotencyKey: "resilience-key", occurredAt };
+
+function resumedEngine(fixture) {
+  return new SequentialOrchestrationEngine({
+    ...fixture.dependencies,
+    runStore: new FileOrchestrationRunStore(join(fixture.root, "runs")),
+  });
+}
+
+test("same idempotency key resumes DONE in a fresh engine without duplicate merge, review, or lifecycle writes", async () => {
+  const fixture = buildFixture();
+  try {
+    fixture.provider.setHandler(allPassHandler);
+    const first = await fixture.engine.run(resilientRequest);
+    const history = JSON.stringify(fixture.stateStore.get(fixture.task.taskId));
+    const second = await resumedEngine(fixture).run({ ...resilientRequest, occurredAt: "2026-09-12T00:00:00Z" });
+    assert.equal(second.status, "COMPLETED");
+    assert.equal(second.mergeCommitSha, first.mergeCommitSha);
+    assert.equal(fixture.provider.requests.length, 4);
+    assert.equal(fixture.mergePullRequestCalls.count, 1);
+    assert.equal(JSON.stringify(fixture.stateStore.get(fixture.task.taskId)), history);
+    for (const role of ["Developer", "QA", "Architect", "UAT/Product"]) {
+      assert.equal(fixture.evidenceStore.getHistory(reviewResultLineageId(fixture.task.taskId, role)).length, 1);
+    }
+    assert.equal(new Set(second.stages.map(s => s.stage)).size, second.stages.length);
+  } finally { cleanup(fixture); }
+});
+
+test("concurrent duplicate orchestration is rejected while the first retains exclusive ownership", async () => {
+  const fixture = buildFixture();
+  let release;
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  try {
+    fixture.provider.setHandler(async request => {
+      if (request.role === "Developer") {
+        entered();
+        await new Promise(resolve => { release = resolve; });
+      }
+      return allPassHandler(request);
+    });
+    const first = fixture.engine.run(resilientRequest);
+    await started;
+    await assert.rejects(() => resumedEngine(fixture).run(resilientRequest), error => error.code === "RUN_ACTIVE");
+    release();
+    assert.equal((await first).status, "COMPLETED");
+    assert.equal(fixture.mergePullRequestCalls.count, 1);
+    assert.equal(fixture.provider.requests.length, 4);
+  } finally { release?.(); cleanup(fixture); }
+});
+
+test("a key cannot be rebound to a different owner or run identity", async () => {
+  const fixture = buildFixture();
+  try {
+    fixture.provider.setHandler(allPassHandler);
+    await fixture.engine.run(resilientRequest);
+    for (const change of [{ ownerId: "other-owner" }, { runId: "other-run" }]) {
+      await assert.rejects(() => resumedEngine(fixture).run({ ...resilientRequest, ...change }), error => error.code === "IDEMPOTENCY_CONFLICT");
+    }
+    assert.equal(fixture.mergePullRequestCalls.count, 1);
+  } finally { cleanup(fixture); }
+});
+
+test("provider timeout propagates abort and retries with a stable run identity within the durable budget", async () => {
+  const fixture = buildFixture({ retryPolicy: { maxAttempts: 2, delayMs: 0 }, timeoutMsFor: () => 15 });
+  let firstSignal;
+  try {
+    fixture.provider.setHandler(request => {
+      if (!firstSignal) { firstSignal = request.signal; return new Promise(() => {}); }
+      return allPassHandler(request);
+    });
+    assert.equal((await fixture.engine.run(resilientRequest)).status, "COMPLETED");
+    assert.equal(firstSignal.aborted, true);
+    assert.equal(fixture.provider.requests.length, 5);
+    assert.equal(fixture.provider.requests[0].runId, fixture.provider.requests[1].runId);
+    const journal = fixture.dependencies.runStore.get(resilientRequest.idempotencyKey);
+    assert.equal(journal.attempts["developer-agent"], 2);
+    assert.equal(fixture.mergePullRequestCalls.count, 1);
+  } finally { cleanup(fixture); }
+});
+
+test("provider retries stay bounded across fresh-engine resumes", async () => {
+  const fixture = buildFixture({ retryPolicy: { maxAttempts: 2, delayMs: 0 } });
+  try {
+    fixture.provider.setHandler(() => { throw new AgentProviderError("PROVIDER_ERROR", "temporary transport failure", true); });
+    await assert.rejects(() => fixture.engine.run(resilientRequest), error => error.code === "PROVIDER_ERROR");
+    assert.equal(fixture.provider.requests.length, 2);
+    await assert.rejects(() => resumedEngine(fixture).run(resilientRequest), error => error.code === "RETRY_EXHAUSTED");
+    assert.equal(fixture.provider.requests.length, 2);
+    assert.equal(fixture.stateStore.get(fixture.task.taskId).currentState, "IN_DEVELOPMENT");
+    assert.equal(fixture.mergePullRequestCalls.count, 0);
+  } finally { cleanup(fixture); }
+});
+
+test("cancellation during QA leaves durable resumable state and never records an interrupted judgment", async () => {
+  const fixture = buildFixture({ retryPolicy: { maxAttempts: 3, delayMs: 0 } });
+  const controller = new AbortController();
+  let qaSignal;
+  try {
+    fixture.provider.setHandler(request => {
+      if (request.role === "QA") {
+        qaSignal = request.signal;
+        queueMicrotask(() => controller.abort());
+        return new Promise(() => {});
+      }
+      return allPassHandler(request);
+    });
+    await assert.rejects(() => fixture.engine.run({ ...resilientRequest, signal: controller.signal }), error => error.code === "CANCELLED");
+    assert.equal(qaSignal.aborted, true);
+    assert.equal(fixture.stateStore.get(fixture.task.taskId).currentState, "DEV_VALIDATED");
+    assert.equal(fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, "QA")), null);
+    assert.equal(fixture.dependencies.runStore.get(resilientRequest.idempotencyKey).lastFailure.kind, "CANCELLED");
+    fixture.provider.setHandler(allPassHandler);
+    assert.equal((await resumedEngine(fixture).run(resilientRequest)).status, "COMPLETED");
+    assert.equal(fixture.provider.requests.filter(r => r.role === "Developer").length, 1);
+    assert.equal(fixture.provider.requests.filter(r => r.role === "QA").length, 2);
+    assert.equal(fixture.evidenceStore.getHistory(reviewResultLineageId(fixture.task.taskId, "QA")).length, 1);
+  } finally { cleanup(fixture); }
+});
+
+test("overall timeout drains a mutating gate then resumes from its durable lifecycle rather than repeating it", async () => {
+  const fixture = buildFixture();
+  let validationCalls = 0;
+  try {
+    fixture.provider.setHandler(allPassHandler);
+    const original = fixture.dependencies.developerValidation;
+    fixture.dependencies.developerValidation = { validate: async request => {
+      validationCalls += 1;
+      await new Promise(resolve => setTimeout(resolve, 25));
+      return original.validate(request);
+    } };
+    await assert.rejects(() => new SequentialOrchestrationEngine(fixture.dependencies).run({ ...resilientRequest, timeoutMs: 10 }), error => error.code === "TIMEOUT");
+    assert.equal(fixture.stateStore.get(fixture.task.taskId).currentState, "DEV_VALIDATED");
+    assert.equal((await resumedEngine(fixture).run(resilientRequest)).status, "COMPLETED");
+    assert.equal(validationCalls, 1);
+    assert.equal(fixture.provider.requests.filter(r => r.role === "Developer").length, 1);
+  } finally { cleanup(fixture); }
+});
+
+test("crash after remote merge before local completion bookkeeping resumes without a second merge call", async () => {
+  const fixture = buildFixture();
+  const save = fixture.stateStore.save.bind(fixture.stateStore);
+  let crash = true;
+  try {
+    fixture.provider.setHandler(allPassHandler);
+    fixture.stateStore.save = (record, expected) => {
+      if (record.currentState === "MERGED" && crash) {
+        crash = false;
+        throw new Error("simulated crash before MERGED bookkeeping");
+      }
+      return save(record, expected);
+    };
+    await assert.rejects(() => fixture.engine.run(resilientRequest), /simulated crash/);
+    assert.equal(fixture.prState.merged, true);
+    assert.equal(fixture.stateStore.get(fixture.task.taskId).currentState, "MERGE_READY");
+    assert.equal(fixture.dependencies.runStore.get(resilientRequest.idempotencyKey).pendingStage, "controlled-merge");
+    assert.equal((await resumedEngine(fixture).run(resilientRequest)).status, "COMPLETED");
+    assert.equal(fixture.stateStore.get(fixture.task.taskId).currentState, "DONE");
+    assert.equal(fixture.mergePullRequestCalls.count, 1);
+    assert.equal(fixture.provider.requests.length, 4);
+  } finally { cleanup(fixture); }
+});
+
+test("crash after QA evidence but before lifecycle save reuses the exact review without invoking its agent again", async () => {
+  const fixture = buildFixture();
+  const save = fixture.stateStore.save.bind(fixture.stateStore);
+  let crash = true;
+  try {
+    fixture.provider.setHandler(allPassHandler);
+    fixture.stateStore.save = (record, expected) => {
+      if (record.currentState === "ARCHITECTURE_REVIEW" && crash) {
+        crash = false;
+        throw new Error("simulated crash after QA evidence");
+      }
+      return save(record, expected);
+    };
+    await assert.rejects(() => fixture.engine.run(resilientRequest), /simulated crash/);
+    assert.equal(fixture.stateStore.get(fixture.task.taskId).currentState, "DEV_VALIDATED");
+    assert.equal((await resumedEngine(fixture).run(resilientRequest)).status, "COMPLETED");
+    assert.equal(fixture.provider.requests.filter(r => r.role === "QA").length, 1);
+    assert.equal(fixture.evidenceStore.getHistory(reviewResultLineageId(fixture.task.taskId, "QA")).length, 1);
+  } finally { cleanup(fixture); }
+});
+
+test("QA FAIL remains semantic across duplicate requests and is never retried as infrastructure", async () => {
+  const fixture = buildFixture({ retryPolicy: { maxAttempts: 10, delayMs: 0 } });
+  try {
+    fixture.provider.setHandler(failAtRoleHandler("QA"));
+    const first = await fixture.engine.run(resilientRequest);
+    const history = JSON.stringify(fixture.stateStore.get(fixture.task.taskId));
+    const second = await resumedEngine(fixture).run(resilientRequest);
+    assert.equal(first.status, "STOPPED");
+    assert.equal(second.finalLifecycleState, "REWORK_REQUIRED");
+    assert.equal(second.stopped.stage, "qa-review");
+    assert.equal(JSON.stringify(fixture.stateStore.get(fixture.task.taskId)), history);
+    assert.equal(fixture.provider.requests.filter(r => r.role === "QA").length, 1);
+    assert.equal(fixture.mergePullRequestCalls.count, 0);
+  } finally { cleanup(fixture); }
+});
+
+test("invalid signal and retry policy are rejected before any workflow side effects", async () => {
+  const fixture = buildFixture();
+  try {
+    for (const signal of [null, {}, { aborted: false }]) {
+      await assert.rejects(() => fixture.engine.run({ ...resilientRequest, signal }), error => error.code === "INVALID_REQUEST");
+    }
+    for (const retryPolicy of [{ maxAttempts: 0, delayMs: 0 }, { maxAttempts: 11, delayMs: 0 }, { maxAttempts: 2, delayMs: -1 }]) {
+      await assert.rejects(() => new SequentialOrchestrationEngine({ ...fixture.dependencies, retryPolicy }).run(resilientRequest), error => error.code === "INVALID_REQUEST");
+    }
+    assert.equal(fixture.stateStore.get(fixture.task.taskId), null);
+    assert.equal(fixture.provider.requests.length, 0);
+  } finally { cleanup(fixture); }
+});
+
+test("failure taxonomy retries only typed recoverable provider infrastructure errors", () => {
+  assert.deepEqual(classifyOrchestrationFailure(new AgentProviderError("TIMEOUT", "timeout", true)), { kind: "INFRASTRUCTURE", code: "TIMEOUT", retryable: true });
+  assert.deepEqual(classifyOrchestrationFailure(new AgentProviderError("CANCELLED", "cancel", false)), { kind: "CANCELLED", code: "CANCELLED", retryable: false });
+  assert.equal(classifyOrchestrationFailure(new AgentProviderError("MALFORMED_RESULT", "bad result", false)).retryable, false);
+  assert.equal(classifyOrchestrationFailure(Object.assign(new Error("untrusted timeout"), { code: "TIMEOUT", recoverable: true })).retryable, false);
+});
+
+test("overall timeout during a provider records TIMEOUT rather than mislabeling it explicit cancellation", async () => {
+  const fixture = buildFixture();
+  try {
+    fixture.provider.setHandler(() => new Promise(() => {}));
+    await assert.rejects(() => fixture.engine.run({ ...resilientRequest, timeoutMs: 10 }), error => error.code === "TIMEOUT");
+    const journal = fixture.dependencies.runStore.get(resilientRequest.idempotencyKey);
+    assert.equal(journal.lastFailure.kind, "INFRASTRUCTURE");
+    assert.equal(journal.lastFailure.code, "TIMEOUT");
+    assert.equal(journal.attempts["developer-agent"], 1);
+  } finally { cleanup(fixture); }
+});
+
+test("resume rejects a changed authoritative revision before reusing a cached review judgment", async () => {
+  const fixture = buildFixture();
+  try {
+    fixture.provider.setHandler(allPassHandler);
+    const qaReview = fixture.dependencies.qaReview;
+    fixture.dependencies.qaReview = { prepareContext: r => qaReview.prepareContext(r), review: () => { throw new Error("interrupted before QA submission"); } };
+    await assert.rejects(() => new SequentialOrchestrationEngine(fixture.dependencies).run(resilientRequest), /interrupted before QA submission/);
+    fixture.dependencies.qaReview = qaReview;
+    fixture.branchLifecycle.currentRevision = () => "9999999999999999999999999999999999999999";
+    await assert.rejects(() => resumedEngine(fixture).run(resilientRequest), error => error.code === "TASK_STATE_NOT_REVIEWABLE");
+    assert.equal(fixture.provider.requests.filter(r => r.role === "QA").length, 1);
+    assert.equal(fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, "QA")), null);
+    assert.equal(fixture.mergePullRequestCalls.count, 0);
+  } finally { cleanup(fixture); }
+});
+
+test("resumed Developer work rechecks the canonical branch before invoking the provider", async () => {
+  const fixture = buildFixture();
+  const controller = new AbortController();
+  try {
+    fixture.provider.setHandler(() => {
+      queueMicrotask(() => controller.abort());
+      return new Promise(() => {});
+    });
+    await assert.rejects(() => fixture.engine.run({ ...resilientRequest, signal: controller.signal }), error => error.code === "CANCELLED");
+    fixture.branchLifecycle.current = "bootstrap/another-task";
+    fixture.provider.setHandler(request => {
+      assert.equal(fixture.branchLifecycle.current, fixture.task.canonicalBranch, "provider must never run in another task's checkout");
+      return allPassHandler(request);
+    });
+    assert.equal((await resumedEngine(fixture).run(resilientRequest)).status, "COMPLETED");
+  } finally { cleanup(fixture); }
+});
+
+test("an incomplete Developer run cannot retry its stable identity with a changed repository revision", async () => {
+  const fixture = buildFixture();
+  const controller = new AbortController();
+  try {
+    fixture.provider.setHandler(() => {
+      queueMicrotask(() => controller.abort());
+      return new Promise(() => {});
+    });
+    await assert.rejects(() => fixture.engine.run({ ...resilientRequest, signal: controller.signal }), error => error.code === "CANCELLED");
+    fixture.branchLifecycle.currentRevision = () => "9999999999999999999999999999999999999999";
+    fixture.provider.setHandler(allPassHandler);
+    await assert.rejects(() => resumedEngine(fixture).run(resilientRequest), error => error.code === "RECOVERY_REQUIRED");
+    assert.equal(fixture.provider.requests.length, 1);
+    assert.equal(fixture.mergePullRequestCalls.count, 0);
+  } finally { cleanup(fixture); }
 });

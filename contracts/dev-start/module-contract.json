@@ -2,11 +2,11 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.dev-start",
-  "moduleVersion": "1.0.0",
+  "moduleVersion": "1.1.0",
   "structuralContract": {
     "interfaces": [
       "DeveloperStartWorkflow.start(request): DeveloperStartResult",
-      "DeveloperStartRequest { ownerId, runId, occurredAt }",
+      "DeveloperStartRequest { ownerId, runId, occurredAt, expectedTaskId? }",
       "DeveloperStartStateStore.get/save lifecycle persistence boundary",
       "DeveloperStartContextSource.artifactsFor repository context boundary",
       "DeveloperStartBranchAdapter canonical/ensure/assert/currentRevision boundary",
@@ -24,7 +24,8 @@
       "competing-assignment-rejection",
       "explicit-start-recovery-diagnostics",
       "exact-source-revision-binding",
-      "developer-task-bundle-output"
+      "developer-task-bundle-output",
+      "bound-task-strict-resume"
     ],
     "behavioralConstraints": [
       "fresh start selects only work eligible under control-plane.next-task using the persisted lifecycle snapshot",
@@ -36,7 +37,10 @@
       "branch creation is not rolled back after a later start failure and is reused idempotently on retry",
       "same owner and run resume the existing active assignment without duplicating completed lifecycle transitions",
       "different owner or run cannot adopt an existing active assignment",
-      "result identifies task canonical branch exact revision acceptance criteria assignment identity and inline Developer context"
+      "result identifies task canonical branch exact revision acceptance criteria assignment identity and inline Developer context",
+      "optional expectedTaskId must match the schema task-ID pattern; malformed values are INVALID_REQUEST",
+      "when expectedTaskId is present, start requires an already-owned assignment for exactly that task and owner/run; absent or mismatched assignment is RECOVERY_REQUIRED before new task selection, assignment acquisition or branch mutation",
+      "a matching expectedTaskId still requires all existing lifecycle/lock/branch/revision/context gates; omission preserves fresh-start selection and no CLI argument is added"
     ],
     "invariants": [
       "start does not invoke an AI provider",
@@ -51,14 +55,16 @@
       "a READY task with satisfied dependencies acquires a lock ensures its canonical branch compiles Developer context and commits IN_DEVELOPMENT",
       "a second owner attempting the same locked READY task receives a deterministic lock rejection",
       "a branch or context failure before lifecycle commit releases the fresh lock and leaves READY unchanged",
-      "the same owner and run may rerun start for its IN_DEVELOPMENT task and receive a resumed result without duplicate lifecycle history"
+      "the same owner and run may rerun start for its IN_DEVELOPMENT task and receive a resumed result without duplicate lifecycle history",
+      "BOOT-028 resumes its bound IN_DEVELOPMENT task with expectedTaskId, rechecks assignment and canonical branch, and recompiles context before any provider is invoked"
     ],
     "edgeCases": [
       "multiple active assignments for one owner and run are rejected as ambiguous",
       "ASSIGNED without the requested matching active assignment requires explicit recovery",
       "missing requirement or contract artifacts are surfaced through context compilation errors",
       "failure to clean up a pre-commit lock returns RECOVERY_REQUIRED",
-      "invalid or empty current revision is rejected before context compilation"
+      "invalid or empty current revision is rejected before context compilation",
+      "an interrupted run whose old assignment vanished cannot select an unrelated eligible task when expectedTaskId is supplied"
     ]
   },
   "allowedDependencies": [
@@ -102,16 +108,18 @@
       ]
     },
     {
-      "consumerId": "future-sequential-orchestrator",
+      "consumerId": "control-plane.orchestration-engine",
       "expectations": [
         "Developer start remains a start-only provider-neutral boundary",
         "retries are safe for the same active assignment",
-        "workflow blockers are explicit rather than converted into successful starts"
+        "workflow blockers are explicit rather than converted into successful starts",
+        "expectedTaskId prevents a bound resume from silently selecting other work; missing assignment remains an explicit recovery blocker"
       ],
       "requiredCapabilities": [
         "deterministic-next-task-start",
         "same-assignment-idempotent-resume",
-        "explicit-start-recovery-diagnostics"
+        "explicit-start-recovery-diagnostics",
+        "bound-task-strict-resume"
       ],
       "acceptedRanges": [
         "fresh start resume or structured failure"
@@ -121,7 +129,8 @@
         "lock conflict",
         "branch failure",
         "context failure",
-        "same-assignment resume"
+        "same-assignment resume",
+        "strict bound resume rejection before unrelated task side effects"
       ]
     }
   ]
