@@ -1,6 +1,7 @@
 import type { CommandDescriptor } from "./contracts.js";
 
 export const IMPLEMENTED_COMMANDS: readonly CommandDescriptor[] = [
+  { name: "explain", summary: "Explain task, transition, validation, review, and merge predicates without mutation (BOOT-031).", status: "implemented" },
   {
     name: "status",
     summary: "Report read-only project progress, locks, evidence, blockers, and next work (BOOT-030).",

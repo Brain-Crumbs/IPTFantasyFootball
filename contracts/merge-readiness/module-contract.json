@@ -2,14 +2,15 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.merge-readiness",
-  "moduleVersion": "1.0.0",
+  "moduleVersion": "1.1.0",
   "structuralContract": {
     "interfaces": [
       "MergeReadinessPolicyEngine.evaluate(request): Promise<EvaluateMergeReadinessResult>",
       "EvaluateMergeReadinessRequest { taskId }",
       "EvaluateMergeReadinessResult { taskId, revision, pullRequestNumber, ready, reasons }",
-      "MergeReadinessReason { code, message, role?, checkContext?, dependencyTaskId?, findingIds? }",
-      "MergeReadinessReasonCode = PULL_REQUEST_NOT_FOUND | PULL_REQUEST_HEAD_MISMATCH | PULL_REQUEST_BASE_MISMATCH | REVIEW_NOT_CURRENT_PASS | BLOCKING_FINDINGS_UNRESOLVED | CI_CHECK_NOT_SUCCESSFUL | DEPENDENCY_NOT_SATISFIED",
+      "MergeReadinessReason { code, message, role?, checkContext?, dependencyTaskId?, findingIds?, condition?, evidenceRef?, revisionIdentity?, expectedRevision?, observedState?, observedStatus?, observedConclusion? }",
+      "MergeReadinessCondition = missing | failed | stale | blocked",
+      "MergeReadinessReasonCode = TASK_NOT_MERGE_READY | PULL_REQUEST_NOT_FOUND | PULL_REQUEST_HEAD_MISMATCH | PULL_REQUEST_BASE_MISMATCH | REVIEW_NOT_CURRENT_PASS | BLOCKING_FINDINGS_UNRESOLVED | CI_CHECK_NOT_SUCCESSFUL | DEPENDENCY_NOT_SATISFIED",
       "MergeReadinessBranchAdapter.canonicalBranch/assertCurrentTaskBranch/currentRevision boundary onto control-plane.git-branch-lifecycle",
       "MergeReadinessApprovalPort.getApprovalStatus(request) boundary onto control-plane.review-rework",
       "MergeReadinessEvidencePort.getCurrent(lineageId) boundary onto control-plane.evidence-store",
@@ -40,7 +41,8 @@
       "no-override-parameter-for-a-failed-deterministic-gate",
       "github-http-failure-normalization",
       "github-403-rate-limit-vs-auth-classification",
-      "provider-agnostic-task-domain-boundary"
+      "provider-agnostic-task-domain-boundary",
+      "structured-missing-failed-stale-blocked-diagnostic-facts-with-evidence-and-revision-provenance"
     ],
     "behavioralConstraints": [
       "evaluate() resolves the task's canonical branch and exact current revision strictly through the unmodified control-plane.git-branch-lifecycle adapter; a Git branch mismatch or Git failure is normalized to BRANCH_REJECTED and no further check is performed",
@@ -56,14 +58,19 @@
       "GitHubCiStatusOperations maps every non-2xx GitHub response to a CiStatusProviderError whose code is derived from the HTTP status (401 -> AUTH_FAILED, 403 -> RATE_LIMITED when the response message matches /rate limit/i, otherwise AUTH_FAILED, 404 -> NOT_FOUND, 429 -> RATE_LIMITED, any other non-2xx -> PROVIDER_ERROR) and whose status field carries the exact HTTP status; a transport-level failure (the fetch call itself rejecting) is mapped to NETWORK_FAILED with no status; a 2xx response whose JSON body is missing a required check_runs array, or whose entries are missing a required field, is mapped to PROVIDER_ERROR",
       "GitHubMergeReadinessPullRequestOperations maps GitHub HTTP status to a PullRequestProviderError (BOOT-022's own error type) using the same 401/403/404/422/429 mapping BOOT-022 already documents",
       "MergeReadinessPolicyEngine never inspects a CiStatusProviderError's or PullRequestProviderError's HTTP status or GitHub-specific payload shape directly; it only wraps the already-normalized provider error as CI_PROVIDER_FAILED or PR_PROVIDER_FAILED",
-      "GitHubCiStatusOperations and GitHubMergeReadinessPullRequestOperations each reject an empty owner, repo, or token at construction with a RangeError rather than deferring to a failed first request"
+      "GitHubCiStatusOperations and GitHubMergeReadinessPullRequestOperations each reject an empty owner, repo, or token at construction with a RangeError rather than deferring to a failed first request",
+      "every reason emitted by evaluate() includes condition from typed producer facts: missing for absent lifecycle/review/CI/PR evidence or MERGE_READY without a revision binding; failed for recorded DEV_VALIDATION_FAILED/QA_FAILED/ARCHITECTURE_FAILED/UAT_FAILED states, current FAIL reviews, and completed unsuccessful CI success predicates; stale for review/merge-ready revision drift or mismatched PR head; blocked for remaining unmet predicates, including pending CI, current BLOCKED reviews, unresolved findings and wrong PR base",
+      "the optional diagnostic fields preserve exact observed facts: evidenceRef is review/finding lineageId@sequence, the latest lifecycle history event evidenceRef, or discovered PR htmlUrl; revisionIdentity is the observed evidence/history revision or PR head; expectedRevision is the current evaluated revision only for revision-bound gates; observedState is the lifecycle state, observedStatus is approval currency or unmodified CI status, and observedConclusion is the review outcome or unmodified CI conclusion including null; unavailable facts are omitted, never invented",
+      "module version 1.1.0 metadata is additive: fields remain optional for existing injected producers, reason codes/messages/order, readiness predicates, provider queries, evidence reads and errors are unchanged; consumers must not parse message or interpret absent metadata as satisfied gates",
+      "evaluate() is read-only but the legacy createLocalMergeReadinessPolicyEngine factory initializes writable stores and may create local state directories; read-only diagnostic compositions must inject read-only ports instead of using that factory"
     ],
     "invariants": [
       "this module performs no lifecycle-state transition, no merge, and no QA/Architecture/UAT/MergeController judgment; it only reads already-recorded evidence and provider state and computes a deterministic readiness boolean plus typed reasons from it",
       "task-domain logic (MergeReadinessPolicyEngine) depends only on the MergeReadinessApprovalPort/MergeReadinessEvidencePort/MergeReadinessLifecycleStatePort/MergeReadinessPrPort/MergeReadinessCiPort interfaces, never on GitHub-specific request/response payloads or on the internal storage layout of any dependency module",
       "evaluate() writes no evidence, PR, or lifecycle state; it is a pure read-only query and is safe to call repeatedly with no side effect",
       "a branch, evidence, lifecycle-state, provider, or duplicate-pull-request-conflict failure is reported as a thrown MergeReadinessError before any reason is computed for that check, rather than folding an unreadable/ambiguous precondition into a 'not ready' reason; only a genuinely evaluable state produces reasons",
-      "for identical dependency-port responses, evaluate() always returns byte-for-byte identical output (reason order is fixed: the task's own MERGE_READY-for-revision check and any per-role diagnostic detail first, then dependencies in ascending lexical order, then CI checks in configured order, then pull-request identity last)"
+      "for identical dependency-port responses, evaluate() always returns byte-for-byte identical output (reason order is fixed: the task's own MERGE_READY-for-revision check and any per-role diagnostic detail first, then dependencies in ascending lexical order, then CI checks in configured order, then pull-request identity last)",
+      "structured diagnostic metadata adds no dependency-port reads or writes and grants no approval, recovery, or merge authority; ready remains exactly reasons.length === 0"
     ],
     "examples": [
       "a task whose own lifecycle record is MERGE_READY with a history entry bound to the exact current revision, whose declared dependencies are all DONE, whose required CI checks are both completed/success for the exact revision, and whose canonical open pull request's head/base match the resolved revision/integration target returns ready=true with an empty reasons array",
@@ -125,6 +132,24 @@
       "requiredReachableRanges": [
         "ready=true is reachable for a task whose exact-revision evidence genuinely satisfies every gate",
         "ready=false is reachable, with the specific reason(s) present, for a task whose exact-revision evidence genuinely violates any one gate"
+      ]
+    },
+    {
+      "consumerId": "control-plane.workflow-diagnostics",
+      "expectations": [
+        "BOOT-031 directly consumes evaluate() and uses structured reason condition and observed evidence/revision/status facts without parsing message or duplicating merge policy; omitted optional fields on older injected results never imply readiness",
+        "the current producer emits condition for every reason and exact evidenceRef, revisionIdentity, expectedRevision, observedState, observedStatus and observedConclusion whenever those facts are available; the consumer preserves the producer reason codes and ready result without relaxing exact-revision, lifecycle, review, findings, dependency, CI or PR predicates"
+      ],
+      "requiredCapabilities": [
+        "machine-readable-typed-not-ready-reasons",
+        "structured-missing-failed-stale-blocked-diagnostic-facts-with-evidence-and-revision-provenance"
+      ],
+      "acceptedRanges": [
+        "the existing EvaluateMergeReadinessResult with optional additive reason metadata and ready exactly equal to reasons.length === 0"
+      ],
+      "requiredReachableRanges": [
+        "all existing reason codes remain reachable under their unchanged readiness predicates; every reason emitted by the current producer carries a missing, failed, stale or blocked condition",
+        "ready=true with no reasons remains reachable when every existing predicate passes; ready=false remains reachable for each existing blocker with its relevant observed facts"
       ]
     }
   ]

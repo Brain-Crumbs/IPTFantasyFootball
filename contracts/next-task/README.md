@@ -3,13 +3,14 @@
 ## Identity and purpose
 
 - **Module ID:** `control-plane.next-task`
-- **Module version:** `1.0.0`
+- **Module version:** `1.1.0`
 - **Manifest:** `./module-contract.json`
 
 Selects the single next eligible task deterministically from the schema-validated task registry, BOOT-007 dependency facts, and a read-only lifecycle-state snapshot. It never assigns work or mutates lifecycle state.
 
 ## Structural contract
 
+- Named explanation API: `explainTaskEligibility(registry, taskId, options?)` returns `{ taskId, state, eligible, blockers }`.
 - Selection API: `selectNextEligibleTask(registry, options?)`.
 - Optional lifecycle input: `options.taskStates: ReadonlyMap<taskId, TaskLifecycleState>`.
 - Lifecycle states mirror `schemas/v1/lifecycle-state.schema.json`.
@@ -22,6 +23,7 @@ Selects the single next eligible task deterministically from the schema-validate
 
 ## Capabilities
 
+- Explain any registered named task using the exact same blocker predicates (`named-task-eligibility-explanation`), even when another task wins selection.
 - Determine eligibility from lifecycle state and dependency satisfaction.
 - Select exactly one eligible task deterministically.
 - Prefer `READY` work over `PLANNED` work.
@@ -41,6 +43,7 @@ Selects the single next eligible task deterministically from the schema-validate
 - Tasks in all other lifecycle states are ineligible for selection and receive a state blocker unless already `DONE`.
 - An omitted lifecycle entry is treated as `PLANNED` during BOOT-008. This is a transitional read behavior only; BOOT-009 owns authoritative lifecycle transitions and durable lifecycle-state integration.
 - Invalid dependency graphs fail through the BOOT-007 validation boundary rather than producing partial selection output.
+- Named-task explanation rejects an unregistered task. It explicitly reports `DONE` as ineligible; aggregate selection continues omitting completed-task blockers and returning `complete` for all-DONE input. Its additive API does not change selection ordering or outcomes.
 - Equivalent registry contents and lifecycle snapshots produce equivalent results independent of map insertion order.
 
 ## Invariants
@@ -160,3 +163,7 @@ The following selection situations must remain reachable:
 - [ ] Does selected output still include task ID and canonical branch?
 - [ ] Did the selector start mutating lifecycle, assignment, branch, GitHub, or provider state?
 - [ ] Can BOOT-010/013/030 still consume one shared deterministic policy?
+
+## BOOT-031 diagnostic consumer
+
+`control-plane.workflow-diagnostics` directly consumes `named-task-eligibility-explanation`, `lifecycle-state-eligibility`, `dependency-eligibility`, and `blocking-reasons`. It expects one shared policy with explicit task/dependency identities and no added assignment/start checks. It accepts eligible/ineligible results, every lifecycle/blocker code, unregistered-task `RangeError`, and graph validation failures. Required reachable cases are an eligible task behind another selected task, direct/transitive dependency blockage, ineligible active/DONE state, and an unregistered-task rejection.

@@ -122,6 +122,31 @@
         "all local tasks DONE with no eligible work",
         "fail-closed invalid or changing input without mutation"
       ]
+    },
+    {
+      "consumerId": "control-plane.workflow-diagnostics",
+      "expectations": [
+        "validated latest-lineage evidence and exact local revisions are reusable without copying status gate policy",
+        "read-only source construction and invalid/changing-input rejection remain available; diagnostics supplies its own explicit scope"
+      ],
+      "requiredCapabilities": [
+        "read-only-project-status",
+        "latest-revision-bound-evidence-status",
+        "existing-next-task-selection",
+        "fail-closed-status-observation"
+      ],
+      "acceptedRanges": [
+        "all local task lifecycle states and nullable canonical revisions",
+        "evidence currency NONE CURRENT STALE UNKNOWN_REVISION and outcome PASS FAIL BLOCKED or null",
+        "latest evidence identity reason and blocking findings",
+        "read failure for invalid or observably changing source"
+      ],
+      "requiredReachableRanges": [
+        "missing stale and current non-pass validator/review evidence with exact lineage/revision",
+        "unknown canonical revision without HEAD fallback",
+        "current PASS with stored blocking findings exposed rather than silently approved",
+        "fail-closed invalid/changing data without state-directory creation"
+      ]
     }
   ]
 }

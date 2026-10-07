@@ -49,6 +49,7 @@ However, the project has **not** thereby declared Bootstrap v1 cutover. Until is
 - `agent next` remains a read-only query and does not authorize self-selection.
 - `agent start` and `agent validate` are operational workflow primitives, not permission to replace an explicit assignment with unrelated automatically selected work during the manual regime.
 - `status` is operational under BOOT-030 as a read-only view of registered local task/lifecycle/lock/evidence facts; see [docs/STATUS.md](docs/STATUS.md). It grants no assignment, approval, recovery, merge, or cutover authority, and an empty local registry says nothing about GitHub bootstrap completion.
+- `explain` is operational under BOOT-031 as a scoped read-only diagnostic, including transition-request preview and configured PR/CI read access; see [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md). Its `clear` flag is never gate approval, supplied prerequisites are not verified evidence, and remediation text grants no recovery/mutation authority.
 - Generic `review` CLI wiring remains unavailable; existing review library gates retain their own authority.
 - Do not invent, simulate, or claim future review, PR/merge, completion, or agent-provider behavior.
 

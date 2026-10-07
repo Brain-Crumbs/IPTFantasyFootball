@@ -204,6 +204,170 @@ function reasonCodes(result) {
   return result.reasons.map((reason) => reason.code);
 }
 
+function diagnosticFacts(reason) {
+  const { code, message, role, checkContext, dependencyTaskId, findingIds, ...facts } = reason;
+  return facts;
+}
+
+test("review diagnostics distinguish missing, stale, FAIL and BLOCKED from structured approval facts", async () => {
+  const cases = [
+    {
+      approval: { status: "NONE" },
+      expected: { condition: "missing", expectedRevision: revision, observedStatus: "NONE" },
+    },
+    {
+      approval: { status: "STALE", outcome: "PASS", revisionIdentity: "prior-revision", sequence: 7 },
+      expected: {
+        condition: "stale", evidenceRef: "BOOT-024::role::Architect@7", revisionIdentity: "prior-revision",
+        expectedRevision: revision, observedStatus: "STALE", observedConclusion: "PASS",
+      },
+    },
+    ...["FAIL", "BLOCKED"].map((outcome) => ({
+      approval: { status: "CURRENT", outcome, sequence: 8 },
+      expected: {
+        condition: outcome === "FAIL" ? "failed" : "blocked", evidenceRef: "BOOT-024::role::Architect@8",
+        revisionIdentity: revision, expectedRevision: revision, observedStatus: "CURRENT", observedConclusion: outcome,
+      },
+    })),
+  ];
+  for (const { approval, expected } of cases) {
+    const engine = makeEngine({
+      lifecycleState: new FakeLifecycleStatePort(new Map([["BOOT-024", "ARCHITECTURE_REVIEW"]])),
+      approvals: new FakeApprovalsPort(approvalResult({ roles: [{ role: "Architect", approval, historyCount: 8 }] })),
+      // NONE/STALE must not introduce any new evidence read to obtain diagnostic metadata.
+      evidence: new FakeEvidencePort(new Map(), { fail: approval.status !== "CURRENT" }),
+    });
+    const result = await engine.evaluate({ taskId: "BOOT-024" });
+    assert.equal(result.ready, false);
+    assert.deepEqual(reasonCodes(result), ["TASK_NOT_MERGE_READY", "REVIEW_NOT_CURRENT_PASS"]);
+    assert.deepEqual(diagnosticFacts(result.reasons[1]), expected);
+    assert.ok(Object.isFrozen(result.reasons[1]));
+    assert.deepEqual(await engine.evaluate({ taskId: "BOOT-024" }), result);
+  }
+});
+
+test("lifecycle diagnostic facts identify absence, failed states, blocked stages and stale revision binding", async () => {
+  for (const [state, boundRevision, condition] of [
+    [undefined, revision, "missing"],
+    ["UAT_REVIEW", revision, "blocked"],
+    ["QA_FAILED", revision, "failed"],
+    ["MERGE_BLOCKED", revision, "blocked"],
+    ["MERGE_READY", "prior-revision", "stale"],
+  ]) {
+    const states = new Map(state === undefined ? [] : [["BOOT-024", state]]);
+    const result = await makeEngine({ lifecycleState: new FakeLifecycleStatePort(states, { boundRevision }) })
+      .evaluate({ taskId: "BOOT-024" });
+    const reason = result.reasons.find((entry) => entry.code === "TASK_NOT_MERGE_READY");
+    assert.equal(reason.condition, condition);
+    assert.equal(reason.observedState, state ?? "PLANNED");
+    assert.equal(reason.expectedRevision, revision);
+    if (state === "MERGE_READY") {
+      assert.equal(reason.revisionIdentity, "prior-revision");
+      assert.equal(reason.evidenceRef, "fixture");
+    } else {
+      assert.equal(reason.revisionIdentity, undefined);
+      assert.equal(reason.evidenceRef, undefined);
+    }
+  }
+  const lifecycleState = { get: () => ({ taskId: "BOOT-024", currentState: "MERGE_READY", history: [] }) };
+  const result = await makeEngine({ lifecycleState }).evaluate({ taskId: "BOOT-024" });
+  assert.equal(result.reasons[0].condition, "missing", "a label without revision evidence is not an observed stale revision");
+});
+
+test("dependency diagnostic facts retain observed state and evidence without inventing a required revision", async () => {
+  const states = new FakeLifecycleStatePort(new Map([
+    ["BOOT-024", "MERGE_READY"], ["BOOT-010", "IN_DEVELOPMENT"], ["BOOT-011", "QA_FAILED"],
+  ]));
+  const lifecycleState = {
+    get(taskId) {
+      if (taskId !== "BOOT-011") return states.get(taskId);
+      return {
+        taskId, currentState: "QA_FAILED",
+        history: [{ toState: "QA_FAILED", evidenceRef: "BOOT-011::role::QA@3", revisionIdentity: "dependency-revision" }],
+      };
+    },
+  };
+  const result = await makeEngine({ tasks: [task({ dependencies: ["BOOT-011", "BOOT-009", "BOOT-010"] })], lifecycleState })
+    .evaluate({ taskId: "BOOT-024" });
+  assert.deepEqual(result.reasons.map(({ dependencyTaskId, ...reason }) => ({ dependencyTaskId, ...diagnosticFacts(reason) })), [
+    { dependencyTaskId: "BOOT-009", condition: "missing", observedState: "PLANNED" },
+    { dependencyTaskId: "BOOT-010", condition: "blocked", observedState: "IN_DEVELOPMENT" },
+    {
+      dependencyTaskId: "BOOT-011", condition: "failed", observedState: "QA_FAILED",
+      evidenceRef: "BOOT-011::role::QA@3", revisionIdentity: "dependency-revision",
+    },
+  ]);
+});
+
+test("CI diagnostic facts distinguish missing, pending and completed unsuccessful runs", async () => {
+  const name = DEFAULT_REQUIRED_CI_CHECKS[0];
+  const cases = [
+    { runs: [], expected: { condition: "missing", expectedRevision: revision } },
+    ...["queued", "in_progress", "waiting", "requested", "pending"].map((status) => ({
+      runs: [checkRun(name, { status, conclusion: null })],
+      expected: {
+        condition: "blocked", revisionIdentity: revision, expectedRevision: revision,
+        observedStatus: status, observedConclusion: null,
+      },
+    })),
+    ...["failure", "cancelled", "timed_out", "neutral", "skipped", null].map((conclusion) => ({
+      runs: [checkRun(name, { conclusion })],
+      expected: {
+        condition: "failed", revisionIdentity: revision, expectedRevision: revision,
+        observedStatus: "completed", observedConclusion: conclusion,
+      },
+    })),
+  ];
+  for (const { runs, expected } of cases) {
+    const result = await makeEngine({ ciStatus: new FakeCiPort({ runs }), requiredCiChecks: [name] })
+      .evaluate({ taskId: "BOOT-024" });
+    assert.equal(result.ready, false);
+    assert.deepEqual(reasonCodes(result), ["CI_CHECK_NOT_SUCCESSFUL"]);
+    assert.deepEqual(diagnosticFacts(result.reasons[0]), expected);
+  }
+});
+
+test("pull-request diagnostic facts identify missing PRs, base blockers and exact observed head drift", async () => {
+  const absent = await makeEngine({ pullRequests: new FakePrPort({ existing: [] }) }).evaluate({ taskId: "BOOT-024" });
+  assert.deepEqual(diagnosticFacts(absent.reasons[0]), { condition: "missing", expectedRevision: revision });
+  const pr = pullRequest({ baseRef: "develop", headSha: "remote-head" });
+  const result = await makeEngine({ pullRequests: new FakePrPort({ existing: [pr] }) }).evaluate({ taskId: "BOOT-024" });
+  assert.deepEqual(reasonCodes(result), ["PULL_REQUEST_BASE_MISMATCH", "PULL_REQUEST_HEAD_MISMATCH"]);
+  assert.deepEqual(result.reasons.map(diagnosticFacts), ["blocked", "stale"].map((condition) => ({
+    condition, evidenceRef: pr.htmlUrl, revisionIdentity: "remote-head", expectedRevision: revision,
+  })));
+});
+
+test("finding diagnostics reference the already-read evidence record and exact finding IDs", async () => {
+  let reads = 0;
+  const lineageId = "BOOT-024::role::QA";
+  const engine = makeEngine({
+    lifecycleState: new FakeLifecycleStatePort(new Map([["BOOT-024", "QA_FAILED"]])),
+    approvals: new FakeApprovalsPort(approvalResult({
+      roles: [{ role: "QA", approval: { status: "CURRENT", outcome: "FAIL", sequence: 4 }, historyCount: 4 }],
+    })),
+    evidence: { getCurrent(lineage) {
+      reads += 1;
+      assert.equal(lineage, lineageId);
+      return {
+        lineageId, sequence: 4, status: "CURRENT", storedAt: "2026-01-01T00:00:00Z",
+        payload: { revisionIdentity: revision, outcome: "FAIL", findings: [
+          { findingId: "qa-blocker", severity: "HIGH" }, { findingId: "qa-minor", severity: "LOW" },
+        ] },
+      };
+    } },
+  });
+  const result = await engine.evaluate({ taskId: "BOOT-024" });
+  assert.equal(reads, 1, "metadata must not introduce an extra evidence read");
+  const reason = result.reasons.find(({ code }) => code === "BLOCKING_FINDINGS_UNRESOLVED");
+  assert.deepEqual(diagnosticFacts(reason), {
+    condition: "blocked", evidenceRef: `${lineageId}@4`, revisionIdentity: revision,
+    expectedRevision: revision, observedConclusion: "FAIL",
+  });
+  assert.deepEqual(reason.findingIds, ["qa-blocker"]);
+  assert.ok(Object.isFrozen(reason.findingIds));
+});
+
 test("an all-green exact-head scenario is ready with no reasons", async () => {
   const engine = makeEngine();
   const result = await engine.evaluate({ taskId: "BOOT-024" });

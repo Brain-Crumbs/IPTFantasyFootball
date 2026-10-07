@@ -2,14 +2,16 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.next-task",
-  "moduleVersion": "1.0.0",
+  "moduleVersion": "1.1.0",
   "structuralContract": {
     "interfaces": [
       "selectNextEligibleTask(registry, options?)",
       "options.taskStates: ReadonlyMap<taskId, TaskLifecycleState>",
       "result kinds: selected | empty | complete | blocked",
       "selected { taskId, title, canonicalBranch, state }",
-      "blocked task { taskId, title, canonicalBranch, state, blockers }"
+      "blocked task { taskId, title, canonicalBranch, state, blockers }",
+      "explainTaskEligibility(registry, taskId, options?): TaskEligibilityExplanation",
+      "TaskEligibilityExplanation { taskId, state, eligible, blockers }"
     ]
   },
   "semanticContract": {
@@ -21,7 +23,8 @@
       "deterministic-tie-breaking",
       "blocking-reasons",
       "empty-complete-blocked-distinction",
-      "canonical-branch-metadata"
+      "canonical-branch-metadata",
+      "named-task-eligibility-explanation"
     ],
     "behavioralConstraints": [
       "eligible states are READY and PLANNED",
@@ -32,7 +35,10 @@
       "blocked higher-priority work does not prevent lower-priority eligible work from being selected",
       "missing lifecycle snapshot entries are treated as PLANNED until BOOT-009 provides authoritative lifecycle integration",
       "invalid dependency graphs fail before selection output is returned",
-      "equivalent registry and lifecycle snapshots produce equivalent selection results"
+      "equivalent registry and lifecycle snapshots produce equivalent selection results",
+      "named-task explanation reuses the selector blocker predicate without changing ordering or aggregate result meanings",
+      "named DONE task is ineligible with TASK_STATE_INELIGIBLE; aggregate selection still omits DONE blockers and returns complete when all tasks are DONE",
+      "named-task explanation rejects an unregistered task and can be eligible while another task is selected"
     ],
     "invariants": [
       "selection does not mutate lifecycle state",
@@ -112,6 +118,30 @@
         "multiple eligible tasks with deterministic tie-break",
         "higher-priority blocked task with lower-priority eligible task",
         "tasks present but all blocked"
+      ]
+    },
+    {
+      "consumerId": "control-plane.workflow-diagnostics",
+      "expectations": [
+        "named-task predicates agree with selection eligibility without duplicating policy",
+        "task identity and direct/transitive dependency reasons remain explicit; no assignment/start policy added"
+      ],
+      "requiredCapabilities": [
+        "named-task-eligibility-explanation",
+        "lifecycle-state-eligibility",
+        "dependency-eligibility",
+        "blocking-reasons"
+      ],
+      "acceptedRanges": [
+        "eligible true or false",
+        "all lifecycle states and documented blocker codes",
+        "RangeError for unregistered task and dependency graph validation failures"
+      ],
+      "requiredReachableRanges": [
+        "eligible task while another task wins selection",
+        "unsatisfied direct/transitive dependency",
+        "ineligible active or DONE task",
+        "unregistered-task rejection"
       ]
     }
   ]

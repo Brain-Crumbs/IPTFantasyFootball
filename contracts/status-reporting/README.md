@@ -120,3 +120,33 @@ Preserving TypeScript shapes while hiding stale/missing/blocked outcomes would v
 - [ ] Can every read remain non-mutating, including adapter construction?
 - [ ] Does a changed or invalid snapshot fail closed without claiming transactional authority?
 - [ ] Are scope, manual-bootstrap authority, and independent review/merge boundaries preserved?
+
+## BOOT-031 diagnostic consumer
+
+`control-plane.workflow-diagnostics` is a direct read-only consumer. This registration documents an existing producer capability; it does not change producer policy or module version.
+
+Expectations:
+
+- validated latest-lineage evidence and exact local revisions are reusable without copying status gate policy.
+- read-only source construction and invalid/changing-input rejection remain available; diagnostics supplies its own explicit scope.
+
+Required capabilities:
+
+- read-only-project-status.
+- latest-revision-bound-evidence-status.
+- existing-next-task-selection.
+- fail-closed-status-observation.
+
+Accepted producer-output ranges:
+
+- all local task lifecycle states and nullable canonical revisions.
+- evidence currency NONE CURRENT STALE UNKNOWN_REVISION and outcome PASS FAIL BLOCKED or null.
+- latest evidence identity reason and blocking findings.
+- read failure for invalid or observably changing source.
+
+Required reachable producer-output ranges:
+
+- missing stale and current non-pass validator/review evidence with exact lineage/revision.
+- unknown canonical revision without HEAD fallback.
+- current PASS with stored blocking findings exposed rather than silently approved.
+- fail-closed invalid/changing data without state-directory creation.

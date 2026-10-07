@@ -1,9 +1,9 @@
 # Agent Control Plane CLI contract
 
-**Task:** BOOT-005 / issue #7, extended by BOOT-008 / issue #10, BOOT-013 / issue #15, BOOT-016 / issue #18, BOOT-029 / issue #31, and BOOT-030 / issue #32
+**Task:** BOOT-005 / issue #7, extended by BOOT-008 / issue #10, BOOT-013 / issue #15, BOOT-016 / issue #18, BOOT-029 / issue #31, BOOT-030 / issue #32, and BOOT-031 / issue #33
 **Parent architecture:** issue #1
 
-The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic read-only next-task selection. BOOT-013 adds the canonical start-only Developer workflow. BOOT-016 adds the canonical developer validation gate. BOOT-029 adds local/manual provider packet export, import, and waiting. BOOT-030 adds read-only local project status and persisted lifecycle input for default next selection. Independent review, sequential orchestration, and controlled completion exist as library gates; their generic CLI surfaces remain reserved.
+The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic read-only next-task selection. BOOT-013 adds the canonical start-only Developer workflow. BOOT-016 adds the canonical developer validation gate. BOOT-029 adds local/manual provider packet export, import, and waiting. BOOT-030 adds read-only local project status and persisted lifecycle input for default next selection. BOOT-031 adds scoped read-only task/transition/validation/review/merge explanations. Independent review, sequential orchestration, and controlled completion exist as library gates; their generic CLI surfaces remain reserved.
 
 ## Clean-checkout setup
 
@@ -41,6 +41,8 @@ Implemented:
 - `version` (also `--version`, `-v`) — BOOT-005
 - `next` — BOOT-008
 - `status` — BOOT-030
+- `explain task|validation|reviews|merge <task-id>` — BOOT-031
+- `explain transition <request-file>` — BOOT-031
 - `start <owner-id> <run-id>` — BOOT-013
 - `validate <task-id> <actor-id> <run-id>` — BOOT-016
 - `manual export <request-file> <exchange-dir>` — BOOT-029
@@ -84,6 +86,20 @@ npm run --silent agent -- --json status
 No positional arguments are accepted. Human and JSON views derive from one read-only `ProjectStatus` result with `data.statusVersion: "1.0.0"`, `scope: "LOCAL_REGISTERED_TASKS"`, observation timestamp, progress/phase counts, active tasks, canonical branches/revisions, lifecycle stages, assignments, latest evidence currency/outcomes, concrete blockers, and BOOT-008 next eligibility. See [STATUS.md](STATUS.md) for the full payload semantics and source boundaries.
 
 A valid empty or blocked observation succeeds (exit `0`); invalid or changing authoritative input fails closed (exit `70`). An empty local registry is not project completion. Status does not fetch GitHub/remote state, mutate runtime state, recover locks, run gates, or declare cutover. The stable top-level JSON envelope is unchanged.
+
+## `explain` commands
+
+```sh
+npm run agent -- explain task <task-id>
+npm run --silent agent -- --json explain validation <task-id>
+npm run --silent agent -- --json explain reviews <task-id>
+npm run --silent agent -- --json explain transition <request-file>
+npm run --silent agent -- --json explain merge <task-id>
+```
+
+The [diagnostics guide](DIAGNOSTICS.md) defines all five scopes, the full `TransitionRequest` input, required-validator resolution, declared review-gap auditing, and read-only merge configuration. Output uses the unchanged envelope with `command: "explain"` and `data.diagnosticsVersion: "1.0.0"`. Each finding has `code`, `condition: missing|failed|stale|blocked`, `predicate`, `message`, relevant `references`, and actionable `remediation`. Human output renders the same immutable result. `clear` means no observed failures within the named scope, not gate approval or permission to act.
+
+Exactly two positional arguments are required. Invalid subject/target, request transport/role policy, or unregistered task uses exit `2`; malformed or observably changing authoritative input uses exit `70`, with no partial successful data. A successfully explained block exits `0`, including missing merge configuration. `explain merge` reads real PR/CI state only when `GITHUB_REPOSITORY` and existing `GITHUB_TOKEN` or `GH_TOKEN` read access are configured. It does not authenticate or display secrets. Other explain subjects need no remote source. No explain command mutates workflow state, creates state directories, runs validators/reviews, fetches Git refs, repairs blockers, or merges.
 
 ## `start` command
 
@@ -223,7 +239,7 @@ Expected command errors remain machine-readable on stdout and are distinguished 
 | `4` | `WORKFLOW_BLOCKED` | A deterministic workflow prerequisite/conflict or an expected manual-adapter failure prevented completion. |
 | `70` | `INTERNAL_ERROR` | Unexpected runtime failure or repository input that cannot be trusted. |
 
-All errors are non-zero. The top-level JSON envelope remains unchanged; `start`, `validate`, `manual`, and `status` have command-specific data shapes.
+All errors are non-zero. The top-level JSON envelope remains unchanged; `start`, `validate`, `manual`, `status`, and `explain` have command-specific data shapes.
 
 ## Provider neutrality
 

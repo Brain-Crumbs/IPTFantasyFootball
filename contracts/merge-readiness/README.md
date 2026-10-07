@@ -7,7 +7,7 @@
 ## Identity and purpose
 
 - **Module ID:** `control-plane.merge-readiness`
-- **Module version:** `1.0.0`
+- **Module version:** `1.1.0`
 - **Manifest:** `./module-contract.json`
 
 `control-plane.merge-readiness` computes whether a task's pull request is merge-ready, deterministically, from evidence every earlier bootstrap module already produced: the task's exact current Git revision (BOOT-011), its own BOOT-009 lifecycle record, per-role review approval status (BOOT-021's `getApprovalStatus()`) surfaced as diagnostic detail, the findings recorded on any non-`PASS` current review (BOOT-015's evidence store), each declared dependency's lifecycle state (BOOT-009), the required GitHub Actions CI check results for that exact revision (BOOT-023), and the canonical open pull request's actual head/base identity (BOOT-022's own `PullRequestRecord` shape). `MergeReadinessPolicyEngine.evaluate(request)` returns a `ready` boolean and a typed, machine-readable `reasons` array explaining every gate that is not satisfied — there is no request field or override parameter that can force `ready: true` over a failed deterministic gate, and no reason is ever derived from free-text/narrative input.
@@ -31,7 +31,8 @@ Primary API:
 - `MergeReadinessPolicyEngine.evaluate(request: EvaluateMergeReadinessRequest): Promise<EvaluateMergeReadinessResult>`
 - `EvaluateMergeReadinessRequest { taskId }`
 - `EvaluateMergeReadinessResult { taskId, revision, pullRequestNumber, ready, reasons }`
-- `MergeReadinessReason { code, message, role?, checkContext?, dependencyTaskId?, findingIds? }`
+- `MergeReadinessReason { code, message, role?, checkContext?, dependencyTaskId?, findingIds?, condition?, evidenceRef?, revisionIdentity?, expectedRevision?, observedState?, observedStatus?, observedConclusion? }`
+- `MergeReadinessCondition = "missing" | "failed" | "stale" | "blocked"`
 - `MergeReadinessReasonCode = TASK_NOT_MERGE_READY | PULL_REQUEST_NOT_FOUND | PULL_REQUEST_HEAD_MISMATCH | PULL_REQUEST_BASE_MISMATCH | REVIEW_NOT_CURRENT_PASS | BLOCKING_FINDINGS_UNRESOLVED | CI_CHECK_NOT_SUCCESSFUL | DEPENDENCY_NOT_SATISFIED`
 - `MergeReadinessError { code, recoverable }`
 - `DEFAULT_REQUIRED_CI_CHECKS` — `["Build and test (Node)", "Schema and contract validation (Python)"]`, matching `docs/CI.md`'s documented check contexts
@@ -51,6 +52,20 @@ Concrete provider adapters:
 - `CiStatusProviderError { code, status }`
 - `new GitHubMergeReadinessPullRequestOperations({ owner, repo, token, apiBaseUrl?, fetchImpl? })` — implements `MergeReadinessPrPort` over the GitHub REST pulls-list endpoint, filtered by `head` only; throws BOOT-022's own `PullRequestProviderError` type
 - `createLocalMergeReadinessPolicyEngine(repositoryRoot, options)` — local composition root
+
+### Additive diagnostic facts (BOOT-031 / issue #33)
+
+Version `1.1.0` adds optional structured fields to `MergeReadinessReason` so diagnostic consumers need not parse `message`. Every reason emitted by this implementation includes `condition`. Fields remain optional in the public interface to preserve existing injected producers and consumers; a missing field means the fact was not supplied, never that the gate passed. Existing reason codes, messages, order, readiness predicates, and thrown errors are unchanged. `ready` remains exactly `reasons.length === 0`.
+
+- `condition` describes the concrete predicate: `missing` for absent lifecycle/review/CI/PR evidence; `failed` for a recorded failed lifecycle stage, a current `FAIL` review, or a completed unsuccessful CI gate; `stale` for review/merge-ready revision drift or a mismatched PR head; `blocked` for other unmet prerequisites, pending CI, a current `BLOCKED` review, unresolved blocking findings, or a wrong PR base.
+- `evidenceRef` is the exact `lineageId@sequence` for a recorded review or finding; lifecycle reasons copy the most recent history event's existing evidence reference, if present. PR mismatch reasons carry the discovered PR's `htmlUrl`. Missing facts do not acquire invented evidence IDs. CI retains its existing `checkContext`; its provider port exposes no run ID or URL.
+- `revisionIdentity` is the observed evidence/history revision or PR head, when known. Current review and CI reasons use the exact revision their producer queried. `expectedRevision` is the current revision under evaluation whenever that gate is revision-bound. Dependency completion is state-based, so it does not invent a required dependency revision.
+- `observedState` is the observed task/dependency lifecycle state (including the existing `PLANNED` default for an absent record). Recorded `DEV_VALIDATION_FAILED`, `QA_FAILED`, `ARCHITECTURE_FAILED`, and `UAT_FAILED` states are `failed`; other non-ready states are `blocked`. `MERGE_READY` lacking any revision binding is `missing`; a binding to another revision is `stale`.
+- `observedStatus` preserves approval currency (`NONE`, `STALE`, `CURRENT`) or the CI status without normalization. `observedConclusion` preserves the review outcome or CI conclusion, including an explicit CI `null`. A completed CI result other than `success` is a failed success predicate, regardless of the provider's exact conclusion; pending CI remains `blocked`.
+
+Metadata comes only from typed facts already read by the existing evaluator. It adds no evidence/provider reads, writes, approval interpretation, override, or recovery authority. Finding references describe the record already read for those findings. The `MERGE_READY` primary-gate shortcut remains intact, including tasks with no independent review stage.
+
+`evaluate()` is read-only. The existing `createLocalMergeReadinessPolicyEngine()` composition initializes writable stores and can create local state directories; it is not a read-only diagnostic construction path. Read-only callers must inject read-only ports rather than use that factory.
 
 ## Capabilities
 
@@ -121,6 +136,12 @@ Required capabilities:
 - `deterministic-merge-readiness-computation-from-exact-revision-evidence`
 - `machine-readable-typed-not-ready-reasons`
 - `no-override-parameter-for-a-failed-deterministic-gate`
+
+### control-plane.workflow-diagnostics (BOOT-031)
+
+Diagnostic consumers use the additive `condition` and provenance/status fields to classify an existing blocker without parsing prose or reimplementing merge policy. They must retain the producer's reason code and `ready` result; missing optional metadata on an older injected result cannot imply readiness. No new dependency from this producer onto workflow diagnostics or status reporting is introduced.
+
+Required capabilities are `machine-readable-typed-not-ready-reasons` and `structured-missing-failed-stale-blocked-diagnostic-facts-with-evidence-and-revision-provenance`. This direct consumer requires every current producer reason to carry `condition`, with exact evidence references, observed/expected revisions, lifecycle states, approval/CI statuses, and conclusions when the producer has those facts. Its accepted range includes older injected reasons without optional metadata, which remain blocking reasons. Both `ready: true` with zero reasons and `ready: false` with each existing reason code must remain reachable under the existing policy; metadata must never relax the exact-revision, lifecycle, review, findings, dependency, CI, or PR predicates.
 
 ## Consumer expectations and accepted ranges
 

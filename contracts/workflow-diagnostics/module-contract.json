@@ -1,0 +1,135 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.workflow-diagnostics",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "WorkflowDiagnostics(dependencies: WorkflowDiagnosticsDependencies)",
+      "explainTask(taskId: string, observedAt: string): WorkflowExplanation",
+      "explainValidation(taskId: string, observedAt: string): WorkflowExplanation",
+      "explainReviews(taskId: string, observedAt: string): WorkflowExplanation",
+      "explainTransition(request: TransitionRequest, observedAt: string): WorkflowExplanation",
+      "explainMerge(taskId: string, observedAt: string): Promise<WorkflowExplanation>",
+      "createLocalWorkflowDiagnostics(repositoryRoot: string, options?: LocalWorkflowDiagnosticsOptions): Promise<WorkflowDiagnostics>",
+      "renderWorkflowExplanation(result: WorkflowExplanation): string",
+      "WorkflowDiagnosticsDependencies { source: StatusReportingDependencies, validatorResolver: DeveloperValidatorResolver, mergeReadiness?: Pick<MergeReadinessPolicyEngine, evaluate> }",
+      "LocalWorkflowDiagnosticsOptions { registry?, validatorResolver?, merge?: LocalMergeReadinessOptions }",
+      "WorkflowExplanation { diagnosticsVersion: 1.0.0, subject, scope, taskId, canonicalBranch, revision, state, observedAt, clear, findings, evidence, nextTaskId, transition, merge, notes }",
+      "DiagnosticFinding { code, condition: missing|failed|stale|blocked, predicate, message, references, remediation: { action, reference } }",
+      "DiagnosticEvidence extends EvidenceStatus { required: boolean }"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "existing-task-eligibility-explanation",
+      "pure-transition-request-preview",
+      "required-validator-evidence-audit",
+      "declared-independent-review-audit",
+      "existing-merge-readiness-explanation",
+      "typed-actionable-diagnostics",
+      "read-only-fail-closed-observation"
+    ],
+    "behavioralConstraints": [
+      "subjects are task transition validation reviews merge, with explicit diagnostic scopes; clear means findings.length equals zero within that scope only",
+      "task eligibility delegates next-task predicates: READY/PLANNED with every direct/transitive dependency DONE; named DONE is ineligible and eligible work can rank behind nextTaskId; assignment/start gates remain separate",
+      "required validator specs come from the same injected developer-validation resolver; local defaults require repository:build and repository:test; ValidationExecutor constructor validates specs but run is never called",
+      "optional validator evidence never produces a required blocker; DEV_VALIDATED active review stages MERGE_READY and MERGE_BLOCKED also audit the revision-bound DEV_VALIDATED history event",
+      "review audit covers declared QA Architect UAT/Product including future stages as gaps, without making future approval an earlier-stage prerequisite or inventing MergeController approval; Developer handoff/context/actor checks remain gate responsibilities",
+      "only latest validated lineage evidence is used; currency NONE CURRENT STALE UNKNOWN_REVISION is independent of outcome PASS FAIL BLOCKED or null; absent sequence/revision is null and stale condition takes precedence over old outcome",
+      "transition preview requires registered review-role policy and calls existing pure lifecycle rules; returned records are discarded and supplied prerequisites remain unverified caller assertions",
+      "merge delegates unchanged BOOT-024 readiness including exact-revision MERGE_READY and no-review path; structured reasons preserve relevant identities; absent PR/CI configuration is blocked and BOOT-025 must recheck at action time",
+      "findings always carry task identity and relevant dependency role validator lineage/sequence revision finding CI PR or prerequisite references plus actionable owning-workflow references",
+      "canonical revisions are exact local commits or null, without fetch or HEAD fallback; fixed timestamp and equivalent producer inputs produce equivalent observations",
+      "consecutive captures and lifecycle/merge rechecks reject observed local changes, without transaction isolation writer exclusion or future remote freshness guarantees",
+      "successful missing failed stale or blocked observations are data; malformed/changing authoritative inputs fail closed without partial success",
+      "the command payload is diagnosticsVersion 1.0.0; the CLI envelope remains schemaVersion 1.0.0 and no persisted schema is added"
+    ],
+    "invariants": [
+      "no state-directory initialization, lifecycle/evidence/assignment writes, branch mutation/fetch/push, recovery, repair, validator/review execution, agent invocation or merge",
+      "human and JSON views use the same immutable explanation without independent policy calculation",
+      "no overrides synthetic task registration fabricated approval or narrative evidence authority",
+      "optional validators never become required blockers and scoped clear never replaces gate approval or complete owning-workflow checks",
+      "existing authorized GitHub read credentials only; no authentication credential creation permission expansion or secret display",
+      "manual bootstrap assignment authority remains unchanged; no cutover or fantasy-product behavior"
+    ],
+    "examples": [
+      "unfinished dependency explanation names task and dependency and references the authorized workflow",
+      "new canonical commit makes prior validator PASS stale with observed and expected revisions",
+      "missing Architect approval remains missing despite another role PASS",
+      "adding caller prerequisite assertions can clear a transition preview without writing any evidence or lifecycle state",
+      "changed PR head and failed exact-head CI remain merge findings rather than triggering repairs"
+    ],
+    "edgeCases": [
+      "unregistered task fails explicitly and empty manual-bootstrap registry is never populated from GitHub checkmarks",
+      "missing canonical branch produces null revision and unknown evidence currency without unrelated HEAD fallback",
+      "invalid historical or latest evidence fails the observation instead of returning an older PASS",
+      "future declared reviews remain audit gaps and no-independent-review tasks gain no invented approval requirement",
+      "remote observations can change after return and require action-time gate rechecks",
+      "npm preagent may build ignored dist independently of the read-only diagnostic operation",
+      "schema-valid CURRENT PASS review containing stored MEDIUM+ findings produces PASS_WITH_BLOCKING_FINDINGS blocked instead of a false-clear audit",
+      "injected merge ready must equal reasons.length equals zero or diagnostics fails closed",
+      "an empty independent-review evidence audit has no invented branch or approval prerequisite when no independent roles are required"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.next-task",
+    "control-plane.task-registry",
+    "read-only control-plane.status-reporting interfaces",
+    "read-only control-plane.evidence-store interfaces",
+    "pure control-plane.lifecycle-state-machine evaluation",
+    "control-plane.dev-validation validator-resolution interface",
+    "control-plane.validation-framework constructor spec validation without execution",
+    "read-only control-plane.merge-readiness evaluation and GitHub PR/check-run adapters",
+    "read-only control-plane.review-rework approval projection",
+    "read-only control-plane.git-branch-lifecycle revision/assertion interfaces",
+    "node:fs",
+    "node:path"
+  ],
+  "forbiddenDependencies": [
+    "mutating-workflow-entry-points/*",
+    "writable-state-store-initialization/*",
+    "agent-provider-invocation/*",
+    "validator-execution/*",
+    "automatic-repair-recovery/*",
+    "authentication-credential-creation/*",
+    "pull-request-writes/*",
+    "git-fetch-push/*",
+    "fantasy-product/*",
+    "dashboard/*"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "control-plane.cli-shell",
+      "expectations": [
+        "one explanation model powers human and stable JSON envelope output",
+        "explicit scope and clear non-authority preserve all negative conditions and relevant references/remediation",
+        "invalid arguments are usage errors and invalid/changing authoritative input fails closed; observed blockers are successful data"
+      ],
+      "requiredCapabilities": [
+        "existing-task-eligibility-explanation",
+        "pure-transition-request-preview",
+        "required-validator-evidence-audit",
+        "declared-independent-review-audit",
+        "existing-merge-readiness-explanation",
+        "typed-actionable-diagnostics",
+        "read-only-fail-closed-observation"
+      ],
+      "acceptedRanges": [
+        "all five subjects/scopes and lifecycle states",
+        "nullable revision nextTaskId transition merge",
+        "clear true or false and condition missing failed stale blocked",
+        "currency NONE CURRENT STALE UNKNOWN_REVISION and outcome PASS FAIL BLOCKED or null",
+        "thrown failure for invalid or changing input"
+      ],
+      "requiredReachableRanges": [
+        "eligible named task behind aggregate selection and direct/transitive or state ineligibility",
+        "illegal/stale transition missing prerequisite and clear no-write preview",
+        "missing failed stale required validation, missing/stale DEV_VALIDATED handoff and optional non-pass without blocker",
+        "missing Architecture approval current failed/blocked review with finding IDs stale review and no-independent-review path",
+        "unconfigured merge read source changed PR head failed/pending/missing exact-head CI and existing-policy ready result",
+        "fail-closed invalid/changing inputs without partial success or mutation"
+      ]
+    }
+  ]
+}

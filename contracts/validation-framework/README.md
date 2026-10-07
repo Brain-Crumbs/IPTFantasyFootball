@@ -63,3 +63,27 @@ Every scenario — command execution, function execution, timeout capture, aggre
 ## Out-of-scope follow-up
 
 BOOT-014 deliberately does not implement evidence persistence, lifecycle transitions, or AI semantic review. Those capabilities remain owned by later BOOT tasks in issue #1.
+
+## BOOT-031 diagnostic consumer
+
+`control-plane.workflow-diagnostics` is a direct read-only consumer. This registration documents an existing producer capability; it does not change producer policy or module version.
+
+Expectations:
+
+- diagnostics calls ValidationExecutor constructor solely to apply the existing validator registration rules.
+- constructing a validator set does not execute command/function validators or require a run result.
+
+Required capabilities:
+
+- pluggable-validator-registration.
+
+Accepted producer-output ranges:
+
+- valid required/optional command or function specs.
+- the same constructor rejection for empty duplicate or invalid registrations as developer validation.
+
+Required reachable producer-output ranges:
+
+- valid optional and required specs accepted without execution.
+- empty duplicate malformed or invalid execution specs rejected before diagnostic success.
+- zero validator invocations while validating registration.

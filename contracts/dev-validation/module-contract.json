@@ -118,6 +118,26 @@
         "wrong-branch rejection",
         "not-IN_DEVELOPMENT rejection"
       ]
+    },
+    {
+      "consumerId": "control-plane.workflow-diagnostics",
+      "expectations": [
+        "diagnostics resolves the same validator specs and requiredness as the development gate for task/revision",
+        "using the resolver alone executes no validator, records no evidence, and invokes no lifecycle gate"
+      ],
+      "requiredCapabilities": [
+        "pluggable-task-and-repository-validator-resolution"
+      ],
+      "acceptedRanges": [
+        "ordered required and optional ValidatorSpec entries from injected resolver",
+        "default required repository:build and repository:test",
+        "invalid resolved specs rejected by the shared validation-framework constructor"
+      ],
+      "requiredReachableRanges": [
+        "missing required validator evidence even when no lineage has been recorded",
+        "optional failed or stale validator observed without becoming a blocker",
+        "task-specific custom required-validator set using the same resolver as developer validation"
+      ]
     }
   ]
 }

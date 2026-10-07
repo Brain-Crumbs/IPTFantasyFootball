@@ -33,3 +33,31 @@ Engine-created records use `ipt.lifecycle-state` version `1.1.0`. The v1 JSON sc
 ## Consumers
 
 Expected future consumers include assignment/start orchestration, developer validation, review workflows, merge-readiness/control, diagnostics, and status reporting. They must pass the task's authoritative `requiredReviewRoles` and use transition results rather than editing `currentState` or history directly.
+
+## BOOT-031 diagnostic consumer
+
+`control-plane.workflow-diagnostics` is a direct read-only consumer. This registration documents an existing producer capability; it does not change producer policy or module version.
+
+Expectations:
+
+- pure transition request evaluation and declarative prerequisites are reused without lifecycle persistence.
+- producer rejection codes/reasons and required review sequence remain authoritative; caller prerequisite assertions are not evidence verification.
+
+Required capabilities:
+
+- deterministic-lifecycle-transitions.
+- explicit-transition-prerequisites.
+- task-specific-review-routing.
+- stale-state-rejection.
+
+Accepted producer-output ranges:
+
+- accepted transition or every documented rejection code.
+- all supported lifecycle states and prerequisite identifiers.
+- immutable source record and returned candidate record.
+
+Required reachable producer-output ranges:
+
+- illegal transition and stale expected-state rejection.
+- review-sequence mismatch and each missing prerequisite.
+- accepted request preview without mutating input or persisted state.

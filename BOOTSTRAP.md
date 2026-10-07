@@ -32,8 +32,9 @@ Implemented foundation through the task-start boundary:
 - BOOT-027 — Sequential orchestration engine
 - BOOT-028 — Retry, timeout, cancellation, and idempotency behavior
 - BOOT-029 — Initial local/manual agent adapter
-- **Current implementation task: BOOT-030 — Project status and next-work reporting / issue #32**
-- Canonical BOOT-030 branch: `bootstrap/boot-030-status-reporting`
+- BOOT-030 — Project status and next-work reporting
+- **Current implementation task: BOOT-031 — Workflow diagnostics and explainability / issue #33**
+- Canonical BOOT-031 branch: `bootstrap/boot-031-workflow-diagnostics`
 - Bootstrap marker: see [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION)
 
 The repository-native control plane can now load and order tasks, evaluate next-task eligibility, enforce lifecycle transition prerequisites, acquire assignment locks, ensure canonical local branches, resolve exact source revision, compile bounded Developer context, and compose those capabilities through `agent start <owner-id> <run-id>`. It can also deterministically gate `IN_DEVELOPMENT -> DEV_VALIDATED`/`DEV_VALIDATION_FAILED` through `agent validate <task-id> <actor-id> <run-id>`, bind/persist an already-decided role judgment through the generic review framework, and drive the full independent review pipeline: `QaReviewGate.review()` advances `DEV_VALIDATED -> QA_REVIEW -> {ARCHITECTURE_REVIEW | UAT_REVIEW | MERGE_READY}` on QA `PASS` or `-> QA_FAILED` otherwise; `ArchitectureReviewGate.review()` advances `ARCHITECTURE_REVIEW -> {UAT_REVIEW | MERGE_READY}` on Architecture `PASS` or `-> ARCHITECTURE_FAILED` otherwise; and `UatReviewGate.review()` advances `UAT_REVIEW -> MERGE_READY` on UAT `PASS` (UAT/Product is always the last review stage) or `-> UAT_FAILED` otherwise.
@@ -65,6 +66,8 @@ BOOT-029 adds `control-plane.local-agent-adapter`: `FileManualAgentProvider` imp
 Packets bind task, role, revision, run, actor, complete context identity, and execution-input identity. Changed context/policy under the same logical identity and conflicting result imports fail closed; exact retries reuse stored files. Transport `COMPLETED` may carry semantic `PASS`, `FAIL`, or `BLOCKED`; `CANCELLED` and `ERROR` describe an external session that did not return a judgment. The adapter translates only: no exchange file is authoritative review/validation evidence, and import cannot transition lifecycle, approve, merge, or establish completion. Local files are not authenticated identities or an external sandbox; the operator must enforce the requested tool/network permissions and independent fresh sessions. Cancellation stops the local wait, not a desktop agent's tools. Vendor credentials/SDKs, desktop UI automation, generic `orchestrate` CLI wiring, and cutover remain outside BOOT-029.
 
 BOOT-030 adds the read-only `agent status` / `agent --json status` view, documented in [docs/STATUS.md](docs/STATUS.md). One result combines registered local task/phase counts, persisted lifecycle stages, canonical local branch revisions, assignments and expiry, latest validated review/validator evidence, concrete blockers, and the unchanged BOOT-008 next-task policy. Default `agent next` now reads the same persisted lifecycle map, while explicit injected maps remain supported. Selection still uses lifecycle/dependencies only; visible assignment blockers must be enforced by the start workflow. Status never mutates state, fetches refs, performs recovery, or approves a gate. Consecutive captures detect observed changes without claiming transaction isolation. GitHub bootstrap checklists are not imported: an empty local registry reports `empty`, and phase membership metadata does not invent completed tasks or declare cutover.
+
+BOOT-031 adds `control-plane.workflow-diagnostics` and `agent explain task|validation|reviews|merge <task-id>` / `agent explain transition <request-file>`, documented in [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md). Each immutable explanation identifies its scope, failed predicate, missing/failed/stale/blocked condition, relevant task/dependency/evidence/revision references, and owning-workflow remediation. It reuses BOOT-008 eligibility, pure BOOT-009 transition rules, BOOT-016 validator resolution with BOOT-014 spec validation only, BOOT-030 latest validated evidence sources, and the unchanged BOOT-024 merge policy. Optional validators do not block; future declared reviews are audit gaps, not new earlier-stage prerequisites; supplied transition prerequisites are unverified assertions. Merge PR/CI reads use existing authorized configuration and are explicitly blocked when absent. No state directories are initialized, gates executed, state repaired, or merges attempted. `clear` never grants approval or action-time authority; an empty registry remains empty and no bootstrap cutover is implied.
 
 BOOT-013 is a start-only workflow. It does not run deterministic developer validation, invoke an AI provider, execute independent reviews, create/manage pull requests, merge, or establish completion. Those remain later BOOT responsibilities.
 
@@ -139,7 +142,7 @@ The repository still contains no fantasy-football product implementation. The bo
 - cutover tooling;
 - fantasy-football product behavior.
 
-Later BOOT issues own those capabilities and must not be pulled into BOOT-013, BOOT-016, BOOT-018, BOOT-019, BOOT-020, BOOT-021, BOOT-022, BOOT-023, BOOT-024, BOOT-025, BOOT-026, BOOT-027, BOOT-028, or BOOT-029.
+Later BOOT issues own those capabilities and must not be pulled into BOOT-013, BOOT-016, BOOT-018, BOOT-019, BOOT-020, BOOT-021, BOOT-022, BOOT-023, BOOT-024, BOOT-025, BOOT-026, BOOT-027, BOOT-028, BOOT-029, BOOT-030, or BOOT-031.
 
 ## Bootstrap validation principle
 

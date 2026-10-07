@@ -25,3 +25,30 @@ This module does not create or update pull requests, merge branches, manage arbi
 ## Consumers
 
 BOOT-013's developer task-start workflow consumes this adapter after assignment/lock checks and before development begins, including the exact `HEAD` revision used to bind its Developer context package.
+
+## BOOT-031 diagnostic consumer
+
+`control-plane.workflow-diagnostics` is a direct read-only consumer. This registration documents an existing producer capability; it does not change producer policy or module version.
+
+Expectations:
+
+- merge diagnostic composition uses canonical branch assertion and exact revision lookup through the existing adapter.
+- read-only operation never ensures creates checks out fetches or pushes a branch.
+
+Required capabilities:
+
+- canonical-task-branch-resolution.
+- exact-current-revision-resolution.
+- wrong-branch-rejection.
+- git-operation-encapsulation.
+
+Accepted producer-output ranges:
+
+- exact canonical branch and current revision.
+- wrong-branch/missing-source errors preserved by the merge-readiness boundary.
+
+Required reachable producer-output ranges:
+
+- exact-head merge-readiness observation on canonical checkout.
+- wrong checked-out branch rejected rather than substituted.
+- read-only branch/revision inspection without branch creation or checkout.

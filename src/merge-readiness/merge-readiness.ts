@@ -149,6 +149,12 @@ export class MergeReadinessPolicyEngine {
     const reasons: MergeReadinessReason[] = [
       {
         code: "TASK_NOT_MERGE_READY",
+        ...lifecycleDiagnosticMetadata(taskLifecycle),
+        ...(taskState === "MERGE_READY" ? {
+          condition: taskLifecycle?.history[taskLifecycle.history.length - 1]?.revisionIdentity === undefined
+            ? "missing" as const : "stale" as const,
+        } : {}),
+        expectedRevision: revision,
         message: `Task '${task.taskId}' lifecycle state is '${taskState}', not MERGE_READY for the exact current revision '${revision}'.`,
       },
     ];
@@ -162,6 +168,9 @@ export class MergeReadinessPolicyEngine {
         reasons.push({
           code: "REVIEW_NOT_CURRENT_PASS",
           role: entry.role,
+          condition: "missing",
+          expectedRevision: revision,
+          observedStatus: approval.status,
           message: `Task '${task.taskId}' has no recorded '${entry.role}' review for revision '${revision}'.`,
         });
         continue;
@@ -170,6 +179,12 @@ export class MergeReadinessPolicyEngine {
         reasons.push({
           code: "REVIEW_NOT_CURRENT_PASS",
           role: entry.role,
+          condition: "stale",
+          evidenceRef: `${reviewResultLineageId(task.taskId, entry.role)}@${approval.sequence}`,
+          revisionIdentity: approval.revisionIdentity,
+          expectedRevision: revision,
+          observedStatus: approval.status,
+          observedConclusion: approval.outcome,
           message: `Task '${task.taskId}' '${entry.role}' review is stale (bound to revision '${approval.revisionIdentity}', not the current '${revision}').`,
         });
         continue;
@@ -178,15 +193,28 @@ export class MergeReadinessPolicyEngine {
         reasons.push({
           code: "REVIEW_NOT_CURRENT_PASS",
           role: entry.role,
+          condition: approval.outcome === "FAIL" ? "failed" : "blocked",
+          evidenceRef: `${reviewResultLineageId(task.taskId, entry.role)}@${approval.sequence}`,
+          revisionIdentity: revision,
+          expectedRevision: revision,
+          observedStatus: approval.status,
+          observedConclusion: approval.outcome,
           message: `Task '${task.taskId}' '${entry.role}' review for revision '${revision}' is '${approval.outcome}', not PASS.`,
         });
-        const blockingFindingIds = this.currentBlockingFindingIds(task, entry.role);
-        if (blockingFindingIds.length > 0) {
+        const blocking = this.currentBlockingFindings(task, entry.role);
+        if (blocking !== null && blocking.findingIds.length > 0) {
           reasons.push({
             code: "BLOCKING_FINDINGS_UNRESOLVED",
             role: entry.role,
-            findingIds: blockingFindingIds,
-            message: `Task '${task.taskId}' '${entry.role}' review for revision '${revision}' has ${blockingFindingIds.length} unresolved blocking finding(s): ${blockingFindingIds.join(", ")}.`,
+            condition: "blocked",
+            evidenceRef: `${blocking.record.lineageId}@${blocking.record.sequence}`,
+            ...(typeof blocking.record.payload.revisionIdentity === "string"
+              ? { revisionIdentity: blocking.record.payload.revisionIdentity } : {}),
+            ...(typeof blocking.record.payload.outcome === "string"
+              ? { observedConclusion: blocking.record.payload.outcome } : {}),
+            expectedRevision: revision,
+            findingIds: blocking.findingIds,
+            message: `Task '${task.taskId}' '${entry.role}' review for revision '${revision}' has ${blocking.findingIds.length} unresolved blocking finding(s): ${blocking.findingIds.join(", ")}.`,
           });
         }
       }
@@ -194,7 +222,9 @@ export class MergeReadinessPolicyEngine {
     return reasons;
   }
 
-  private currentBlockingFindingIds(task: RegisteredTask, role: ReviewRole): readonly string[] {
+  private currentBlockingFindings(
+    task: RegisteredTask, role: ReviewRole,
+  ): { readonly findingIds: readonly string[]; readonly record: StoredEvidenceRecord } | null {
     const lineageId = reviewResultLineageId(task.taskId, role);
     let record: StoredEvidenceRecord | null;
     try {
@@ -205,9 +235,9 @@ export class MergeReadinessPolicyEngine {
         `Task '${task.taskId}' ${role} review-result evidence '${lineageId}' could not be read: ${detail(error)}`,
       );
     }
-    if (record === null) return Object.freeze([]);
+    if (record === null) return null;
     const findings = record.payload.findings;
-    if (!Array.isArray(findings)) return Object.freeze([]);
+    if (!Array.isArray(findings)) return null;
     const ids: string[] = [];
     for (const finding of findings) {
       if (
@@ -219,7 +249,7 @@ export class MergeReadinessPolicyEngine {
         ids.push(finding.findingId);
       }
     }
-    return Object.freeze(ids);
+    return { findingIds: Object.freeze(ids), record };
   }
 
   private dependencyReasons(task: RegisteredTask): readonly MergeReadinessReason[] {
@@ -239,6 +269,7 @@ export class MergeReadinessPolicyEngine {
         reasons.push({
           code: "DEPENDENCY_NOT_SATISFIED",
           dependencyTaskId: dependencyId,
+          ...lifecycleDiagnosticMetadata(record),
           message: `Task '${task.taskId}' dependency '${dependencyId}' is '${state}', not DONE.`,
         });
       }
@@ -269,6 +300,8 @@ export class MergeReadinessPolicyEngine {
         reasons.push({
           code: "CI_CHECK_NOT_SUCCESSFUL",
           checkContext: context,
+          condition: "missing",
+          expectedRevision: revision,
           message: `Task '${task.taskId}' has no CI check run named '${context}' for revision '${revision}'.`,
         });
         continue;
@@ -278,6 +311,11 @@ export class MergeReadinessPolicyEngine {
         reasons.push({
           code: "CI_CHECK_NOT_SUCCESSFUL",
           checkContext: context,
+          condition: latest.status === "completed" ? "failed" : "blocked",
+          revisionIdentity: revision,
+          expectedRevision: revision,
+          observedStatus: latest.status,
+          observedConclusion: latest.conclusion,
           message: `Task '${task.taskId}' CI check '${context}' for revision '${revision}' is '${observed}', not successful.`,
         });
       }
@@ -319,6 +357,8 @@ export class MergeReadinessPolicyEngine {
         reasons: [
           {
             code: "PULL_REQUEST_NOT_FOUND",
+            condition: "missing",
+            expectedRevision: revision,
             message: `Task '${task.taskId}' has no open pull request for branch '${head}'.`,
           },
         ],
@@ -330,12 +370,20 @@ export class MergeReadinessPolicyEngine {
     if (pullRequest.baseRef !== integrationTarget) {
       reasons.push({
         code: "PULL_REQUEST_BASE_MISMATCH",
+        condition: "blocked",
+        evidenceRef: pullRequest.htmlUrl,
+        revisionIdentity: pullRequest.headSha,
+        expectedRevision: revision,
         message: `Task '${task.taskId}' pull request #${pullRequest.number} targets '${pullRequest.baseRef}', not the bootstrap integration target '${integrationTarget}'.`,
       });
     }
     if (pullRequest.headSha !== revision) {
       reasons.push({
         code: "PULL_REQUEST_HEAD_MISMATCH",
+        condition: "stale",
+        evidenceRef: pullRequest.htmlUrl,
+        revisionIdentity: pullRequest.headSha,
+        expectedRevision: revision,
         message: `Task '${task.taskId}' pull request #${pullRequest.number} head is at '${pullRequest.headSha}', not the resolved current revision '${revision}'; push the branch or wait for the pull request to sync.`,
       });
     }
@@ -391,7 +439,18 @@ export interface MergeReadinessReason {
   readonly checkContext?: string;
   readonly dependencyTaskId?: string;
   readonly findingIds?: readonly string[];
+  /** Additive diagnostic facts; existing reason codes and readiness policy are unchanged. */
+  readonly condition?: MergeReadinessCondition;
+  /** Exact lineage@sequence, lifecycle evidence reference, or discovered PR URL when available. */
+  readonly evidenceRef?: string;
+  readonly revisionIdentity?: string;
+  readonly expectedRevision?: string;
+  readonly observedState?: TaskLifecycleState;
+  readonly observedStatus?: string;
+  readonly observedConclusion?: string | null;
 }
+
+export type MergeReadinessCondition = "missing" | "failed" | "stale" | "blocked";
 
 export interface EvaluateMergeReadinessRequest {
   readonly taskId: string;
@@ -452,6 +511,21 @@ export interface MergeReadinessDependencies {
   readonly ciStatus: MergeReadinessCiPort;
   readonly integrationTarget?: string;
   readonly requiredCiChecks?: readonly string[];
+}
+
+function lifecycleDiagnosticMetadata(
+  record: LifecycleRecord | null,
+): Pick<MergeReadinessReason, "condition" | "observedState" | "evidenceRef" | "revisionIdentity"> {
+  const event = record?.history[record.history.length - 1];
+  const state = record?.currentState ?? "PLANNED";
+  const failed = state === "DEV_VALIDATION_FAILED" || state === "QA_FAILED"
+    || state === "ARCHITECTURE_FAILED" || state === "UAT_FAILED";
+  return {
+    condition: record === null ? "missing" : failed ? "failed" : "blocked",
+    observedState: state,
+    ...(event?.evidenceRef !== undefined ? { evidenceRef: event.evidenceRef } : {}),
+    ...(event?.revisionIdentity !== undefined ? { revisionIdentity: event.revisionIdentity } : {}),
+  };
 }
 
 function hasHistoryEventBoundToRevision(

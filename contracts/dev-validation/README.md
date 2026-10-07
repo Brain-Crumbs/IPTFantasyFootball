@@ -59,3 +59,28 @@ BOOT-016 deliberately does not extend the BOOT-006 `ipt.task` schema with a mach
 ## Out-of-scope follow-up
 
 BOOT-016 deliberately does not perform QA/Architecture/UAT review, does not create or manage a pull request, does not compute merge readiness, and does not invoke an AI provider. Those remain owned by later BOOT tasks in issue #1.
+
+## BOOT-031 diagnostic consumer
+
+`control-plane.workflow-diagnostics` is a direct read-only consumer. This registration documents an existing producer capability; it does not change producer policy or module version.
+
+Expectations:
+
+- diagnostics resolves the same validator specs and requiredness as the development gate for task/revision.
+- using the resolver alone executes no validator, records no evidence, and invokes no lifecycle gate.
+
+Required capabilities:
+
+- pluggable-task-and-repository-validator-resolution.
+
+Accepted producer-output ranges:
+
+- ordered required and optional ValidatorSpec entries from injected resolver.
+- default required repository:build and repository:test.
+- invalid resolved specs rejected by the shared validation-framework constructor.
+
+Required reachable producer-output ranges:
+
+- missing required validator evidence even when no lineage has been recorded.
+- optional failed or stale validator observed without becoming a blocker.
+- task-specific custom required-validator set using the same resolver as developer validation.
