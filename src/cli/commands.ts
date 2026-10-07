@@ -1,6 +1,7 @@
 import type { CommandDescriptor } from "./contracts.js";
 
 export const IMPLEMENTED_COMMANDS: readonly CommandDescriptor[] = [
+  { name: "recovery", summary: "Check consistency or apply explicitly confirmed, audited offline recovery (BOOT-032).", status: "implemented" },
   { name: "explain", summary: "Explain task, transition, validation, review, and merge predicates without mutation (BOOT-031).", status: "implemented" },
   {
     name: "status",

@@ -2,7 +2,7 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.orchestration-engine",
-  "moduleVersion": "2.0.0",
+  "moduleVersion": "2.1.0",
   "structuralContract": {
     "interfaces": [
       "new SequentialOrchestrationEngine(dependencies: OrchestrationDependencies)",
@@ -25,7 +25,8 @@
       "FileOrchestrationRunStore; MemoryOrchestrationRunStore; RunStoreError",
       "createLocalOrchestrationEngine(repositoryRoot: string, options: LocalOrchestrationOptions): Promise<SequentialOrchestrationEngine>",
       "LocalOrchestrationOptions { provider: AgentProvider, owner, repo, token, apiBaseUrl?, fetchImpl?, integrationTarget?, requiredCiChecks?, retryPolicy?, toolPermissionPolicyFor?, timeoutMsFor?, actorIdFor?, now? }",
-      "RunStoreError { code: INVALID_JOURNAL | STATE_IO_FAILED | STATE_CONFLICT | IDEMPOTENCY_CONFLICT | RUN_ACTIVE, recoverable }"
+      "RunStoreError { code: INVALID_JOURNAL | STATE_IO_FAILED | STATE_CONFLICT | IDEMPOTENCY_CONFLICT | RUN_ACTIVE, recoverable }",
+      "parseOrchestrationRunJournal(raw: string): OrchestrationRunJournal (pure parser exported for read-only recovery inspection)"
     ]
   },
   "semanticContract": {
@@ -43,7 +44,8 @@
       "lifecycle-driven-resume",
       "bounded-provider-infrastructure-retry",
       "cooperative-cancellation-and-deadline",
-      "repository-wide-exclusive-run-lock"
+      "repository-wide-exclusive-run-lock",
+      "pure-run-journal-validation"
     ],
     "behavioralConstraints": [
       "run() validates trimmed non-empty ownerId/runId/idempotencyKey, RFC 3339 occurredAt, bounded retry policy, and optional integer timeoutMs in 1..2147483647 before any wrapped stage; an invalid request is INVALID_REQUEST",
@@ -69,7 +71,7 @@
       "default actor identity is ownerId for Developer and ${ownerId}::${role} otherwise; default tool policy is allowedTools=[] and networkAccess=none; caller hooks must preserve stable identity and role separation across resumes",
       "journal stage summaries contain at most one entry per stage in ORCHESTRATION_STAGE_IDS order and can refresh on resume; they are not an append-only retry history or authoritative evidence",
       "createLocalOrchestrationEngine composes existing local gates, reads the existing lifecycle store and adds a FileOrchestrationRunStore under .agent/state/orchestration; no direct lifecycle mutation or evidence write occurs in this module",
-      "an abrupt process death can retain the lock; operators must stop and verify all repository runners, inspect and remove only the verified stale orchestration lock, retain the journal, and resume the same key/owner/run; no automatic time/PID lock stealing or general state repair is provided",
+      "an abrupt process death can retain the lock; operators must stop and verify all repository runners, inspect the original journal and token, use BOOT-032 audited release-run-lock with exact revision/token hash and confirmed quiescence, retain the journal, and resume the same key/owner/run; no automatic time/PID lock stealing or general state repair is provided",
       "2.0.0 requires custom constructors to supply durable runStore and read-only lifecycleState; BOOT-027 in-flight runs without journals and corrupted state are not automatically migrated or reconstructed",
       "a runId cannot be rebound to a different idempotency key; retry counts cannot decrease and completed start/provider checkpoints cannot be replaced or erased",
       "FileOrchestrationRunStore uses SHA-256-key .run.json files and .orchestration.lock; same-directory temporary write, file fsync, atomic rename and directory fsync precede a successful save",
@@ -201,6 +203,23 @@
         "unchanged semantic FAIL/BLOCKED stop/rework handling",
         "pending provider interruption and safe explicit same-key resume",
         "deterministic validation of actual HEAD after a Developer implementation changes it"
+      ]
+    },
+    {
+      "consumerId": "control-plane.recovery-tools",
+      "expectations": [
+        "pure parser validates original task-bound journal identity without constructing a writable run store",
+        "recovery retains journal/key/owner/run/time/attempts; new judgments use separate new identities after legal rework"
+      ],
+      "requiredCapabilities": [
+        "pure-run-journal-validation",
+        "durable-idempotency-binding"
+      ],
+      "acceptedRanges": [
+        "valid detached journal or INVALID_JOURNAL error"
+      ],
+      "requiredReachableRanges": [
+        "original run identity and pending-stage inspection without persistence or lock acquisition"
       ]
     }
   ]

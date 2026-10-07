@@ -3,7 +3,7 @@
 ## Identity and purpose
 
 - **Module ID:** `control-plane.cli-shell`
-- **Module version:** `1.3.0`
+- **Module version:** `1.4.0`
 - **Manifest:** `./module-contract.json`
 
 Provides the stable provider-neutral command-line shell, output envelope, diagnostics, exit-code vocabulary, and reviewed command routing consumed by bootstrap command implementations. BOOT-008 adds the first workflow-domain command, `next`, behind the BOOT-005 shell contract.
@@ -14,7 +14,7 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 - Machine mode: `npm run --silent agent -- --json <command>`
 - JSON envelope: `{ schemaVersion, ok, command, data, error }`
 - Exit codes: `0` success, `2` usage error, `3` recognized/unimplemented, `4` workflow blocked, `70` unexpected internal error.
-- Implemented commands: `help`, `version`, `next`, `status`, `explain task/transition/validation/reviews/merge`, `start`, `validate`, and `manual export/import/run`; see [docs/CLI.md](../../docs/CLI.md) for each command-owning contract.
+- Implemented commands: `help`, `version`, `next`, `status`, `explain task/transition/validation/reviews/merge`, `start`, `validate`, `manual export/import/run`, and `recovery check/apply`; see [docs/CLI.md](../../docs/CLI.md) for each command-owning contract.
 
 ## Capabilities
 
@@ -149,3 +149,7 @@ Compatibility rule: each required reachable outcome must remain reachable; overl
 - [ ] Is the producer reachable range still contained by each relevant consumer accepted range?
 - [ ] Is each consumer-required reachable range still contained by the producer reachable range?
 - [ ] Does `next` still preserve the stable envelope and BOOT-008 read-only boundary?
+
+## BOOT-032 recovery routing
+
+The shell adds `read-only-recovery-check-command` and `explicit-offline-recovery-apply-command` via the reviewed `control-plane.recovery-tools` dependency. `check` emits local findings with either consistency value as exit 0; `apply` requires explicit request, exact revision/hash, confirmed quiescence and separate override policy when needed. It returns historical APPLIED plus audit hashes/path, never gate approval. Payload recoveryVersion is 1.0.0; envelope remains unchanged. Invalid requests exit 2, typed repair refusals exit 4, unexpected failures exit 70. Consumers require those success/refusal outcomes and must not treat consistent/APPLIED as workflow readiness. See [RECOVERY.md](../../docs/RECOVERY.md).

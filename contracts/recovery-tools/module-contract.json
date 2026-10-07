@@ -1,0 +1,144 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.recovery-tools",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "checkRecoveryState(repositoryRoot: string, options?: { registry?: TaskRegistry, now?: string }): Promise<RecoveryCheckReport>",
+      "RecoveryCheckReport { recoveryVersion: 1.0.0, checkedAt, consistent, findings: readonly RecoveryCheckFinding[], runs: readonly RecoveryRunObservation[] }",
+      "RecoveryCheckFinding { code, taskId?, path?, message, remediation }; RecoveryRunObservation { idempotencyKey, ownerId, runId, occurredAt, pendingStage?, taskId? }",
+      "LocalRecoveryTools.create(root: string, options?: LocalRecoveryOptions): Promise<LocalRecoveryTools>; apply(input: unknown): Promise<RecoveryResult>",
+      "LocalRecoveryOptions { registry?: TaskRegistry, now?: () => string, authorizeOverride?: (request: RecoveryRequest) => boolean }",
+      "RecoveryOperation = release-assignment | transfer-assignment | release-run-lock | reset-task",
+      "RecoveryRequest { schemaVersion: 1.0.0, operationId, operation, taskId, actorId, reason, expectedRevision, expectedTargetHash, confirmedQuiescent: true, override?: { authorizationRef }, replacement?: { lockId, ownerId, runId, expiresAt? }, idempotencyKey?, expectedRecoveryLockHash? }",
+      "RecoveryAuditIntent { recoveryVersion: 1.0.0, operationId, request, actorId, reason, occurredAt, revisionIdentity, canonicalBranch, targetPath, priorState: string, resultingState: string | null, overrideAuthorized, context }",
+      "RecoveryResult { recoveryVersion: 1.0.0, operationId, status: APPLIED, completedAt, intentHash, resultingHash: string | null, auditPath }",
+      "parseRecoveryRequest(value: unknown): RecoveryRequest; recoveryHash(value: string): string; assertRecoveryPath(root: string, relative: string): void",
+      "RecoveryError { code: INVALID_REQUEST | PRECONDITION_FAILED | OVERRIDE_DENIED | STATE_CONFLICT | AUDIT_INVALID | RECOVERY_BUSY }"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": [
+      "read-only-local-consistency-check",
+      "explicit-offline-assignment-release-transfer",
+      "original-journal-run-lock-recovery",
+      "authorized-legal-rework-reset",
+      "immutable-intent-result-audit",
+      "exact-state-idempotent-recovery"
+    ],
+    "behavioralConstraints": [
+      "checkRecoveryState uses read-only sources and returns frozen findings/runs sorted by stable task/path/code/message and key/run ordering; consistent is findings.length === 0 within local scan scope only",
+      "checker reports representative malformed, missing, mismatched, unregistered, stale, interrupted and incomplete state/evidence/journal/audit conditions without running validators, providers, repair, Git fetch or remote queries; future review stages are not falsely required as already-passed gates",
+      "apply requires registered task, exact current canonical branch revision (40 or 64 lowercase hex), exact target SHA-256, actor, reason, unique operation ID, and confirmedQuiescent true; unexpected request fields fail closed",
+      "operationId is 1..80 ASCII alphanumeric/underscore/hyphen characters starting alphanumeric; request timestamps for replacement expiry and recovery clock use canonical UTC millisecond form",
+      "recovery is offline: caller stops and independently verifies all runners, direct gates, external providers and repair processes; mutex excludes only other recovery calls and does not establish normal-writer exclusion or liveness",
+      "assignment release/transfer targets a valid schema 1.1.0 ACTIVE record on the canonical branch; expired assignments are recoverable explicitly, while active non-stale assignments require an override reference and separate trusted-host authorization",
+      "override authorization defaults to deny; request authorizationRef is audit context only, never proof of authority; CLI host policy uses IPT_RECOVERY_ADMIN_ACTORS and is an OS/operator boundary rather than authentication",
+      "transfer requires a different replacement lock ID and trimmed owner/run identity; optional expiry must be strictly after recovery time; task and canonical branch are preserved",
+      "release-run-lock requires original valid task-bound journal idempotencyKey, exact orchestration token hash and externally confirmed quiescence; journal owner/run/time are retained rather than invented or rebound",
+      "reset-task requires separately authorized override and uses existing legal lifecycle transitions through BLOCKED to REWORK_REQUIRED; existing BLOCKED skips the first step, existing REWORK_REQUIRED uses BOOT-021 resume, and illegal source transitions fail",
+      "reset or assignment repair refuses a retained orchestration lock or known merge-in-progress/completion facts; controlled-merge reconciliation remains BOOT-025 authority",
+      "intent is exclusively created and flushed before mutation; separate result is exclusively created after target verification, with hashes binding full prior/resulting bytes, request, actor, reason, timestamp, revision, branch and contextual identities",
+      "retry under the same operation ID requires the same semantic request; transport key order and explicit retained-mutex hash do not change operation identity; unfinished replay accepts only exact prior or planned resulting target bytes",
+      "completed retries require matching canonical expectedRevision, then validate and return stored historical APPLIED despite later target changes; no current readiness claim or audit overwrite",
+      "retained recovery mutex can be resumed only by its original operation with matching canonical requestHash, expectedRecoveryLockHash and renewed quiescence; works before primary intent and after result, appending immutable RELEASE_INTENT with full prior token before unlink; no age/PID stealing",
+      "full prior assignment bytes are retained in recovery audit rather than added to AssignmentLockStore.getAudit; consumers must combine both audit sources",
+      "normal BOOT-028 resume preserves original key/owner/run and durable attempts; new judgment after reset uses new run/key and matching assignment runId ${newOrchestrationRunId}::developer-start, with old journals/results/evidence retained",
+      "replacement owner/run cannot already own another registered task ACTIVE assignment; ambiguous Developer-start identity is rejected",
+      "apply state-tree inspection requires depth below 32 and fewer than 100000 visited entries; oversized or unsupported non-file trees fail closed"
+    ],
+    "invariants": [
+      "no repair approves validation/review, manufactures PASS evidence, reaches MERGED/DONE, or bypasses exact-head controlled merge",
+      "lifecycle history and historical evidence/journals/attempts are preserved; recovery metadata cannot replace authoritative gate evidence",
+      "branch refs and source work are never deleted, force-moved or reset by recovery; missing or changed canonical revision blocks apply",
+      "unsafe paths, unsupported/corrupt state and conflicting identities fail closed rather than becoming arbitrary JSON repair",
+      "quiescence is an operator precondition and cannot be inferred from observation, expiry, age or PID"
+    ],
+    "examples": [
+      "expired ACTIVE assignment transfers to a fresh matching owner/run lock while lifecycle and historical evidence remain unchanged",
+      "active non-stale release without trusted-host authorization raises OVERRIDE_DENIED even with a request authorizationRef",
+      "interrupted QA resumes via original BOOT-028 key/owner/run and exact payload after explicitly audited abandoned-token release",
+      "authorized reset records original/resulting lifecycle bytes and legal REWORK_REQUIRED history; BOOT-021 then owns resuming development",
+      "crash after target write before result resumes the same intent and completes its audit only if target matches planned bytes"
+    ],
+    "edgeCases": [
+      "empty local state can have no findings without saying GitHub bootstrap is complete",
+      "retained orchestration token/pending journal is a finding even for a live run, not proof of abandonment",
+      "unknown task, missing lifecycle/branch, stale target hash, symlink or malformed audit prevents mutation",
+      "pre-intent mutex recovery requires original requestHash; an unbound/malformed token requires forensic recovery and cannot be stolen by a new operation",
+      "old PASS at the same revision may still be CURRENT evidence after reset, but cannot substitute for the reset lifecycle or authorize a merge"
+    ]
+  },
+  "allowedDependencies": [
+    "control-plane.task-registry",
+    "control-plane.lifecycle-state-machine",
+    "control-plane.status-reporting",
+    "control-plane.workflow-diagnostics",
+    "control-plane.assignment-lock (record and pure expiry observation)",
+    "control-plane.dev-validation (validator resolution only)",
+    "control-plane.evidence-store (read-only evidence types/sources)",
+    "control-plane.orchestration-engine (pure journal parser only)",
+    "node:fs",
+    "node:path",
+    "node:crypto"
+  ],
+  "forbiddenDependencies": [
+    "AI-provider or validator execution",
+    "GitHub mutation or merge APIs",
+    "arbitrary lifecycle destinations or evidence fabrication",
+    "branch deletion/reset/force-update",
+    "fantasy-product/*",
+    "distributed scheduler or authentication service"
+  ],
+  "knownConsumers": [
+    {
+      "consumerId": "control-plane.cli-shell",
+      "expectations": [
+        "keep check strictly observational and apply explicit/offline",
+        "preserve denied override, state conflict and audit failure as nonzero errors",
+        "never render APPLIED or consistent as passed workflow gates"
+      ],
+      "requiredCapabilities": [
+        "read-only-local-consistency-check",
+        "explicit-offline-assignment-release-transfer",
+        "original-journal-run-lock-recovery",
+        "authorized-legal-rework-reset",
+        "immutable-intent-result-audit",
+        "exact-state-idempotent-recovery"
+      ],
+      "acceptedRanges": [
+        "RecoveryCheckReport consistent true or false with local findings/runs",
+        "RecoveryResult status APPLIED and typed recovery failures"
+      ],
+      "requiredReachableRanges": [
+        "read-only corrupt/incomplete-state findings",
+        "stale assignment release/transfer",
+        "denied active-lock override",
+        "audited authorized reset ending REWORK_REQUIRED",
+        "original-identity interrupted-run recovery"
+      ]
+    },
+    {
+      "consumerId": "repository-operators-and-audit-reviewers",
+      "expectations": [
+        "inspect full prior/resulting state, reason, actor, timestamp/revision and immutable outcome",
+        "combine recovery and original assignment audit history",
+        "preserve normal resume identity and use a fresh identity only for genuinely new work after legal rework"
+      ],
+      "requiredCapabilities": [
+        "immutable-intent-result-audit",
+        "exact-state-idempotent-recovery",
+        "authorized-legal-rework-reset"
+      ],
+      "acceptedRanges": [
+        "immutable intent with or without completed result",
+        "typed refusal requiring investigation rather than automatic repair"
+      ],
+      "requiredReachableRanges": [
+        "same-intent recovery after interrupted mutation",
+        "complete emergency override audit without overwriting older evidence"
+      ]
+    }
+  ]
+}

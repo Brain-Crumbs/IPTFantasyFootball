@@ -36,7 +36,7 @@
       "read-only-store-mode-without-initialization-writes"
     ],
     "behavioralConstraints": [
-      "validate(payload) applies the exact same checks record() in the default writable mode applies (payload-is-an-object, supported schemaId, exact schemaVersion match, full schema-document validation, taskId pattern, lineage derivability) and reports the same EvidenceRejection shape on failure, but never writes anything either way — record() and validate() share one internal implementation, so a payload a writable record() would accept is always exactly the set validate() reports ok for, by construction rather than by keeping two implementations in sync by hand",
+      "validate(payload) applies the exact same checks record() in the default writable mode applies (payload-is-an-object, supported schemaId, exact schemaVersion match, full schema-document validation, taskId pattern, lineage derivability) and reports the same EvidenceRejection shape on failure, but never writes anything either way \u2014 record() and validate() share one internal implementation, so a payload a writable record() would accept is always exactly the set validate() reports ok for, by construction rather than by keeping two implementations in sync by hand",
       "record() accepts only payloads whose schemaId is a supported evidence schema and whose schemaVersion matches the reader's exact supported version",
       "record() validates the full payload against the corresponding schemas/v1/*.schema.json document, including $ref-resolved nested shapes and role/outcome-conditioned allOf/if/then requirements, before acceptance",
       "a lineage is derived deterministically from taskId plus validatorId for validation-evidence records, taskId plus role for review-result records, or taskId alone for merge-evidence records, so the three record kinds never collide even for the same taskId",
@@ -44,7 +44,7 @@
       "getCurrent returns the highest-sequence record for a lineage; getHistory returns every record for a lineage in sequence order with status CURRENT on the last entry and SUPERSEDED on all earlier entries",
       "checkRevision distinguishes CURRENT (matches expectedRevisionIdentity), REVISION_MISMATCH (a current record exists but for a different revision), and NOT_FOUND (no record exists for the lineage) so a caller can never mistake evidence as applying to a revision it was not recorded against",
       "the schema validator's supported JSON Schema subset includes the integer type and the minimum/maximum numeric keywords (BOOT-025), so a numeric field declared type: integer with a minimum rejects a fractional, zero, or out-of-range value at record() time, not only in the separate Python fixture validator",
-      "the schema validator's type keyword accepts either a single type string or an array of alternative type strings (BOOT-025), so a field declared type: [\"object\", \"null\"] rejects any value that is neither a well-formed object nor a genuine null at record() time — every existing single-string type declaration continues to behave identically",
+      "the schema validator's type keyword accepts either a single type string or an array of alternative type strings (BOOT-025), so a field declared type: [\"object\", \"null\"] rejects any value that is neither a well-formed object nor a genuine null at record() time \u2014 every existing single-string type declaration continues to behave identically",
       "readOnly defaults to false and leaves existing constructor/record behavior unchanged; readOnly:true skips root-directory creation and makes record() throw before validation or filesystem mutation while validate/getCurrent/getHistory/checkRevision remain available"
     ],
     "invariants": [
@@ -192,6 +192,23 @@
         "latest stale or failed evidence without fallback to older PASS",
         "schema-valid contradictory PASS with recorded findings remains visible to diagnostic consistency checks",
         "history reads without evidence directory creation or writes"
+      ]
+    },
+    {
+      "consumerId": "control-plane.recovery-tools",
+      "expectations": [
+        "checker reads historical evidence and validates revision/reference identity without mutation",
+        "reset never deletes/supersedes evidence directly and existing merge evidence blocks unsafe reset"
+      ],
+      "requiredCapabilities": [
+        "append-only-auditable-history",
+        "read-only-store-mode-without-initialization-writes"
+      ],
+      "acceptedRanges": [
+        "validated historical records, missing data and explicit schema/read failures"
+      ],
+      "requiredReachableRanges": [
+        "validated historical records, missing data and explicit schema/read failures"
       ]
     }
   ]

@@ -1,3 +1,5 @@
+import { runRecoveryCommand, renderRecoveryResult } from "./recovery.js";
+import { RecoveryError, type RecoveryRequest } from "../recovery-tools/index.js";
 import { renderWorkflowExplanation, type WorkflowDiagnostics } from "../workflow-diagnostics/index.js";
 import { runExplainCommand, ExplainUsageError } from "./explain.js";
 import { ProjectStatusReporter, createLocalStatusDependencies, readLocalLifecycleStates, renderProjectStatus } from "../status-reporting/index.js";
@@ -39,6 +41,7 @@ export interface CliRunResult {
 }
 
 export interface CliRunContext {
+  authorizeRecoveryOverride?: (request: RecoveryRequest) => boolean;
   signal?: AbortSignal;
   repositoryRoot?: string;
   taskRegistry?: TaskRegistry;
@@ -125,6 +128,8 @@ function helpText(): string {
     "",
     "Usage:",
     "  agent [--json] <command>",
+    "  agent [--json] recovery check",
+    "  agent [--json] recovery apply <request-file>",
     "  agent [--json] explain task|validation|reviews|merge <task-id>",
     "  agent [--json] explain transition <request-file>",
     "  agent [--json] start <owner-id> <run-id>",
@@ -283,6 +288,20 @@ export async function runCli(
       return fail("next", parsed.json, EXIT_CODES.INTERNAL_ERROR, {
         code: "INTERNAL_ERROR",
         message,
+      });
+    }
+  }
+
+  if (parsed.command === "recovery") {
+    try {
+      const result = await runRecoveryCommand(parsed.rest, context);
+      return succeed("recovery", parsed.json, result, renderRecoveryResult(result));
+    } catch (error: unknown) {
+      return fail("recovery", parsed.json, error instanceof RecoveryError
+        ? error.code === "INVALID_REQUEST" ? EXIT_CODES.USAGE_ERROR : EXIT_CODES.WORKFLOW_BLOCKED
+        : EXIT_CODES.INTERNAL_ERROR, {
+        code: error instanceof RecoveryError ? `RECOVERY_${error.code}` : "INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Recovery failed; preserve all state and audit files for inspection.",
       });
     }
   }

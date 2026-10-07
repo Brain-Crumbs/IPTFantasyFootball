@@ -173,3 +173,7 @@ For every proposed change, answer:
 - [ ] Is each consumer-required reachable range still contained by the producer reachable range?
 
 If structural compatibility remains but assignment/recovery semantics change, route the change through downstream Architecture semantic-compatibility review.
+
+## BOOT-032 recovery consumer
+
+`control-plane.recovery-tools` depends on `pure-assignment-expiry-observation`. validated existing ACTIVE assignment schema and canonical identity remain readable. offline recovery writes supplemental immutable prior/result audit; getAudit alone is not complete recovery lineage. Accepted and required reachable outputs: valid assignment records and expiry boolean, invalid timestamps rejected. Existing producer behavior and version are unchanged; this records the new consumer. See [the recovery contract](../recovery-tools/README.md) for offline mutation/audit boundaries.

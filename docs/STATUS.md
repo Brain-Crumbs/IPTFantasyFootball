@@ -85,7 +85,7 @@ The reporter takes two consecutive captures and rejects changed snapshots instea
 
 Malformed, unsupported, inconsistent, or unreadable authoritative inputs fail closed. Status returns no partial successful view of data it cannot trust. Expected repository-input failures follow the CLI internal-error contract (exit `70`, `ok: false`, `data: null` in JSON); invalid command arguments use exit `2`. A successfully observed blocked or empty project exits `0`.
 
-Do not repair records by hand to silence an error. Inspect the named input and use its owning workflow/recovery procedure. BOOT-031 supplies expanded [read-only explain commands](DIAGNOSTICS.md), and BOOT-032 owns generalized administrative recovery; BOOT-030 supplies operational visibility only.
+Do not repair records by hand to silence an error. Inspect the named input and use its owning workflow/recovery procedure. BOOT-031 supplies expanded [read-only explain commands](DIAGNOSTICS.md), and BOOT-032 supplies [bounded explicit offline recovery](RECOVERY.md); BOOT-030 supplies operational visibility only.
 
 ## Validation scenarios
 

@@ -1,9 +1,9 @@
 # Agent Control Plane CLI contract
 
-**Task:** BOOT-005 / issue #7, extended by BOOT-008 / issue #10, BOOT-013 / issue #15, BOOT-016 / issue #18, BOOT-029 / issue #31, BOOT-030 / issue #32, and BOOT-031 / issue #33
+**Task:** BOOT-005 / issue #7, extended by BOOT-008 / issue #10, BOOT-013 / issue #15, BOOT-016 / issue #18, BOOT-029 / issue #31, BOOT-030 / issue #32, BOOT-031 / issue #33, and BOOT-032 / issue #34
 **Parent architecture:** issue #1
 
-The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic read-only next-task selection. BOOT-013 adds the canonical start-only Developer workflow. BOOT-016 adds the canonical developer validation gate. BOOT-029 adds local/manual provider packet export, import, and waiting. BOOT-030 adds read-only local project status and persisted lifecycle input for default next selection. BOOT-031 adds scoped read-only task/transition/validation/review/merge explanations. Independent review, sequential orchestration, and controlled completion exist as library gates; their generic CLI surfaces remain reserved.
+The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic read-only next-task selection. BOOT-013 adds the canonical start-only Developer workflow. BOOT-016 adds the canonical developer validation gate. BOOT-029 adds local/manual provider packet export, import, and waiting. BOOT-030 adds read-only local project status and persisted lifecycle input for default next selection. BOOT-031 adds scoped read-only task/transition/validation/review/merge explanations. BOOT-032 adds read-only consistency checks and bounded explicit offline recovery. Independent review, sequential orchestration, and controlled completion exist as library gates; their generic CLI surfaces remain reserved.
 
 ## Clean-checkout setup
 
@@ -48,6 +48,8 @@ Implemented:
 - `manual export <request-file> <exchange-dir>` — BOOT-029
 - `manual import <packet-id> <result-file> <exchange-dir>` — BOOT-029
 - `manual run <request-file> <exchange-dir>` — BOOT-029
+- `recovery check` — BOOT-032
+- `recovery apply <request-file>` — BOOT-032
 
 Reserved commands deliberately fail until their owning task supplies behavior:
 
@@ -205,6 +207,17 @@ Expected adapter errors use envelope `error.code: "MANUAL_ADAPTER_ERROR"`; the m
 
 These commands have no workflow authority: export/import/run neither grant assignment nor validate implementation, record review evidence, advance lifecycle, create a PR, or merge. The manual operator enforces requested tool/network permissions and fresh independent role sessions. Generic `orchestrate` stays reserved; an existing authorized library caller can inject `FileManualAgentProvider`.
 
+## `recovery` commands
+
+```sh
+npm run --silent agent -- --json recovery check
+npm run --silent agent -- --json recovery apply <request-file>
+```
+
+See [RECOVERY.md](RECOVERY.md) for request examples, exact-state preconditions, operator quiescence, host authorization, interrupted reviews, immutable intent/result audit and unsupported repair cases. Check is read-only; its `consistent: false` is a successful observation (exit 0). Apply is explicit offline mutation bounded to assignment release/transfer, original-journal token release, or legal administrative rework reset. It cannot approve or complete a task.
+
+Both return payload `recoveryVersion: "1.0.0"` within the unchanged CLI envelope, with command `recovery`. Apply returns historical `APPLIED` plus audit hashes/path, never present workflow readiness. Invalid request/transport is exit 2, expected repair conflicts/denials exit 4, and unexpected failures exit 70. Recovery errors use `RECOVERY_<code>` including INVALID_REQUEST, PRECONDITION_FAILED, OVERRIDE_DENIED, STATE_CONFLICT, AUDIT_INVALID and RECOVERY_BUSY. CLI override authorization is the separately configured comma-separated `IPT_RECOVERY_ADMIN_ACTORS` allowlist (default deny), an OS/operator trust boundary rather than authentication.
+
 ## Machine-readable envelope
 
 `--json` emits exactly one JSON object to stdout for both successful command results and expected command errors:
@@ -239,7 +252,7 @@ Expected command errors remain machine-readable on stdout and are distinguished 
 | `4` | `WORKFLOW_BLOCKED` | A deterministic workflow prerequisite/conflict or an expected manual-adapter failure prevented completion. |
 | `70` | `INTERNAL_ERROR` | Unexpected runtime failure or repository input that cannot be trusted. |
 
-All errors are non-zero. The top-level JSON envelope remains unchanged; `start`, `validate`, `manual`, `status`, and `explain` have command-specific data shapes.
+All errors are non-zero. The top-level JSON envelope remains unchanged; `start`, `validate`, `manual`, `status`, `explain`, and `recovery` have command-specific data shapes.
 
 ## Provider neutrality
 

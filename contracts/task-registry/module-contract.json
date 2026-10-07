@@ -85,6 +85,24 @@
         "multi-task valid registry",
         "deterministic invalid or duplicate record rejection"
       ]
+    },
+    {
+      "consumerId": "control-plane.recovery-tools",
+      "expectations": [
+        "exact registered task/canonical branch/review policy anchors recovery",
+        "invalid registry prevents safe mutation and appears as a checker finding"
+      ],
+      "requiredCapabilities": [
+        "schema-validated-task-records",
+        "stable-task-id-registry",
+        "network-free-local-loading"
+      ],
+      "acceptedRanges": [
+        "validated registry including empty, or explicit schema/loading failure"
+      ],
+      "requiredReachableRanges": [
+        "validated registry including empty, or explicit schema/loading failure"
+      ]
     }
   ]
 }

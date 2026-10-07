@@ -84,3 +84,7 @@ Required reachable producer-output ranges:
 - missing required validator evidence even when no lineage has been recorded.
 - optional failed or stale validator observed without becoming a blocker.
 - task-specific custom required-validator set using the same resolver as developer validation.
+
+## BOOT-032 recovery consumer
+
+`control-plane.recovery-tools` depends on `pluggable-task-and-repository-validator-resolution`. recovery checker uses RepositoryValidatorResolver definitions without invoking validators. missing required evidence remains a finding rather than an invented pass. Accepted and required reachable outputs: required/optional validator definitions or resolver errors. Existing producer behavior and version are unchanged; this records the new consumer. See [the recovery contract](../recovery-tools/README.md) for offline mutation/audit boundaries.

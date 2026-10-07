@@ -61,3 +61,7 @@ Required reachable producer-output ranges:
 - illegal transition and stale expected-state rejection.
 - review-sequence mismatch and each missing prerequisite.
 - accepted request preview without mutating input or persisted state.
+
+## BOOT-032 recovery consumer
+
+`control-plane.recovery-tools` depends on `deterministic-lifecycle-transitions`, `append-only-transition-history`, `failure-and-rework-routing`. administrative reset can only use legal BLOCKED and REWORK_REQUIRED transitions with original history retained. reset intent reference records emergency reason; it is never passing validation/review evidence. Accepted and required reachable outputs: legal transition record or explicit rejection; no arbitrary destination. Existing producer behavior and version are unchanged; this records the new consumer. See [the recovery contract](../recovery-tools/README.md) for offline mutation/audit boundaries.

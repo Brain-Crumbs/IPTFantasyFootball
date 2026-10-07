@@ -138,6 +138,22 @@
         "optional failed or stale validator observed without becoming a blocker",
         "task-specific custom required-validator set using the same resolver as developer validation"
       ]
+    },
+    {
+      "consumerId": "control-plane.recovery-tools",
+      "expectations": [
+        "recovery checker uses RepositoryValidatorResolver definitions without invoking validators",
+        "missing required evidence remains a finding rather than an invented pass"
+      ],
+      "requiredCapabilities": [
+        "pluggable-task-and-repository-validator-resolution"
+      ],
+      "acceptedRanges": [
+        "required/optional validator definitions or resolver errors"
+      ],
+      "requiredReachableRanges": [
+        "required/optional validator definitions or resolver errors"
+      ]
     }
   ]
 }

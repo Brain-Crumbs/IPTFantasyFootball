@@ -2,14 +2,14 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.cli-shell",
-  "moduleVersion": "1.3.0",
+  "moduleVersion": "1.4.0",
   "structuralContract": {
     "interfaces": [
       "Human mode: npm run agent -- <command>",
       "Machine mode: npm run --silent agent -- --json <command>",
       "JSON envelope { schemaVersion, ok, command, data, error }",
       "Exit codes 0=SUCCESS, 2=USAGE_ERROR, 3=NOT_IMPLEMENTED, 4=WORKFLOW_BLOCKED, 70=INTERNAL_ERROR",
-      "Implemented commands help, version, next, status, explain task/transition/validation/reviews/merge, start, validate, manual export/import/run; command-owned contracts documented in docs/CLI.md"
+      "Implemented commands help, version, next, status, explain task/transition/validation/reviews/merge, start, validate, manual export/import/run, recovery check/apply; command-owned contracts documented in docs/CLI.md"
     ]
   },
   "semanticContract": {
@@ -21,7 +21,9 @@
       "next-task-command",
       "provider-neutral-shell",
       "read-only-project-status-command",
-      "read-only-workflow-explain-commands"
+      "read-only-workflow-explain-commands",
+      "read-only-recovery-check-command",
+      "explicit-offline-recovery-apply-command"
     ],
     "behavioralConstraints": [
       "successful commands exit 0",
@@ -39,7 +41,10 @@
       "explain emits one WorkflowExplanation with diagnosticsVersion 1.0.0 and explicit scope in the unchanged schemaVersion 1.0.0 envelope",
       "explain observed missing failed stale blocked findings are successful exit 0 data; invalid arguments task identity or transition transport/role policy use exit 2, invalid/changing authoritative input uses exit 70",
       "explain clear means no observed failure in its declared scope and never gate approval; task transition validation review and merge producers retain policy authority",
-      "explain merge optionally uses existing authorized GITHUB_REPOSITORY and GITHUB_TOKEN/GH_TOKEN read configuration; absent configuration produces an explicit blocked finding without authentication or secret display"
+      "explain merge optionally uses existing authorized GITHUB_REPOSITORY and GITHUB_TOKEN/GH_TOKEN read configuration; absent configuration produces an explicit blocked finding without authentication or secret display",
+      "recovery check returns successful local consistency findings even when consistent=false; apply requires explicit offline request with revision/hash/quiescence and returns historical APPLIED with audit path/hashes",
+      "recovery uses payload version 1.0.0 in unchanged envelope; INVALID_REQUEST is exit 2, other typed recovery errors exit 4, unexpected errors exit 70",
+      "CLI administrative override policy is separately configured IPT_RECOVERY_ADMIN_ACTORS comma list, default deny; actor/reference in a request is not authentication"
     ],
     "invariants": [
       "identical argv, observation timestamp, and equivalent repository/task-state inputs produce deterministic normal command results",
@@ -70,7 +75,8 @@
     "control-plane.task-registry",
     "control-plane.next-task",
     "control-plane.status-reporting",
-    "control-plane.workflow-diagnostics"
+    "control-plane.workflow-diagnostics",
+    "control-plane.recovery-tools"
   ],
   "forbiddenDependencies": [
     "agent-provider/*",
@@ -103,7 +109,9 @@
         "exit 3 reserved unimplemented",
         "successful next data containing selected task ID and canonical branch",
         "successful status data with explicit local scope and empty blocked stale or unknown facts preserved",
-        "successful explain data with all five scopes and missing failed stale blocked conditions, without treating clear as gate approval"
+        "successful explain data with all five scopes and missing failed stale blocked conditions, without treating clear as gate approval",
+        "successful read-only recovery consistency findings and explicit offline bounded apply outcome",
+        "nonzero invalid-request, denied override, state-conflict or audit-recovery errors"
       ]
     }
   ]

@@ -131,3 +131,7 @@ Examples assume real registered tasks or isolated fixtures, not additions to the
 - [ ] Are references, evidence identity, revision currency, and remediation preserved?
 - [ ] Does construction as well as execution avoid writes and credential creation?
 - [ ] Do malformed/changing sources fail closed without claiming atomic observation?
+
+## BOOT-032 recovery consumer
+
+`control-plane.recovery-tools` depends on `required-validator-evidence-audit`, `declared-independent-review-audit`. reuse required-validator and declared-review evidence predicates without execution or approval. only roles already required by lifecycle are historical recovery consistency prerequisites. Accepted and required reachable outputs: missing failed stale blocked findings with evidence references. Existing producer behavior and version are unchanged; this records the new consumer. See [the recovery contract](../recovery-tools/README.md) for offline mutation/audit boundaries.
