@@ -975,6 +975,13 @@ function sameIdentity(lock: AssignmentLockRecord, request: AcquireAssignmentRequ
     && lock.canonicalBranch === request.canonicalBranch;
 }
 
+/** Read-only expiry observation using the same RFC3339/leap-second semantics as acquisition. */
+export function isAssignmentLockExpired(lock: { readonly expiresAt?: string }, now: string): boolean {
+  const invalid = requireDate("now", now) ?? (lock.expiresAt === undefined ? null : requireDate("expiresAt", lock.expiresAt));
+  if (invalid !== null) throw new RangeError(invalid);
+  return lock.expiresAt !== undefined && instantAtOrBefore(lock.expiresAt, now);
+}
+
 function isStale(lock: AssignmentLockRecord, now: string): boolean {
   return lock.expiresAt !== undefined && instantAtOrBefore(lock.expiresAt, now);
 }

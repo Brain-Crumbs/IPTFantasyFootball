@@ -2,14 +2,14 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.cli-shell",
-  "moduleVersion": "1.1.0",
+  "moduleVersion": "1.2.0",
   "structuralContract": {
     "interfaces": [
       "Human mode: npm run agent -- <command>",
       "Machine mode: npm run --silent agent -- --json <command>",
       "JSON envelope { schemaVersion, ok, command, data, error }",
-      "Exit codes 0=SUCCESS, 2=USAGE_ERROR, 3=NOT_IMPLEMENTED, 70=INTERNAL_ERROR",
-      "Implemented commands help, version, next"
+      "Exit codes 0=SUCCESS, 2=USAGE_ERROR, 3=NOT_IMPLEMENTED, 4=WORKFLOW_BLOCKED, 70=INTERNAL_ERROR",
+      "Implemented commands help, version, next, status, start, validate, manual export/import/run; command-owned contracts documented in docs/CLI.md"
     ]
   },
   "semanticContract": {
@@ -19,7 +19,8 @@
       "reserved-command-failure",
       "reviewed-command-routing",
       "next-task-command",
-      "provider-neutral-shell"
+      "provider-neutral-shell",
+      "read-only-project-status-command"
     ],
     "behavioralConstraints": [
       "successful commands exit 0",
@@ -29,32 +30,40 @@
       "JSON mode emits exactly one top-level envelope object for normal success or expected command failure",
       "documented npm machine invocation suppresses npm lifecycle logging so stdout remains exactly one CLI envelope",
       "next returns selected empty complete or blocked as command-specific data while preserving the top-level envelope",
-      "invalid task or dependency repository input that prevents trustworthy selection fails rather than returning partial success"
+      "invalid task or dependency repository input that prevents trustworthy selection fails rather than returning partial success",
+      "expected workflow blockers use the existing exit 4 contract; observational blocked/empty next or status results remain exit 0",
+      "status emits the same ProjectStatus model as human text or JSON data with statusVersion 1.0.0 and LOCAL_REGISTERED_TASKS scope; top-level envelope version remains 1.0.0",
+      "default next reads the same validated persisted lifecycle map as status while preserving explicit taskStates injection and unchanged BOOT-008 selection policy",
+      "status invalid or changing input fails closed with exit 70 rather than partial successful data"
     ],
     "invariants": [
-      "identical argv and equivalent repository/task-state inputs produce deterministic normal command results",
+      "identical argv, observation timestamp, and equivalent repository/task-state inputs produce deterministic normal command results",
       "shell behavior does not require an AI provider",
       "registration of a reserved command never implies implemented workflow semantics",
-      "BOOT-008 next routing performs no assignment lifecycle mutation branch mutation review or merge behavior"
+      "BOOT-008 next routing performs no assignment lifecycle mutation branch mutation review or merge behavior",
+      "status performs no state mutation, fetch, assignment acquisition/recovery, gate approval, provider invocation, or merge"
     ],
     "examples": [
       "npm run --silent agent -- --json version emits only a success envelope on stdout and exits 0",
       "npm run --silent agent -- --json next emits BOOT-008 selection data and exits 0 when evaluated successfully",
-      "start exits 3 with COMMAND_NOT_IMPLEMENTED until BOOT-013"
+      "review exits 3 with COMMAND_NOT_IMPLEMENTED while generic review CLI wiring remains reserved",
+      "npm run --silent agent -- --json status emits one local registered-task status aggregate in data"
     ],
     "edgeCases": [
       "empty argv resolves to help",
       "unknown option exits 2 with USAGE_UNKNOWN_OPTION",
       "unknown command exits 2 with USAGE_UNKNOWN_COMMAND",
       "--json may appear before or after the command token",
-      "empty valid task registry makes next return a successful empty result"
+      "empty valid task registry makes next return a successful empty result",
+      "empty valid task registry makes status return kind empty and zero counts, never synthetic GitHub bootstrap progress"
     ]
   },
   "allowedDependencies": [
     "node:core",
     "contracts/*",
     "control-plane.task-registry",
-    "control-plane.next-task"
+    "control-plane.next-task",
+    "control-plane.status-reporting"
   ],
   "forbiddenDependencies": [
     "agent-provider/*",
@@ -78,14 +87,15 @@
         "reviewed-command-routing"
       ],
       "acceptedRanges": [
-        "exit codes {0, 2, 3, 70}",
+        "exit codes {0, 2, 3, 4, 70}",
         "documented command-specific success data"
       ],
       "requiredReachableRanges": [
         "exit 0 success",
         "exit 2 invalid usage",
         "exit 3 reserved unimplemented",
-        "successful next data containing selected task ID and canonical branch"
+        "successful next data containing selected task ID and canonical branch",
+        "successful status data with explicit local scope and empty blocked stale or unknown facts preserved"
       ]
     }
   ]

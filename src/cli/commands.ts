@@ -2,6 +2,11 @@ import type { CommandDescriptor } from "./contracts.js";
 
 export const IMPLEMENTED_COMMANDS: readonly CommandDescriptor[] = [
   {
+    name: "status",
+    summary: "Report read-only project progress, locks, evidence, blockers, and next work (BOOT-030).",
+    status: "implemented",
+  },
+  {
     name: "manual",
     summary: "Export role packets, import structured results, or wait for a local/manual provider run (BOOT-029).",
     status: "implemented",
@@ -37,11 +42,6 @@ export const RESERVED_COMMANDS: readonly CommandDescriptor[] = [
   {
     name: "review",
     summary: "Run structured review workflows (owned by BOOT-017+).",
-    status: "reserved",
-  },
-  {
-    name: "status",
-    summary: "Report project workflow status (owned by BOOT-030).",
     status: "reserved",
   },
   {
