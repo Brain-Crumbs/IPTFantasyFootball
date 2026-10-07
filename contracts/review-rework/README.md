@@ -104,3 +104,29 @@ Two boundaries are deliberately left for later BOOT tasks rather than absorbed h
 - **`DEV_VALIDATION_FAILED`, `MERGE_BLOCKED`, and `BLOCKED` are not reworkable through this module.** The BOOT-009 state machine's own `TRANSITION_RULES` table allows all three to reach `REWORK_REQUIRED` too, but issue #23's dependencies are BOOT-018/019/020 only — a *review* rework loop, not a developer-validation-failure rework loop (BOOT-016's own concern) or a merge-blocker rework loop (BOOT-024/BOOT-025's). A task stuck in `DEV_VALIDATION_FAILED`, `MERGE_BLOCKED`, or `BLOCKED` has no supported rework path yet; a future task can add the equivalent entry point for those states without any change to `enterRework()`'s existing `QA_FAILED`/`ARCHITECTURE_FAILED`/`UAT_FAILED` behavior.
 - **`createLocalReviewReworkGate` loads the task registry from the working tree rather than pinning it to the exact Git revision**, matching `createLocalDeveloperStartWorkflow` (BOOT-013), `createLocalQaReviewGate` (BOOT-018), `createLocalArchitectureReviewGate` (BOOT-019), and `createLocalUatReviewGate` (BOOT-020). This is a repository-wide limitation affecting every BOOT-013/016/018/019/020/021 composition root alike, not specific to this module.
 - **`validateReworkRequest`'s `occurredAt` check accepts a syntactically well-formed but calendar-impossible timestamp** (for example `2026-02-30T10:00:00Z`, which `Date.parse` silently rolls forward into March rather than rejecting), unlike `FileEvidenceStore`'s own `isValidRfc3339DateTime`, which validates component ranges. This check is copied verbatim from the identical `validateRequest`/`occurredAt` check already merged in BOOT-016's `dev-validation`, BOOT-018's `qa-review`, BOOT-019's `architecture-review`, and BOOT-020's `uat-review` — every gate's `occurredAt` validation shares this same permissiveness today. Tightening it only in this module would make `review-rework` inconsistent with the five gates it deliberately mirrors; a future task can lift `isValidRfc3339DateTime`'s range-checking into a shared helper all six gates call, rather than reimplementing it independently in each.
+
+## BOOT-031 diagnostic consumer
+
+`control-plane.workflow-diagnostics` is a direct read-only consumer. This registration documents an existing producer capability; it does not change producer policy or module version.
+
+Expectations:
+
+- local merge diagnostics uses only existing getApprovalStatus projection, preserving role/currency semantics.
+- construction with rejecting write/lock ports and narrow read sources must not enter rework or resume development.
+
+Required capabilities:
+
+- read-only-per-role-approval-currency-query.
+- coarse-whole-revision-invalidation-policy.
+
+Accepted producer-output ranges:
+
+- per-role NONE CURRENT STALE with recorded outcome and revision.
+- missing independent roles and changed-revision evidence.
+- read failures for unavailable authoritative sources.
+
+Required reachable producer-output ranges:
+
+- old PASS becomes STALE after any canonical commit change.
+- current failed/blocked role and absent role remain distinguishable.
+- approval projection without lock acquisition state writes or rework.

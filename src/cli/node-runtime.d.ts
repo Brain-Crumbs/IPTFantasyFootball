@@ -4,6 +4,7 @@ interface IptCliStream {
 
 interface IptCliProcess {
   argv: string[];
+  env: Record<string, string | undefined>;
   cwd(): string;
   stdout: IptCliStream;
   stderr: IptCliStream;

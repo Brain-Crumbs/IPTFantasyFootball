@@ -102,6 +102,28 @@
         "missing base rejection",
         "divergence rejection"
       ]
+    },
+    {
+      "consumerId": "control-plane.workflow-diagnostics",
+      "expectations": [
+        "merge diagnostic composition uses canonical branch assertion and exact revision lookup through the existing adapter",
+        "read-only operation never ensures creates checks out fetches or pushes a branch"
+      ],
+      "requiredCapabilities": [
+        "canonical-task-branch-resolution",
+        "exact-current-revision-resolution",
+        "wrong-branch-rejection",
+        "git-operation-encapsulation"
+      ],
+      "acceptedRanges": [
+        "exact canonical branch and current revision",
+        "wrong-branch/missing-source errors preserved by the merge-readiness boundary"
+      ],
+      "requiredReachableRanges": [
+        "exact-head merge-readiness observation on canonical checkout",
+        "wrong checked-out branch rejected rather than substituted",
+        "read-only branch/revision inspection without branch creation or checkout"
+      ]
     }
   ]
 }

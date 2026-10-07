@@ -2,7 +2,7 @@
 
 IPTFantasyFootball is currently in **agentic-development bootstrap**, not fantasy-football product implementation.
 
-The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with BOOT-000 / issue #2. The repository has since added the CLI shell (BOOT-005), task registry (BOOT-006), dependency DAG (BOOT-007), next-task selector (BOOT-008), lifecycle transition engine (BOOT-009), assignment locks (BOOT-010), Git branch lifecycle adapter (BOOT-011), role-aware context compiler (BOOT-012), the Developer task-start workflow (BOOT-013 / issue #15), the validation executor framework (BOOT-014 / issue #16), the evidence and review artifact store (BOOT-015 / issue #17), the developer validation gate (BOOT-016 / issue #18), the generic review framework (BOOT-017), the QA/Architecture/UAT review gates (BOOT-018/019/020), the review rework/invalidation loop (BOOT-021), pull-request lifecycle integration (BOOT-022), GitHub Actions CI enforcement (BOOT-023 / issue #25, see [docs/CI.md](docs/CI.md)), the merge-readiness policy engine (BOOT-024), controlled merge and completion (BOOT-025), the provider-neutral agent runner/provider interface (BOOT-026 / issue #28), the sequential orchestration library (BOOT-027), durable runner resilience/resume (BOOT-028), the local/manual file adapter (BOOT-029 / issue #31), and read-only project status (BOOT-030 / issue #32).
+The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with BOOT-000 / issue #2. The repository has since added the CLI shell (BOOT-005), task registry (BOOT-006), dependency DAG (BOOT-007), next-task selector (BOOT-008), lifecycle transition engine (BOOT-009), assignment locks (BOOT-010), Git branch lifecycle adapter (BOOT-011), role-aware context compiler (BOOT-012), the Developer task-start workflow (BOOT-013 / issue #15), the validation executor framework (BOOT-014 / issue #16), the evidence and review artifact store (BOOT-015 / issue #17), the developer validation gate (BOOT-016 / issue #18), the generic review framework (BOOT-017), the QA/Architecture/UAT review gates (BOOT-018/019/020), the review rework/invalidation loop (BOOT-021), pull-request lifecycle integration (BOOT-022), GitHub Actions CI enforcement (BOOT-023 / issue #25, see [docs/CI.md](docs/CI.md)), the merge-readiness policy engine (BOOT-024), controlled merge and completion (BOOT-025), the provider-neutral agent runner/provider interface (BOOT-026 / issue #28), the sequential orchestration library (BOOT-027), durable runner resilience/resume (BOOT-028), the local/manual file adapter (BOOT-029 / issue #31), read-only project status (BOOT-030 / issue #32), and scoped workflow diagnostics (BOOT-031 / issue #33).
 
 ## Bootstrap purpose
 
@@ -57,7 +57,7 @@ npm run agent -- start <owner-id> <run-id>
 npm run agent -- validate <task-id> <actor-id> <run-id>
 ```
 
-Implemented commands are `help`, `version`, `next`, `status`, `start`, `validate`, and `manual export/import/run`. Generic `review`, `rework`, and `orchestrate` CLI commands remain reserved; available library gates and the manual adapter are documented separately.
+Implemented commands are `help`, `version`, `next`, `status`, `explain task/transition/validation/reviews/merge`, `start`, `validate`, and `manual export/import/run`. Generic `review`, `rework`, and `orchestrate` CLI commands remain reserved; available library gates and the manual adapter are documented separately.
 
 ### `next`
 
@@ -66,6 +66,10 @@ BOOT-008 adds `control-plane.next-task`, documented in [contracts/next-task/READ
 ### `status`
 
 BOOT-030 adds `control-plane.status-reporting` and `agent status` / `agent --json status`. One read-only view reports registered local task/phase progress, current lifecycle stages, canonical branches/revisions, assignments, latest revision-bound evidence, concrete blockers, and BOOT-008 next-work eligibility. The default `next` command now reads the same persisted lifecycle map. Counts cover local registered tasks only; the current empty registry does not mean the GitHub bootstrap is complete or authorize cutover. See [docs/STATUS.md](docs/STATUS.md) for scope, currency, consistency, and operator guidance.
+
+### `explain`
+
+BOOT-031 adds `control-plane.workflow-diagnostics` and read-only `agent explain task|validation|reviews|merge <task-id>` / `agent explain transition <request-file>`. Findings distinguish missing, failed, stale, and blocked predicates with relevant task/dependency/evidence/revision identities and actionable references. The commands reuse existing selector, lifecycle, validator-resolution, review-evidence, and merge-readiness rules. `clear` applies only to the named scope and never approves a gate. Merge diagnostics can read real PR/CI state using already-authorized environment credentials; no configuration is an explicit blocker. No state is repaired, validator/review executed, or merge attempted. See [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) for input, output, read-access, and authority boundaries.
 
 ### Lifecycle, assignment, branch, and context foundations
 

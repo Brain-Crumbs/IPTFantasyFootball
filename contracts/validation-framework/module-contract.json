@@ -105,6 +105,25 @@
         "all-pass run",
         "required-validator-fail run"
       ]
+    },
+    {
+      "consumerId": "control-plane.workflow-diagnostics",
+      "expectations": [
+        "diagnostics calls ValidationExecutor constructor solely to apply the existing validator registration rules",
+        "constructing a validator set does not execute command/function validators or require a run result"
+      ],
+      "requiredCapabilities": [
+        "pluggable-validator-registration"
+      ],
+      "acceptedRanges": [
+        "valid required/optional command or function specs",
+        "the same constructor rejection for empty duplicate or invalid registrations as developer validation"
+      ],
+      "requiredReachableRanges": [
+        "valid optional and required specs accepted without execution",
+        "empty duplicate malformed or invalid execution specs rejected before diagnostic success",
+        "zero validator invocations while validating registration"
+      ]
     }
   ]
 }

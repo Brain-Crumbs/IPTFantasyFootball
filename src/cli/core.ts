@@ -1,3 +1,5 @@
+import { renderWorkflowExplanation, type WorkflowDiagnostics } from "../workflow-diagnostics/index.js";
+import { runExplainCommand, ExplainUsageError } from "./explain.js";
 import { ProjectStatusReporter, createLocalStatusDependencies, readLocalLifecycleStates, renderProjectStatus } from "../status-reporting/index.js";
 import {
   DeveloperStartError,
@@ -43,6 +45,7 @@ export interface CliRunContext {
   taskStates?: ReadonlyMap<string, TaskLifecycleState>;
   developerStartWorkflow?: Pick<DeveloperStartWorkflow, "start">;
   developerValidationGate?: Pick<DeveloperValidationGate, "validate">;
+  workflowDiagnostics?: Pick<WorkflowDiagnostics, "explainTask" | "explainTransition" | "explainValidation" | "explainReviews" | "explainMerge">;
   projectStatusReporter?: Pick<ProjectStatusReporter, "read">;
   now?: () => string;
 }
@@ -122,6 +125,8 @@ function helpText(): string {
     "",
     "Usage:",
     "  agent [--json] <command>",
+    "  agent [--json] explain task|validation|reviews|merge <task-id>",
+    "  agent [--json] explain transition <request-file>",
     "  agent [--json] start <owner-id> <run-id>",
     "  agent [--json] validate <task-id> <actor-id> <run-id>",
     "  agent [--json] manual export <request-file> <exchange-dir>",
@@ -278,6 +283,18 @@ export async function runCli(
       return fail("next", parsed.json, EXIT_CODES.INTERNAL_ERROR, {
         code: "INTERNAL_ERROR",
         message,
+      });
+    }
+  }
+
+  if (parsed.command === "explain") {
+    try {
+      const result = await runExplainCommand(parsed.rest, context);
+      return succeed("explain", parsed.json, result, renderWorkflowExplanation(result));
+    } catch (error: unknown) {
+      return fail("explain", parsed.json, error instanceof ExplainUsageError ? EXIT_CODES.USAGE_ERROR : EXIT_CODES.INTERNAL_ERROR, {
+        code: error instanceof ExplainUsageError ? "USAGE_UNEXPECTED_ARGUMENT" : "INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Cannot obtain trustworthy workflow diagnostics.",
       });
     }
   }

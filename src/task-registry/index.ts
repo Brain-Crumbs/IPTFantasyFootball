@@ -38,6 +38,7 @@ export {
   NEXT_TASK_ELIGIBLE_STATES,
   TASK_LIFECYCLE_STATES,
   selectNextEligibleTask,
+  explainTaskEligibility,
 } from "./next-task.js";
 
 export type {
@@ -52,4 +53,5 @@ export type {
   NextTaskSelectionOptions,
   SelectedNextTask,
   TaskLifecycleState,
+  TaskEligibilityExplanation,
 } from "./next-task.js";

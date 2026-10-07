@@ -3,7 +3,7 @@
 ## Identity and purpose
 
 - **Module ID:** `control-plane.cli-shell`
-- **Module version:** `1.2.0`
+- **Module version:** `1.3.0`
 - **Manifest:** `./module-contract.json`
 
 Provides the stable provider-neutral command-line shell, output envelope, diagnostics, exit-code vocabulary, and reviewed command routing consumed by bootstrap command implementations. BOOT-008 adds the first workflow-domain command, `next`, behind the BOOT-005 shell contract.
@@ -14,7 +14,7 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 - Machine mode: `npm run --silent agent -- --json <command>`
 - JSON envelope: `{ schemaVersion, ok, command, data, error }`
 - Exit codes: `0` success, `2` usage error, `3` recognized/unimplemented, `4` workflow blocked, `70` unexpected internal error.
-- Implemented commands: `help`, `version`, `next`, `status`, `start`, `validate`, and `manual export/import/run`; see [docs/CLI.md](../../docs/CLI.md) for each command-owning contract.
+- Implemented commands: `help`, `version`, `next`, `status`, `explain task/transition/validation/reviews/merge`, `start`, `validate`, and `manual export/import/run`; see [docs/CLI.md](../../docs/CLI.md) for each command-owning contract.
 
 ## Capabilities
 
@@ -25,10 +25,14 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 - Preserve selected task ID/canonical branch metadata in machine output.
 - Operate without an AI provider.
 - Route `status` to one read-only `ProjectStatus` shared by human and JSON views (`read-only-project-status-command`).
+- Route five scoped read-only `explain` subjects to `control-plane.workflow-diagnostics` (`read-only-workflow-explain-commands`).
 
 ## Behavioral constraints and ranges
 
 - Successful commands exit `0`.
+- `explain` uses the unchanged top-level envelope and `diagnosticsVersion: "1.0.0"` payload, with explicit scope and missing/failed/stale/blocked findings. Observed blockers exit `0`; invalid arguments/task identity/request transport/role policy exit `2`; invalid/changing authoritative input exits `70`.
+- `explain` clear applies only to the named scope and is never approval. Existing selector/lifecycle/validator/review/merge producers retain policy authority.
+- `explain merge` uses existing authorized `GITHUB_REPOSITORY` plus `GITHUB_TOKEN`/`GH_TOKEN` read configuration; absence is blocked. There is no automatic authentication or secret display.
 - Expected usage errors exit `2`.
 - Reserved unimplemented commands exit `3`.
 - Unexpected internal failures exit `70`.
@@ -46,6 +50,7 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 - Identical argv, observation timestamp, and equivalent repository/task-state inputs produce deterministic normal command results.
 - Registration of a reserved command never implies workflow behavior is implemented.
 - The shell itself does not require any AI provider.
+- Explain initializes no state directories and performs no workflow mutation, validator/review execution, agent invocation, Git fetch, recovery, PR write, or merge.
 - Status performs no mutation, fetch, acquisition/recovery, provider invocation, gate approval, or merge. Local scope/empty/blocked/stale/unknown facts survive rendering.
 - BOOT-008 command routing does not perform assignment, lifecycle mutation, branch mutation, review, or merge behavior.
 
@@ -58,6 +63,7 @@ Provides the stable provider-neutral command-line shell, output envelope, diagno
 - `control-plane.task-registry`
 - `control-plane.next-task`
 - `control-plane.status-reporting`
+- `control-plane.workflow-diagnostics`
 
 ### Forbidden
 
@@ -112,6 +118,7 @@ Required reachable producer-output ranges:
 - Exit `3` for reserved/unimplemented commands.
 - A successful `next` envelope whose data can include selected task ID and canonical branch.
 - A successful `status` envelope preserving explicit local scope and empty/blocked/stale/unknown facts.
+- A successful `explain` envelope covering every subject and all four diagnostic conditions without treating clear as approval.
 
 Compatibility rule: each required reachable outcome must remain reachable; overlap is insufficient.
 

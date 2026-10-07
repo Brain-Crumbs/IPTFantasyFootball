@@ -94,6 +94,29 @@
         "failure states through REWORK_REQUIRED back to IN_DEVELOPMENT",
         "generic BLOCKED only after development has begun"
       ]
+    },
+    {
+      "consumerId": "control-plane.workflow-diagnostics",
+      "expectations": [
+        "pure transition request evaluation and declarative prerequisites are reused without lifecycle persistence",
+        "producer rejection codes/reasons and required review sequence remain authoritative; caller prerequisite assertions are not evidence verification"
+      ],
+      "requiredCapabilities": [
+        "deterministic-lifecycle-transitions",
+        "explicit-transition-prerequisites",
+        "task-specific-review-routing",
+        "stale-state-rejection"
+      ],
+      "acceptedRanges": [
+        "accepted transition or every documented rejection code",
+        "all supported lifecycle states and prerequisite identifiers",
+        "immutable source record and returned candidate record"
+      ],
+      "requiredReachableRanges": [
+        "illegal transition and stale expected-state rejection",
+        "review-sequence mismatch and each missing prerequisite",
+        "accepted request preview without mutating input or persisted state"
+      ]
     }
   ]
 }

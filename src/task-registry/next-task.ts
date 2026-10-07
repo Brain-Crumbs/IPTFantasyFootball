@@ -250,3 +250,26 @@ export function selectNextEligibleTask(
     blockedTasks: Object.freeze([...blockedTasks]),
   });
 }
+
+export interface TaskEligibilityExplanation {
+  readonly taskId: string;
+  readonly state: TaskLifecycleState;
+  readonly eligible: boolean;
+  readonly blockers: readonly NextTaskBlocker[];
+}
+
+/** BOOT-031: the selector's same predicates, for any named task, even when another is selected. */
+export function explainTaskEligibility(
+  registry: TaskRegistry,
+  taskId: string,
+  options: NextTaskSelectionOptions = {},
+): TaskEligibilityExplanation {
+  const task = registry.get(taskId);
+  if (task === undefined) throw new RangeError(`Task '${taskId}' is not registered.`);
+  const states = options.taskStates ?? new Map<string, TaskLifecycleState>();
+  const resolution = resolveDependencyDag(registry, [...registry.keys()].filter(id => taskState(id, states) === "DONE"));
+  const satisfaction = resolution.satisfaction.get(taskId)!;
+  const state = taskState(taskId, states);
+  const blockers = blockersFor(task, state, satisfaction.blockers, satisfaction.unsatisfiedTransitiveDependencies);
+  return Object.freeze({ taskId, state, eligible: blockers.length === 0, blockers });
+}

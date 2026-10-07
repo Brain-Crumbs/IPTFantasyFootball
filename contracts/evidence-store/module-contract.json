@@ -168,6 +168,31 @@
         "read lineage history with only latest CURRENT",
         "reject every attempted write in read-only mode"
       ]
+    },
+    {
+      "consumerId": "control-plane.workflow-diagnostics",
+      "expectations": [
+        "canonical validation lineage naming remains stable for missing-evidence references",
+        "schema-validated latest immutable records are reusable through read-only status sources; no record method is invoked"
+      ],
+      "requiredCapabilities": [
+        "schema-validated-acceptance",
+        "append-only-auditable-history",
+        "current-vs-superseded-distinction",
+        "pure-read-only-schema-validation-without-persisting-a-record",
+        "read-only-store-mode-without-initialization-writes"
+      ],
+      "acceptedRanges": [
+        "empty or nonempty validated evidence history",
+        "all supported review/validation outcomes and exact revision identities",
+        "invalid evidence read failure"
+      ],
+      "requiredReachableRanges": [
+        "missing validator lineage with deterministic task/validator ID",
+        "latest stale or failed evidence without fallback to older PASS",
+        "schema-valid contradictory PASS with recorded findings remains visible to diagnostic consistency checks",
+        "history reads without evidence directory creation or writes"
+      ]
     }
   ]
 }

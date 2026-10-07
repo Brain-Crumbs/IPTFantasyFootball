@@ -2,14 +2,14 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.cli-shell",
-  "moduleVersion": "1.2.0",
+  "moduleVersion": "1.3.0",
   "structuralContract": {
     "interfaces": [
       "Human mode: npm run agent -- <command>",
       "Machine mode: npm run --silent agent -- --json <command>",
       "JSON envelope { schemaVersion, ok, command, data, error }",
       "Exit codes 0=SUCCESS, 2=USAGE_ERROR, 3=NOT_IMPLEMENTED, 4=WORKFLOW_BLOCKED, 70=INTERNAL_ERROR",
-      "Implemented commands help, version, next, status, start, validate, manual export/import/run; command-owned contracts documented in docs/CLI.md"
+      "Implemented commands help, version, next, status, explain task/transition/validation/reviews/merge, start, validate, manual export/import/run; command-owned contracts documented in docs/CLI.md"
     ]
   },
   "semanticContract": {
@@ -20,7 +20,8 @@
       "reviewed-command-routing",
       "next-task-command",
       "provider-neutral-shell",
-      "read-only-project-status-command"
+      "read-only-project-status-command",
+      "read-only-workflow-explain-commands"
     ],
     "behavioralConstraints": [
       "successful commands exit 0",
@@ -34,14 +35,19 @@
       "expected workflow blockers use the existing exit 4 contract; observational blocked/empty next or status results remain exit 0",
       "status emits the same ProjectStatus model as human text or JSON data with statusVersion 1.0.0 and LOCAL_REGISTERED_TASKS scope; top-level envelope version remains 1.0.0",
       "default next reads the same validated persisted lifecycle map as status while preserving explicit taskStates injection and unchanged BOOT-008 selection policy",
-      "status invalid or changing input fails closed with exit 70 rather than partial successful data"
+      "status invalid or changing input fails closed with exit 70 rather than partial successful data",
+      "explain emits one WorkflowExplanation with diagnosticsVersion 1.0.0 and explicit scope in the unchanged schemaVersion 1.0.0 envelope",
+      "explain observed missing failed stale blocked findings are successful exit 0 data; invalid arguments task identity or transition transport/role policy use exit 2, invalid/changing authoritative input uses exit 70",
+      "explain clear means no observed failure in its declared scope and never gate approval; task transition validation review and merge producers retain policy authority",
+      "explain merge optionally uses existing authorized GITHUB_REPOSITORY and GITHUB_TOKEN/GH_TOKEN read configuration; absent configuration produces an explicit blocked finding without authentication or secret display"
     ],
     "invariants": [
       "identical argv, observation timestamp, and equivalent repository/task-state inputs produce deterministic normal command results",
       "shell behavior does not require an AI provider",
       "registration of a reserved command never implies implemented workflow semantics",
       "BOOT-008 next routing performs no assignment lifecycle mutation branch mutation review or merge behavior",
-      "status performs no state mutation, fetch, assignment acquisition/recovery, gate approval, provider invocation, or merge"
+      "status performs no state mutation, fetch, assignment acquisition/recovery, gate approval, provider invocation, or merge",
+      "explain performs no state initialization or workflow mutation, validator/review execution, agent invocation, Git fetch, recovery, PR write, or merge"
     ],
     "examples": [
       "npm run --silent agent -- --json version emits only a success envelope on stdout and exits 0",
@@ -63,7 +69,8 @@
     "contracts/*",
     "control-plane.task-registry",
     "control-plane.next-task",
-    "control-plane.status-reporting"
+    "control-plane.status-reporting",
+    "control-plane.workflow-diagnostics"
   ],
   "forbiddenDependencies": [
     "agent-provider/*",
@@ -95,7 +102,8 @@
         "exit 2 invalid usage",
         "exit 3 reserved unimplemented",
         "successful next data containing selected task ID and canonical branch",
-        "successful status data with explicit local scope and empty blocked stale or unknown facts preserved"
+        "successful status data with explicit local scope and empty blocked stale or unknown facts preserved",
+        "successful explain data with all five scopes and missing failed stale blocked conditions, without treating clear as gate approval"
       ]
     }
   ]

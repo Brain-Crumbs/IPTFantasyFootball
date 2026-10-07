@@ -56,7 +56,7 @@ Other registered task IDs appear under `Ungrouped tasks` (`phaseId: null`). The 
 
 ### Evidence currency
 
-Reviews cover Developer handoff and the task's declared review roles. Validator evidence lists recorded validator lineages. Persisted validator payloads do not record requiredness, so their stale/non-passing outcomes remain visible observations and do not independently create gating blockers. Status does not resolve a required validator set or substitute its summary for the validation gate.
+Reviews cover Developer handoff and the task's declared review roles. Validator evidence lists recorded validator lineages. Persisted validator payloads do not record requiredness, so their stale/non-passing outcomes remain visible observations and do not independently create gating blockers. Status does not resolve a required validator set or substitute its summary for the validation gate. BOOT-031 `explain validation <task-id>` adds a separate scoped audit using the same resolver as developer validation, preserving optional-check behavior; `explain reviews <task-id>` inventories every declared independent role, including future-stage gaps. Neither changes status blocker policy or grants gate approval.
 
 For each lineage, status validates persisted history, uses only its latest record, and returns:
 
@@ -85,7 +85,7 @@ The reporter takes two consecutive captures and rejects changed snapshots instea
 
 Malformed, unsupported, inconsistent, or unreadable authoritative inputs fail closed. Status returns no partial successful view of data it cannot trust. Expected repository-input failures follow the CLI internal-error contract (exit `70`, `ok: false`, `data: null` in JSON); invalid command arguments use exit `2`. A successfully observed blocked or empty project exits `0`.
 
-Do not repair records by hand to silence an error. Inspect the named input and use its owning workflow/recovery procedure. BOOT-031 owns expanded explainability, and BOOT-032 owns generalized administrative recovery; BOOT-030 supplies operational visibility only.
+Do not repair records by hand to silence an error. Inspect the named input and use its owning workflow/recovery procedure. BOOT-031 supplies expanded [read-only explain commands](DIAGNOSTICS.md), and BOOT-032 owns generalized administrative recovery; BOOT-030 supplies operational visibility only.
 
 ## Validation scenarios
 

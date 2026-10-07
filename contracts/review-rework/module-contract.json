@@ -143,6 +143,27 @@
       "requiredReachableRanges": [
         "a full rework cycle: <role>_FAILED -> REWORK_REQUIRED -> IN_DEVELOPMENT -> (new revision) -> DEV_VALIDATED -> the same review stage again"
       ]
+    },
+    {
+      "consumerId": "control-plane.workflow-diagnostics",
+      "expectations": [
+        "local merge diagnostics uses only existing getApprovalStatus projection, preserving role/currency semantics",
+        "construction with rejecting write/lock ports and narrow read sources must not enter rework or resume development"
+      ],
+      "requiredCapabilities": [
+        "read-only-per-role-approval-currency-query",
+        "coarse-whole-revision-invalidation-policy"
+      ],
+      "acceptedRanges": [
+        "per-role NONE CURRENT STALE with recorded outcome and revision",
+        "missing independent roles and changed-revision evidence",
+        "read failures for unavailable authoritative sources"
+      ],
+      "requiredReachableRanges": [
+        "old PASS becomes STALE after any canonical commit change",
+        "current failed/blocked role and absent role remain distinguishable",
+        "approval projection without lock acquisition state writes or rework"
+      ]
     }
   ]
 }

@@ -70,3 +70,33 @@ Persistence is local-filesystem only (`node:fs`, `node:path`); `record()`/`getCu
 ## Out-of-scope follow-up
 
 BOOT-015 deliberately does not execute validators or reviews, decide merge readiness, advance lifecycle state, or use any external/database storage. Those capabilities remain owned by later BOOT tasks in issue #1.
+
+## BOOT-031 diagnostic consumer
+
+`control-plane.workflow-diagnostics` is a direct read-only consumer. This registration documents an existing producer capability; it does not change producer policy or module version.
+
+Expectations:
+
+- canonical validation lineage naming remains stable for missing-evidence references.
+- schema-validated latest immutable records are reusable through read-only status sources; no record method is invoked.
+
+Required capabilities:
+
+- schema-validated-acceptance.
+- append-only-auditable-history.
+- current-vs-superseded-distinction.
+- pure-read-only-schema-validation-without-persisting-a-record.
+- read-only-store-mode-without-initialization-writes.
+
+Accepted producer-output ranges:
+
+- empty or nonempty validated evidence history.
+- all supported review/validation outcomes and exact revision identities.
+- invalid evidence read failure.
+
+Required reachable producer-output ranges:
+
+- missing validator lineage with deterministic task/validator ID.
+- latest stale or failed evidence without fallback to older PASS.
+- schema-valid contradictory PASS with recorded findings remains visible to diagnostic consistency checks.
+- history reads without evidence directory creation or writes.
