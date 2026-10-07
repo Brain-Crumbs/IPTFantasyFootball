@@ -370,6 +370,18 @@ Later tasks own:
 - validation/evidence storage (BOOT-014 through BOOT-016);
 - executable review workflows and structured findings machinery (BOOT-017 through BOOT-021);
 - PR integration, CI enforcement, merge policy, and controlled completion (BOOT-022 through BOOT-025);
-- agent runner/provider adapters (BOOT-026) and sequential orchestration (BOOT-027); real vendor adapters, resilience/resume behavior, and CLI wiring remain BOOT-028 onward.
+- provider-neutral agent runner (BOOT-026), sequential orchestration (BOOT-027), runner resilience/resume (BOOT-028), and the file-based local/manual adapter (BOOT-029); vendor SDKs, desktop UI automation, and generic orchestration CLI wiring remain outside the manual adapter.
 
 Those implementations must preserve these authority boundaries unless an explicit reviewed constitutional change says otherwise.
+
+## 11. Local/manual external sessions (BOOT-029)
+
+The [local/manual adapter](LOCAL_AGENT_ADAPTER.md) exports the exact gate-compiled context and requested tool policy. The operator must open a fresh role-specific external session for every role, provide the whole packet without hidden prior conversation context, and enforce its tool/network policy using the external environment. Reusing a provider or model is allowed; reusing the Developer session to issue independent approval is prohibited. Distinct actor strings preserve traceability but do not prove a human or session is independent.
+
+A result envelope binds task, role, revision, run, actor, and context/input hashes to its packet. Those hashes detect mismatches; writable local files are not authentication, proof of work, or a sandbox. The operator must confirm the actual session and revision before importing.
+
+Transport completion and role judgment are separate: `COMPLETED` carries a structured `AgentRunResult` with `PASS`, `FAIL`, or `BLOCKED`. `CANCELLED` or `ERROR` means no judgment was delivered, and must not manufacture a review failure or success. A reviewer's genuine inability to reach a trustworthy judgment is semantic `BLOCKED` with reason/remediation, not an infrastructure error used to trigger a retry.
+
+Importing a schema-valid result only makes it available to the runner. Existing deterministic validation, review, lifecycle, readiness, and controlled-merge gates retain authority. In particular, Developer `PASS` is not deterministic validation, a `MergeController` role packet does not authorize a merge, and packet/result files must never be copied into the evidence store or lifecycle records as fabricated approval. The current sequential engine uses Developer/QA/Architect/UAT sessions; merge readiness and controlled merge remain deterministic modules.
+
+Stopping the local runner stops its polling; it cannot force-stop a desktop session or revoke tools already granted to it. Operators must stop that session separately before retrying or changing identity, and preserve existing exchange/journal/evidence records for diagnosis.

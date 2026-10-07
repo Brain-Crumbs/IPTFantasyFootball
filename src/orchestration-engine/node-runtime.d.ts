@@ -3,7 +3,7 @@ declare module "node:fs" {
   export function closeSync(fd: number): void;
   export function fsyncSync(fd: number): void;
   export function writeFileSync(fd: number, data: string, options?: { encoding?: "utf8" }): void;
-  export function lstatSync(path: string): { isFile(): boolean; isSymbolicLink(): boolean };
+  export function lstatSync(path: string): { isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean };
 }
 
 declare module "node:crypto" {

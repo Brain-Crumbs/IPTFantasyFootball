@@ -18,6 +18,7 @@ export type ErrorCode =
   | "COMMAND_NOT_IMPLEMENTED"
   | "START_WORKFLOW_BLOCKED"
   | "VALIDATE_WORKFLOW_BLOCKED"
+  | "MANUAL_ADAPTER_ERROR"
   | "INTERNAL_ERROR";
 
 export interface CliError {

@@ -18,6 +18,8 @@ import {
   type TaskRegistry,
 } from "../task-registry/index.js";
 import { ALL_COMMANDS, IMPLEMENTED_COMMANDS, RESERVED_COMMANDS, isReservedCommand } from "./commands.js";
+import { AgentProviderError } from "../agent-provider/index.js";
+import { runManualCommand } from "./manual.js";
 import {
   CLI_VERSION,
   EXIT_CODES,
@@ -34,6 +36,7 @@ export interface CliRunResult {
 }
 
 export interface CliRunContext {
+  signal?: AbortSignal;
   repositoryRoot?: string;
   taskRegistry?: TaskRegistry;
   taskStates?: ReadonlyMap<string, TaskLifecycleState>;
@@ -113,12 +116,15 @@ function helpText(): string {
     "IPT Agent Control Plane CLI",
     "",
     "Deterministic, provider-neutral command surface for the repository development control plane.",
-    "BOOT-008 implements next-task selection, BOOT-013 implements developer task start, and BOOT-016 implements the developer validation gate; later review/PR commands remain reserved until their owning BOOT task lands.",
+    "BOOT-008 implements next-task selection, BOOT-013 implements developer task start, BOOT-016 implements developer validation, and BOOT-029 adds local/manual role handoffs; general review/orchestration CLI composition remains reserved.",
     "",
     "Usage:",
     "  agent [--json] <command>",
     "  agent [--json] start <owner-id> <run-id>",
     "  agent [--json] validate <task-id> <actor-id> <run-id>",
+    "  agent [--json] manual export <request-file> <exchange-dir>",
+    "  agent [--json] manual import <packet-id> <result-file> <exchange-dir>",
+    "  agent [--json] manual run <request-file> <exchange-dir>",
     "",
     "Commands:",
   ];
@@ -358,6 +364,24 @@ export async function runCli(
       return fail("validate", parsed.json, EXIT_CODES.INTERNAL_ERROR, {
         code: "INTERNAL_ERROR",
         message,
+      });
+    }
+  }
+
+  if (parsed.command === "manual") {
+    try {
+      const result = await runManualCommand(parsed.rest, context.repositoryRoot ?? process.cwd(), context.signal);
+      return succeed("manual", parsed.json, result.data, result.human);
+    } catch (error: unknown) {
+      if (error instanceof AgentProviderError) {
+        return fail("manual", parsed.json, error.code === "INVALID_REQUEST" ? EXIT_CODES.USAGE_ERROR : EXIT_CODES.WORKFLOW_BLOCKED, {
+          code: "MANUAL_ADAPTER_ERROR",
+          message: `${error.code}: ${error.message}`,
+        });
+      }
+      return fail("manual", parsed.json, EXIT_CODES.INTERNAL_ERROR, {
+        code: "INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Unknown manual adapter failure.",
       });
     }
   }

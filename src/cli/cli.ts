@@ -4,8 +4,16 @@ import { runCli } from "./core.js";
 import { EXIT_CODES, OUTPUT_SCHEMA_VERSION } from "./contracts.js";
 
 async function main(): Promise<number> {
+  const controller = new AbortController();
+  const interrupt = () => controller.abort();
+  const args = process.argv.slice(2);
+  const manualRun = args.filter((arg) => arg !== "--json").slice(0, 2).join(" ") === "manual run";
+  if (manualRun) {
+    process.on("SIGINT", interrupt);
+    process.on("SIGTERM", interrupt);
+  }
   try {
-    const result = await runCli(process.argv.slice(2));
+    const result = await runCli(args, { signal: controller.signal });
 
     if (result.stdout.length > 0) {
       process.stdout.write(result.stdout);
@@ -29,6 +37,11 @@ async function main(): Promise<number> {
       process.stderr.write(`INTERNAL_ERROR: ${message}\n`);
     }
     return EXIT_CODES.INTERNAL_ERROR;
+  } finally {
+    if (manualRun) {
+      process.removeListener("SIGINT", interrupt);
+      process.removeListener("SIGTERM", interrupt);
+    }
   }
 }
 

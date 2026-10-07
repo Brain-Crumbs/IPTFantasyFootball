@@ -1,0 +1,40 @@
+{
+  "schemaId": "ipt.local-agent-result",
+  "schemaVersion": "1.0.0",
+  "providerId": "local-manual-agent",
+  "taskId": "BOOT-029",
+  "role": "Developer",
+  "revisionIdentity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runId": "manual-fixture-1",
+  "actorId": "developer-1",
+  "packetId": "0af0e628c2c0592a1e9dc5e11ef8248feee188174151fea645d9a6fe10bf639e",
+  "contextIdentity": "9519289e6a813bec711652085e5c5bd6aa58a879227c8df26795e65aefa68f5b",
+  "inputIdentity": "29031eba2fcd64a1c23af595b46de9ce7ce55ff5577253005356ffc9f44a721f",
+  "status": "COMPLETED",
+  "result": {
+    "providerId": "local-manual-agent",
+    "taskId": "BOOT-029",
+    "role": "Developer",
+    "revisionIdentity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runId": "manual-fixture-1",
+    "outcome": "PASS",
+    "details": {
+      "implementationSummary": "Offline adapter fixture round-trip.",
+      "changedSurfaces": [
+        "src/local-agent-adapter"
+      ],
+      "acceptanceCriteriaEvidence": [
+        "Exact packet binding preserved."
+      ],
+      "validationChecks": [
+        "Offline schema validation."
+      ],
+      "knownLimitationsAssumptionsRisks": [
+        "External work is performed manually."
+      ]
+    },
+    "findings": [],
+    "evidenceRefs": [],
+    "occurredAt": "2026-10-07T22:00:00Z"
+  }
+}

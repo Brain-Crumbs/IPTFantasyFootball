@@ -2,6 +2,11 @@ import type { CommandDescriptor } from "./contracts.js";
 
 export const IMPLEMENTED_COMMANDS: readonly CommandDescriptor[] = [
   {
+    name: "manual",
+    summary: "Export role packets, import structured results, or wait for a local/manual provider run (BOOT-029).",
+    status: "implemented",
+  },
+  {
     name: "help",
     summary: "Describe the control-plane CLI and command contract.",
     status: "implemented",
@@ -46,7 +51,7 @@ export const RESERVED_COMMANDS: readonly CommandDescriptor[] = [
   },
   {
     name: "orchestrate",
-    summary: "Run the sequential orchestration engine end to end (owned by BOOT-027; behavior implemented, CLI wiring deferred until a real agent-provider adapter exists — see BOOT-029).",
+    summary: "Run the sequential orchestration engine end to end (library and BOOT-029 manual provider implemented; general workflow CLI composition remains reserved).",
     status: "reserved",
   },
 ] as const;

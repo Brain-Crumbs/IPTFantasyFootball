@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import { DeveloperStartWorkflow } from "../dist/dev-start/index.js";
 import { DeveloperValidationGate } from "../dist/dev-validation/index.js";
 import { FileEvidenceStore, reviewResultLineageId } from "../dist/evidence-store/index.js";
 import { MergeReadinessPolicyEngine } from "../dist/merge-readiness/index.js";
+import { FileManualAgentProvider } from "../dist/local-agent-adapter/index.js";
 import {
   ORCHESTRATION_STAGE_IDS,
   classifyOrchestrationFailure,
@@ -203,7 +204,7 @@ function buildFixture(options = {}) {
   const stateStore = new MemoryStateStore();
   const lockStore = new FileAssignmentLockStore(join(root, "locks"));
   const branchLifecycle = new FakeBranchAdapter(activeTask);
-  const contextSource = new FakeContextSource();
+  const contextSource = options.contextSource ?? new FakeContextSource();
   const evidenceStore = new FileEvidenceStore(join(root, "evidence"), { repositoryRoot });
   const reviewFramework = new ReviewFramework({ evidenceStore, evidenceLocation: root });
   const syncTaskLock = new SyncTaskLock();
@@ -361,7 +362,7 @@ function buildFixture(options = {}) {
     pullRequests: controlledMergePrPort,
   });
 
-  const provider = new FakeAgentProvider();
+  const provider = options.providerFactory?.(root) ?? new FakeAgentProvider();
   const agentRunner = new AgentRunner({ provider });
 
   const dependencies = {
@@ -1040,6 +1041,267 @@ test("an incomplete Developer run cannot retry its stable identity with a change
     fixture.provider.setHandler(allPassHandler);
     await assert.rejects(() => resumedEngine(fixture).run(resilientRequest), error => error.code === "RECOVERY_REQUIRED");
     assert.equal(fixture.provider.requests.length, 1);
+    assert.equal(fixture.mergePullRequestCalls.count, 0);
+  } finally { cleanup(fixture); }
+});
+
+// Read the real exported packet and import a file fixture through an independent
+// adapter instance. Only this offline external-session simulation is fake; the
+// AgentRunner, deterministic gates, evidence store and lifecycle remain real.
+function manualProviderFactory(onPacket, packets = []) {
+  return root => {
+    const directory = join(root, "manual-agent");
+    const provider = new FileManualAgentProvider(directory, { repositoryRoot, pollIntervalMs: 5 });
+    const importer = new FileManualAgentProvider(directory, { repositoryRoot });
+    const exportPacket = provider.exportPacket.bind(provider);
+    provider.exportPacket = request => {
+      const packet = exportPacket(request);
+      const fromDisk = JSON.parse(readFileSync(provider.packetPath(packet.packetId), "utf8"));
+      assert.deepEqual(fromDisk.contextPackage, request.contextPackage);
+      assert.deepEqual(fromDisk.toolPermissionPolicy, request.toolPermissionPolicy);
+      packets.push(fromDisk);
+      onPacket(fromDisk, importer);
+      return packet;
+    };
+    return provider;
+  };
+}
+
+function manualEnvelope(packet, outcome = "PASS") {
+  const details = packet.role === "Developer" ? {
+    implementationSummary: "Offline manual fixture implementation",
+    changedSurfaces: ["fixture"],
+    acceptanceCriteriaEvidence: ["fixture acceptance scenario"],
+    validationChecks: ["Deterministic validation remains the gate's responsibility"],
+    knownLimitationsAssumptionsRisks: ["No external AI, network or real merge is invoked"],
+  } : detailsFor(packet.role);
+  return {
+    ...packet.resultBinding,
+    schemaId: "ipt.local-agent-result",
+    schemaVersion: "1.0.0",
+    status: "COMPLETED",
+    result: { ...agentResult(packet, outcome, { details }), providerId: packet.providerId },
+  };
+}
+
+function importManualFixture(importer, packet, outcome = "PASS") {
+  const envelope = manualEnvelope(packet, outcome);
+  const fixturePath = `${importer.packetPath(packet.packetId)}.fixture-result.json`;
+  writeFileSync(fixturePath, `${JSON.stringify(envelope, null, 2)}\n`);
+  return importer.importResult(packet.packetId, JSON.parse(readFileSync(fixturePath, "utf8")));
+}
+
+test("manual packets round-trip offline through all real role gates with isolated context and unchanged result identity", async () => {
+  const packets = [];
+  const fixture = buildFixture({
+    providerFactory: manualProviderFactory((packet, importer) => importManualFixture(importer, packet), packets),
+    contextSource: {
+      artifactsFor(activeTask) {
+        return [
+          ...new FakeContextSource().artifactsFor(activeTask),
+          { artifactId: "manual:scenario", kind: "scenario", sourcePath: "fixture:scenario", taskIds: [activeTask.taskId], content: "The original user outcome" },
+          { artifactId: "manual:policy", kind: "policy", sourcePath: "fixture:policy", content: "Architecture-only dependency policy" },
+          { artifactId: "manual:narrative", kind: "fixture", sourcePath: "fixture:narrative", taskIds: [activeTask.taskId], authority: "developer-narrative", content: "Developer explanation is not reviewer authority" },
+        ];
+      },
+    },
+  });
+  try {
+    const result = await fixture.engine.run({ ownerId: "manual-developer", runId: "manual-round-trip", occurredAt });
+    assert.equal(result.status, "COMPLETED");
+    assert.equal(result.finalLifecycleState, "DONE");
+    assert.deepEqual(packets.map(packet => packet.role), ["Developer", "QA", "Architect", "UAT/Product"]);
+    for (const key of ["runId", "packetId", "contextIdentity", "actorId"]) {
+      assert.equal(new Set(packets.map(packet => packet[key])).size, 4, `${key} must be role-isolated`);
+    }
+    for (const packet of packets) {
+      assert.equal(packet.taskId, fixture.task.taskId);
+      assert.equal(packet.revisionIdentity, revision);
+      assert.ok(result.stages.some(stage => stage.runId === packet.runId));
+      assert.equal(packet.contextPackage.role, packet.role);
+      assert.equal(packet.contextPackage.sourceRevision, revision);
+      assert.equal(packet.toolPermissionPolicy.networkAccess, "none");
+      const evidence = fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, packet.role));
+      assert.equal(fixture.evidenceStore.validate(evidence.payload).ok, true);
+      assert.equal(evidence.payload.revisionIdentity, revision);
+      assert.equal(evidence.payload.outcome, "PASS");
+      if (packet.role !== "Developer") {
+        assert.equal(evidence.payload.reviewId, `${fixture.task.taskId}:${packet.role}:${revision}:${packet.runId}`);
+        assert.deepEqual(evidence.payload.details, manualEnvelope(packet).result.details);
+        assert.equal(evidence.payload.recordedAt, occurredAt);
+        assert.equal(packet.contextPackage.artifacts.some(artifact => artifact.artifactId === "manual:narrative"), false);
+      }
+    }
+    const included = packet => packet.contextPackage.artifacts.map(artifact => artifact.artifactId);
+    assert.ok(included(packets[0]).includes("manual:narrative"));
+    assert.equal(included(packets[0]).includes(`diff:${fixture.task.taskId}`), false);
+    assert.ok(included(packets[1]).includes(`diff:${fixture.task.taskId}`));
+    assert.ok(included(packets[2]).includes("manual:policy"));
+    assert.equal(included(packets[1]).includes("manual:policy"), false);
+    assert.deepEqual(Object.keys(packets[3].contextPackage.task).sort(), ["acceptanceCriteria", "objective", "taskId", "title"]);
+    assert.ok(included(packets[3]).includes("manual:scenario"));
+    assert.equal(included(packets[3]).includes(`diff:${fixture.task.taskId}`), false);
+    assert.equal(fixture.mergePullRequestCalls.count, 1, "only the offline controlled-merge port is called");
+  } finally { cleanup(fixture); }
+});
+
+test("wrong manual import identities and malformed judgments cannot advance the waiting QA gate", async () => {
+  const packets = [];
+  const fixture = buildFixture({ providerFactory: manualProviderFactory((packet, importer) => {
+    if (packet.role === "QA") {
+      const before = JSON.stringify(fixture.stateStore.get(fixture.task.taskId));
+      assert.equal(fixture.stateStore.get(fixture.task.taskId).currentState, "DEV_VALIDATED");
+      for (const change of [
+        { taskId: "BOOT-999" }, { role: "Architect" }, { revisionIdentity: "wrong-revision" },
+        { runId: "wrong-run" }, { actorId: "wrong-actor" }, { contextIdentity: "0".repeat(64) },
+        { inputIdentity: "0".repeat(64) }, { packetId: "0".repeat(64) },
+      ]) {
+        assert.throws(() => importer.importResult(packet.packetId, { ...manualEnvelope(packet), ...change }),
+          error => error instanceof AgentProviderError && error.code === "MALFORMED_RESULT" && error.recoverable === false);
+      }
+      const wrongNestedRevision = manualEnvelope(packet);
+      wrongNestedRevision.result.revisionIdentity = "wrong-revision";
+      assert.throws(() => importer.importResult(packet.packetId, wrongNestedRevision),
+        error => error instanceof AgentProviderError && error.code === "MALFORMED_RESULT" && error.recoverable === false);
+      const malformed = manualEnvelope(packet);
+      malformed.result.details = "Free-form prose is not a structured result";
+      assert.throws(() => importer.importResult(packet.packetId, malformed),
+        error => error instanceof AgentProviderError && error.code === "MALFORMED_RESULT" && error.recoverable === false);
+      assert.equal(existsSync(importer.resultPath(packet.packetId)), false);
+      assert.equal(JSON.stringify(fixture.stateStore.get(fixture.task.taskId)), before);
+      assert.equal(fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, "QA")), null);
+      assert.equal(fixture.mergePullRequestCalls.count, 0);
+    }
+    importManualFixture(importer, packet);
+  }, packets) });
+  try {
+    assert.equal((await fixture.engine.run({ ownerId: "manual-developer", runId: "manual-rejection", occurredAt })).status, "COMPLETED");
+    assert.equal(packets.filter(packet => packet.role === "QA").length, 1);
+    assert.equal(fixture.evidenceStore.getHistory(reviewResultLineageId(fixture.task.taskId, "QA")).length, 1);
+  } finally { cleanup(fixture); }
+});
+
+test("a cancelled manual wait resumes the original QA packet in fresh provider and engine instances without repeating completed gates", async () => {
+  const controller = new AbortController();
+  const originalPackets = [];
+  const resumedPackets = [];
+  const request = { ownerId: "manual-developer", runId: "manual-resume", idempotencyKey: "manual-resume-key", occurredAt };
+  const fixture = buildFixture({ providerFactory: manualProviderFactory((packet, importer) => {
+    if (packet.role === "QA") queueMicrotask(() => controller.abort());
+    else importManualFixture(importer, packet);
+  }, originalPackets) });
+  try {
+    await assert.rejects(() => fixture.engine.run({ ...request, signal: controller.signal }), error => error.code === "CANCELLED");
+    const originalQa = originalPackets.find(packet => packet.role === "QA");
+    assert.ok(originalQa);
+    assert.equal(existsSync(fixture.provider.resultPath(originalQa.packetId)), false);
+    assert.equal(fixture.stateStore.get(fixture.task.taskId).currentState, "DEV_VALIDATED");
+    assert.equal(fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, "QA")), null);
+    assert.equal(fixture.mergePullRequestCalls.count, 0);
+    const newProvider = manualProviderFactory((packet, importer) => {
+      if (packet.role === "QA") assert.deepEqual(packet, originalQa, "resume must preserve the complete original packet");
+      importManualFixture(importer, packet);
+    }, resumedPackets)(fixture.root);
+    fixture.dependencies.agentRunner = new AgentRunner({ provider: newProvider });
+    const result = await resumedEngine(fixture).run(request);
+    assert.equal(result.status, "COMPLETED");
+    assert.equal(result.runId, request.runId);
+    assert.deepEqual(originalPackets.map(packet => packet.role), ["Developer", "QA"]);
+    assert.deepEqual(resumedPackets.map(packet => packet.role), ["QA", "Architect", "UAT/Product"]);
+    const journal = fixture.dependencies.runStore.get(request.idempotencyKey);
+    assert.equal(journal.attempts["developer-agent"], 1);
+    assert.equal(journal.attempts["qa-agent"], 2);
+    for (const role of ["Developer", "QA", "Architect", "UAT/Product"]) {
+      assert.equal(fixture.evidenceStore.getHistory(reviewResultLineageId(fixture.task.taskId, role)).length, 1);
+    }
+    const completedHistory = JSON.stringify(fixture.stateStore.get(fixture.task.taskId));
+    assert.equal((await resumedEngine(fixture).run(request)).status, "COMPLETED");
+    assert.equal(JSON.stringify(fixture.stateStore.get(fixture.task.taskId)), completedHistory);
+    assert.equal(resumedPackets.length, 3);
+    assert.equal(fixture.mergePullRequestCalls.count, 1);
+  } finally { cleanup(fixture); }
+});
+
+test("manual Developer PASS cannot override failed deterministic validation", async () => {
+  const packets = [];
+  const fixture = buildFixture({
+    devValidationOutcome: "FAIL",
+    providerFactory: manualProviderFactory((packet, importer) => importManualFixture(importer, packet), packets),
+  });
+  try {
+    const result = await fixture.engine.run({ ownerId: "manual-developer", runId: "manual-validation-fails", occurredAt });
+    assert.equal(result.status, "STOPPED");
+    assert.equal(result.stopped.stage, "dev-validation");
+    assert.equal(result.finalLifecycleState, "DEV_VALIDATION_FAILED");
+    assert.deepEqual(packets.map(packet => packet.role), ["Developer"]);
+    assert.equal(fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, "QA")), null);
+    assert.equal(fixture.mergePullRequestCalls.count, 0);
+  } finally { cleanup(fixture); }
+});
+
+test("manual QA FAIL remains a semantic review failure and enters real rework without provider retry", async () => {
+  const packets = [];
+  const fixture = buildFixture({
+    retryPolicy: { maxAttempts: 3, delayMs: 0 },
+    providerFactory: manualProviderFactory((packet, importer) => importManualFixture(importer, packet, packet.role === "QA" ? "FAIL" : "PASS"), packets),
+  });
+  try {
+    const result = await fixture.engine.run({ ownerId: "manual-developer", runId: "manual-review-fails", occurredAt });
+    assert.equal(result.status, "STOPPED");
+    assert.equal(result.stopped.stage, "qa-review");
+    assert.equal(result.finalLifecycleState, "REWORK_REQUIRED");
+    assert.deepEqual(packets.map(packet => packet.role), ["Developer", "QA"]);
+    const evidence = fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, "QA"));
+    assert.equal(evidence.payload.outcome, "FAIL");
+    assert.equal(fixture.evidenceStore.validate(evidence.payload).ok, true);
+    assert.equal(fixture.evidenceStore.getHistory(reviewResultLineageId(fixture.task.taskId, "QA")).length, 1);
+    assert.equal(fixture.mergePullRequestCalls.count, 0);
+  } finally { cleanup(fixture); }
+});
+
+for (const [status, code] of [["CANCELLED", "CANCELLED"], ["ERROR", "PROVIDER_ERROR"]]) {
+  test(`manual external ${status} stops at the waiting gate without inventing review evidence or rework`, async () => {
+    const packets = [];
+    const fixture = buildFixture({
+      retryPolicy: { maxAttempts: 3, delayMs: 0 },
+      providerFactory: manualProviderFactory((packet, importer) => {
+        if (packet.role !== "QA") return importManualFixture(importer, packet);
+        importer.importResult(packet.packetId, {
+          ...packet.resultBinding,
+          schemaId: "ipt.local-agent-result",
+          schemaVersion: "1.0.0",
+          status,
+          error: { message: "External fixture session did not produce a judgment", ...(status === "ERROR" ? { recoverable: false } : {}) },
+        });
+      }, packets),
+    });
+    try {
+      await assert.rejects(() => fixture.engine.run({ ownerId: "manual-developer", runId: `manual-external-${status}`, occurredAt }),
+        error => error instanceof AgentProviderError && error.code === code && error.recoverable === false);
+      assert.deepEqual(packets.map(packet => packet.role), ["Developer", "QA"]);
+      assert.equal(fixture.stateStore.get(fixture.task.taskId).currentState, "DEV_VALIDATED");
+      assert.equal(fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, "QA")), null);
+      assert.equal(fixture.mergePullRequestCalls.count, 0);
+    } finally { cleanup(fixture); }
+  });
+}
+
+test("the real QA gate rejects imported provider output that lacks role-specific evidence details", async () => {
+  const packets = [];
+  const fixture = buildFixture({ providerFactory: manualProviderFactory((packet, importer) => {
+    if (packet.role !== "QA") return importManualFixture(importer, packet);
+    const envelope = manualEnvelope(packet);
+    // This satisfies the generic provider port; it cannot satisfy the QA
+    // evidence contract. The adapter must never turn it into an approval.
+    envelope.result.details = { summary: "A narrative assertion without required QA scenarios" };
+    importer.importResult(packet.packetId, envelope);
+  }, packets) });
+  try {
+    await assert.rejects(() => fixture.engine.run({ ownerId: "manual-developer", runId: "manual-invalid-qa-details", occurredAt }),
+      error => error.code === "REVIEW_REJECTED");
+    assert.deepEqual(packets.map(packet => packet.role), ["Developer", "QA"]);
+    assert.equal(fixture.stateStore.get(fixture.task.taskId).currentState, "DEV_VALIDATED");
+    assert.equal(fixture.evidenceStore.getCurrent(reviewResultLineageId(fixture.task.taskId, "QA")), null);
     assert.equal(fixture.mergePullRequestCalls.count, 0);
   } finally { cleanup(fixture); }
 });

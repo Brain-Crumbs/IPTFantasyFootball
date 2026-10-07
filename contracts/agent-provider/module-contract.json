@@ -136,6 +136,29 @@
       "acceptedRanges": [
         "every field named above, exactly as control-plane.review-framework's own types constrain it"
       ]
+    },
+    {
+      "consumerId": "control-plane.local-agent-adapter",
+      "expectations": [
+        "the concrete adapter implements the neutral provider port without adding a reverse domain dependency",
+        "neutral result types preserve role/outcome/run/revision meanings; adapter adds actor/context/input envelope binding without changing AgentRunResult",
+        "abort signal propagates local cancellation and timeout; no forced external tool termination is implied"
+      ],
+      "requiredCapabilities": [
+        "provider-neutral-run-invocation",
+        "result-shape-sufficient-for-review-submission",
+        "normalized-provider-errors",
+        "provider-abort-signal-propagation"
+      ],
+      "acceptedRanges": [
+        "all five AgentRunnerRole values",
+        "PASS, FAIL and BLOCKED results",
+        "seven stable AgentProviderErrorCode values"
+      ],
+      "requiredReachableRanges": [
+        "lossless return of each semantic judgment",
+        "typed cancellation and timeout; validation rejection of malformed results"
+      ]
     }
   ]
 }
