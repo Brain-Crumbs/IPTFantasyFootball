@@ -124,3 +124,7 @@ Required reachable producer-output ranges:
 - [ ] Did a loader capability disappear or become conditional?
 - [ ] Did dependency direction change?
 - [ ] Can BOOT-007 still rely on complete schema-valid records and preserved dependency arrays?
+
+## BOOT-032 recovery consumer
+
+`control-plane.recovery-tools` depends on `schema-validated-task-records`, `stable-task-id-registry`, `network-free-local-loading`. exact registered task/canonical branch/review policy anchors recovery. invalid registry prevents safe mutation and appears as a checker finding. Accepted and required reachable outputs: validated registry including empty, or explicit schema/loading failure. Existing producer behavior and version are unchanged; this records the new consumer. See [the recovery contract](../recovery-tools/README.md) for offline mutation/audit boundaries.

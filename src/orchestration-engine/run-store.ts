@@ -208,12 +208,13 @@ function serialize(journal: OrchestrationRunJournal): string {
   if (serialized.length > MAX_JOURNAL_CHARACTERS) invalid("exceeds 16 Mi characters");
   return serialized;
 }
-function parse(serialized: string): OrchestrationRunJournal {
+export function parseOrchestrationRunJournal(serialized: string): OrchestrationRunJournal {
   if (serialized.length > MAX_JOURNAL_CHARACTERS) invalid("exceeds 16 Mi characters");
   let value: unknown;
   try { value = JSON.parse(serialized); } catch { invalid("is not valid JSON"); }
   return validateJournal(value);
 }
+const parse = parseOrchestrationRunJournal;
 function checkUpdate(next: OrchestrationRunJournal, current: OrchestrationRunJournal | null): void {
   if (current === null) return;
   if (current.ownerId !== next.ownerId || current.runId !== next.runId || current.occurredAt !== next.occurredAt) {

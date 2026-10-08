@@ -147,6 +147,23 @@
         "current PASS with stored blocking findings exposed rather than silently approved",
         "fail-closed invalid/changing data without state-directory creation"
       ]
+    },
+    {
+      "consumerId": "control-plane.recovery-tools",
+      "expectations": [
+        "reuse read-only lifecycle/assignment/revision/evidence dependencies without store initialization",
+        "corrupt individual records must remain explicit findings or apply blockers"
+      ],
+      "requiredCapabilities": [
+        "read-only-project-status",
+        "latest-revision-bound-evidence-status"
+      ],
+      "acceptedRanges": [
+        "valid local source observations, null missing records and source errors"
+      ],
+      "requiredReachableRanges": [
+        "valid local source observations, null missing records and source errors"
+      ]
     }
   ]
 }

@@ -130,6 +130,23 @@
         "unconfigured merge read source changed PR head failed/pending/missing exact-head CI and existing-policy ready result",
         "fail-closed invalid/changing inputs without partial success or mutation"
       ]
+    },
+    {
+      "consumerId": "control-plane.recovery-tools",
+      "expectations": [
+        "reuse required-validator and declared-review evidence predicates without execution or approval",
+        "only roles already required by lifecycle are historical recovery consistency prerequisites"
+      ],
+      "requiredCapabilities": [
+        "required-validator-evidence-audit",
+        "declared-independent-review-audit"
+      ],
+      "acceptedRanges": [
+        "missing failed stale blocked findings with evidence references"
+      ],
+      "requiredReachableRanges": [
+        "missing failed stale blocked findings with evidence references"
+      ]
     }
   ]
 }

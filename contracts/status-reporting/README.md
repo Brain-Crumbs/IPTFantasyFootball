@@ -150,3 +150,7 @@ Required reachable producer-output ranges:
 - unknown canonical revision without HEAD fallback.
 - current PASS with stored blocking findings exposed rather than silently approved.
 - fail-closed invalid/changing data without state-directory creation.
+
+## BOOT-032 recovery consumer
+
+`control-plane.recovery-tools` depends on `read-only-project-status`, `latest-revision-bound-evidence-status`. reuse read-only lifecycle/assignment/revision/evidence dependencies without store initialization. corrupt individual records must remain explicit findings or apply blockers. Accepted and required reachable outputs: valid local source observations, null missing records and source errors. Existing producer behavior and version are unchanged; this records the new consumer. See [the recovery contract](../recovery-tools/README.md) for offline mutation/audit boundaries.

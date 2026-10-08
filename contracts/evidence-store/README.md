@@ -100,3 +100,7 @@ Required reachable producer-output ranges:
 - latest stale or failed evidence without fallback to older PASS.
 - schema-valid contradictory PASS with recorded findings remains visible to diagnostic consistency checks.
 - history reads without evidence directory creation or writes.
+
+## BOOT-032 recovery consumer
+
+`control-plane.recovery-tools` depends on `append-only-auditable-history`, `read-only-store-mode-without-initialization-writes`. checker reads historical evidence and validates revision/reference identity without mutation. reset never deletes/supersedes evidence directly and existing merge evidence blocks unsafe reset. Accepted and required reachable outputs: validated historical records, missing data and explicit schema/read failures. Existing producer behavior and version are unchanged; this records the new consumer. See [the recovery contract](../recovery-tools/README.md) for offline mutation/audit boundaries.

@@ -3,7 +3,7 @@
 **Tasks:** BOOT-027 / issue #29; BOOT-028 / issue #30
 **Parent architecture:** issue #1
 **Module ID:** `control-plane.orchestration-engine`
-**Module version:** `2.0.0`
+**Module version:** `2.1.0`
 **Manifest:** `./module-contract.json`
 
 ## Identity and purpose
@@ -90,7 +90,7 @@ The `2.0.0` module version reflects the new required `runStore` and read-only `l
 
 BOOT-027 runs did not have this journal. Do not infer or manufacture a journal for an older run that has already advanced: this version does not migrate arbitrary in-progress runs, repair corrupt journals, or reset failed lifecycle/evidence. ReviewFramework `2.0.0` also requires injected evidence stores to implement `validate` and `getHistory`; unchanged `FileEvidenceStore` already does so. Existing on-disk evidence schemas are unchanged. DeveloperStart `1.1.0` adds optional `expectedTaskId`; injected start adapters used for orchestration resume must honor that strict guard before selecting or changing any task.
 
-After abrupt process death, a file lock can remain intentionally. Before removing a stale orchestration lock, an operator must stop and verify that **all runners for this repository are no longer executing**, inspect the lock, retain the journal, and remove **only that verified stale `.agent/state/orchestration/.orchestration.lock`**. Then rerun with the original key/owner/run and compatible role policy. Never delete journals, evidence, assignment locks, or lifecycle records to make a run look new. There is no automatic time/PID lock stealing and no general repair command; generalized recovery tooling remains BOOT-032 scope. An uncertain writer or malformed persisted record is a blocker, not permission to force through recovery.
+After abrupt process death, a file lock can remain intentionally. Stop and independently verify all repository runners, direct gates and external provider sessions. Inspect the original journal/token, then use BOOT-032 `release-run-lock` with original task/key, exact canonical revision/token hash, actor/reason and explicit quiescence; retain the journal and resume the same key/owner/run. Never delete journals, evidence, assignment locks or lifecycle history to make a run look new. There is no automatic age/PID stealing; uncertain writers and malformed records block repair. See [RECOVERY.md](../../docs/RECOVERY.md).
 
 ## Dependencies and invariants
 
@@ -133,4 +133,8 @@ A completed envelope carrying semantic `FAIL`/`BLOCKED` follows the existing gat
 
 ## Out of scope
 
-Unlimited retries; distributed/high-availability or parallel multi-task scheduling; vendor SDK adapters and desktop UI automation; CLI orchestration/status/diagnostics; general administrative repair (BOOT-032); product implementation; Bootstrap v1 cutover.
+Unlimited retries; distributed/high-availability or parallel multi-task scheduling; vendor SDK adapters and desktop UI automation; CLI orchestration/status/diagnostics; general administrative repair (owned separately by BOOT-032); product implementation; Bootstrap v1 cutover.
+
+## BOOT-032 pure journal parser consumer
+
+Version 2.1.0 exports `parseOrchestrationRunJournal(raw: string): OrchestrationRunJournal` for `control-plane.recovery-tools`. This additive `pure-run-journal-validation` capability exposes the existing parser without constructing a writable store, taking locks, changing retries or granting execution authority. Recovery accepts a valid original journal or INVALID_JOURNAL, and requires task/key/owner/run/time/pending-stage inspection to remain reachable without mutation. New judgments after legal reset use a new key/run and matching assignment; old attempts and journals are retained.
