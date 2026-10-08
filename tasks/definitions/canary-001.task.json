@@ -1,0 +1,59 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "CANARY-001",
+  "title": "Add the bootstrap canary proof marker",
+  "objective": "Exercise the existing control plane with the BOOT-033-owned real, low-risk change bootstrap/canary-proof.txt, containing exactly IPT control plane canary v1 followed by one newline, on bootstrap/boot-033-canary-e2e through independently reviewed, exact-head controlled merge to main.",
+  "inScope": [
+    "Create or verify bootstrap/canary-proof.txt as the deliberately tiny real repository change owned by BOOT-033 / issue #35.",
+    "Implement and independently review the BOOT-033 canary driver, isolated rehearsal/tests, native task definition, package command and narrow operator/root documentation needed to exercise and reproduce the marker workload. The prepared live branch includes this scaffolding in its reviewed diff.",
+    "Select this workload through the task engine and use existing assignment, canonical branch, deterministic validation, QA, Architect, UAT/Product, PR/CI, readiness, controlled-merge and completion gates.",
+    "Capture revision-bound evidence and read-only status/diagnostics; preserve the original run identity for interruption recovery and completed reconciliation."
+  ],
+  "outOfScope": [
+    "Fantasy-football product behavior or unrelated repository changes.",
+    "Changes to core lifecycle semantics, review policy, evidence rules, or recovery authority.",
+    "Direct edits to lifecycle, evidence, assignment, exchange records, or orchestration journals to force progress.",
+    "Fabricated BOOT dependency records or DONE states, self-approval, implicit live merge authorization, or a Bootstrap v1 cutover declaration."
+  ],
+  "dependencies": [],
+  "canonicalBranch": "bootstrap/boot-033-canary-e2e",
+  "allowedPaths": [
+    "bootstrap/canary-proof.txt",
+    "scripts/canary.mjs",
+    "scripts/canary-rehearsal.mjs",
+    "tests/canary-e2e.test.mjs",
+    "tests/helpers/canary-fixture.mjs",
+    "tasks/definitions/canary-001.task.json",
+    "package.json",
+    "README.md",
+    "BOOTSTRAP.md",
+    "docs/CANARY.md",
+    "docs/README.md",
+    "docs/STATUS.md",
+    "docs/DIAGNOSTICS.md"
+  ],
+  "requirements": [],
+  "acceptanceCriteria": [
+    "CANARY-001 is selected by the existing next-task/start workflow, and its assignment identifies bootstrap/boot-033-canary-e2e rather than a substituted branch.",
+    "bootstrap/canary-proof.txt contains exactly the UTF-8 bytes IPT control plane canary v1 followed by one newline; its BOOT-033 harness/docs/test scaffolding is also reviewed, and the task adds no product behavior or core source/schema/shared-contract change.",
+    "Required deterministic validators PASS with persisted evidence for the final source revision, and QA, Architect and UAT/Product use distinct fresh role contexts with current revision-bound PASS evidence before MERGE_READY.",
+    "The canonical PR targets main at the validated revision, both required CI checks succeed for that exact head, and live controlled merge requires separate authorization identifying the exact PR and head.",
+    "Only the existing controlled-merge gate records confirmed merge evidence, releases the original assignment and transitions MERGED then DONE; no manual state mutation is used.",
+    "Before/during/after status and diagnostics plus a same-key completed reconciliation are retained; reconciliation repeats no merge or completed evidence. Fixture rehearsal results remain explicitly distinguished from live GitHub and independent-review acceptance."
+  ],
+  "validationPlan": [
+    "Run npm run build, npm test, python3 schemas/validate_fixtures.py and python3 schemas/validate_repository_contracts.py against the reviewable revision.",
+    "Run npm run canary:rehearse in an isolated temporary Git repository to exercise an actual marker commit, real local gates/file stores/manual packet transport, fixture GitHub service and scripted role judgments, including blocked paths and idempotent completion.",
+    "Follow docs/CANARY.md for an explicitly authorized live run; retain exact assignment, branch, revision, validation, independent review, PR, CI, readiness, merge and completion evidence without rewriting state.",
+    "Do not count the fixture rehearsal or a draft PR as issue #35's successful live controlled-merge/DONE acceptance."
+  ],
+  "affectedContracts": [],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}
