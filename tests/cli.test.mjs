@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { cpSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { EXIT_CODES, OUTPUT_SCHEMA_VERSION } from "../dist/cli/contracts.js";
 import { runCli } from "../dist/cli/core.js";
@@ -12,10 +16,27 @@ function spawnCli(args) {
 }
 
 function spawnDocumentedJsonCli(args) {
-  return spawnSync(npmCommand, ["run", "--silent", "agent", "--", "--json", ...args], {
-    encoding: "utf8",
-    cwd: new URL("..", import.meta.url),
-  });
+  // `agent` intentionally runs preagent/tsc. Rebuilding the shared dist here
+  // races other node:test workers importing it (including child processes).
+  // Keep the real documented lifecycle command, but give its build a private
+  // workspace; never suppress preagent merely to hide this concurrency bug.
+  const source = fileURLToPath(new URL("..", import.meta.url));
+  const root = mkdtempSync(join(tmpdir(), "ipt-cli-npm-smoke-"));
+  const sharedArtifacts = ["dist/cli/cli.js", "dist/orchestration-engine/run-store.js"];
+  const before = sharedArtifacts.map(path => statSync(join(source, path)).mtimeMs);
+  try {
+    for (const path of ["src", "node_modules", "package.json", "tsconfig.json"]) {
+      cpSync(join(source, path), join(root, path), { recursive: true });
+    }
+    const result = spawnSync(npmCommand, ["run", "--silent", "agent", "--", "--json", ...args], {
+      encoding: "utf8", cwd: root,
+    });
+    assert.deepEqual(sharedArtifacts.map(path => statSync(join(source, path)).mtimeMs), before,
+      "documented CLI smoke test must not rebuild artifacts shared with parallel test workers");
+    return result;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function fakeStartResult(request) {
