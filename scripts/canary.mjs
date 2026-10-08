@@ -242,7 +242,7 @@ async function main() {
   if (!['run', 'pr'].includes(operation) || !configPath || (operation === 'run' ? !requestPath : requestPath) || extra.length) throw new CanaryError('CANARY_USAGE', 'Usage: node scripts/canary.mjs run <config.json> <request.json> | pr <config.json>');
   const config = JSON.parse(readFileSync(resolve(configPath), 'utf8'));
   if ('token' in config || 'fetchImpl' in config || 'provider' in config || 'now' in config) throw new CanaryError('CANARY_INVALID_CONFIG', 'Config cannot contain credentials or injected runtime adapters. Use existing IPT_GITHUB_TOKEN environment configuration.');
-  const options = { ...config, token: process.env.IPT_GITHUB_TOKEN };
+  const options = { ...config, token: process.env.IPT_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN };
   const root = process.cwd();
   const result = operation === 'run' ? await runCanary(root, options, JSON.parse(readFileSync(resolve(requestPath), 'utf8'))) : await ensureCanaryPullRequest(root, options);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
