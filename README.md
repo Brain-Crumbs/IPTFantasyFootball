@@ -2,7 +2,7 @@
 
 IPTFantasyFootball is currently in **agentic-development bootstrap**, not fantasy-football product implementation.
 
-The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with BOOT-000 / issue #2. The repository has since added the CLI shell (BOOT-005), task registry (BOOT-006), dependency DAG (BOOT-007), next-task selector (BOOT-008), lifecycle transition engine (BOOT-009), assignment locks (BOOT-010), Git branch lifecycle adapter (BOOT-011), role-aware context compiler (BOOT-012), the Developer task-start workflow (BOOT-013 / issue #15), the validation executor framework (BOOT-014 / issue #16), the evidence and review artifact store (BOOT-015 / issue #17), the developer validation gate (BOOT-016 / issue #18), the generic review framework (BOOT-017), the QA/Architecture/UAT review gates (BOOT-018/019/020), the review rework/invalidation loop (BOOT-021), pull-request lifecycle integration (BOOT-022), GitHub Actions CI enforcement (BOOT-023 / issue #25, see [docs/CI.md](docs/CI.md)), the merge-readiness policy engine (BOOT-024), controlled merge and completion (BOOT-025), the provider-neutral agent runner/provider interface (BOOT-026 / issue #28), the sequential orchestration library (BOOT-027), durable runner resilience/resume (BOOT-028), the local/manual file adapter (BOOT-029 / issue #31), read-only project status (BOOT-030 / issue #32), scoped workflow diagnostics (BOOT-031 / issue #33), and explicit audited recovery (BOOT-032 / issue #34).
+The active bootstrap architecture is tracked in [GitHub issue #1 — Agentic Development System v1 — Master Tracking Plan](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1). The manual seed began with BOOT-000 / issue #2. The repository has since added the CLI shell (BOOT-005), task registry (BOOT-006), dependency DAG (BOOT-007), next-task selector (BOOT-008), lifecycle transition engine (BOOT-009), assignment locks (BOOT-010), Git branch lifecycle adapter (BOOT-011), role-aware context compiler (BOOT-012), the Developer task-start workflow (BOOT-013 / issue #15), the validation executor framework (BOOT-014 / issue #16), the evidence and review artifact store (BOOT-015 / issue #17), the developer validation gate (BOOT-016 / issue #18), the generic review framework (BOOT-017), the QA/Architecture/UAT review gates (BOOT-018/019/020), the review rework/invalidation loop (BOOT-021), pull-request lifecycle integration (BOOT-022), GitHub Actions CI enforcement (BOOT-023 / issue #25, see [docs/CI.md](docs/CI.md)), the merge-readiness policy engine (BOOT-024), controlled merge and completion (BOOT-025), the provider-neutral agent runner/provider interface (BOOT-026 / issue #28), the sequential orchestration library (BOOT-027), durable runner resilience/resume (BOOT-028), the local/manual file adapter (BOOT-029 / issue #31), read-only project status (BOOT-030 / issue #32), scoped workflow diagnostics (BOOT-031 / issue #33), explicit audited recovery (BOOT-032 / issue #34), and the BOOT-033 canary driver/rehearsal (issue #35, live acceptance pending).
 
 ## Bootstrap purpose
 
@@ -21,7 +21,7 @@ The control plane now has a start-only Developer workflow that composes determin
 
 | Path | Responsibility during bootstrap |
 | --- | --- |
-| `bootstrap/` | Bootstrap-only notes and placeholders. |
+| `bootstrap/` | Bootstrap-only notes and the tiny BOOT-033 canary proof marker. |
 | `docs/` | Human-readable architecture and operating documentation. |
 | `tasks/` | Repository-native task definitions loaded from `tasks/definitions/*.task.json`. |
 | `schemas/` | Versioned machine-readable schemas. |
@@ -65,7 +65,7 @@ BOOT-008 adds `control-plane.next-task`, documented in [contracts/next-task/READ
 
 ### `status`
 
-BOOT-030 adds `control-plane.status-reporting` and `agent status` / `agent --json status`. One read-only view reports registered local task/phase progress, current lifecycle stages, canonical branches/revisions, assignments, latest revision-bound evidence, concrete blockers, and BOOT-008 next-work eligibility. The default `next` command now reads the same persisted lifecycle map. Counts cover local registered tasks only; the current empty registry does not mean the GitHub bootstrap is complete or authorize cutover. See [docs/STATUS.md](docs/STATUS.md) for scope, currency, consistency, and operator guidance.
+BOOT-030 adds `control-plane.status-reporting` and `agent status` / `agent --json status`. One read-only view reports registered local task/phase progress, current lifecycle stages, canonical branches/revisions, assignments, latest revision-bound evidence, concrete blockers, and BOOT-008 next-work eligibility. The default `next` command now reads the same persisted lifecycle map. Counts cover local registered tasks only. The registry contains CANARY-001, which defaults to PLANNED without persisted state and is selectable; it does not import historical BOOT completion or authorize cutover. See [docs/STATUS.md](docs/STATUS.md) for scope, currency, consistency, and operator guidance.
 
 ### `explain`
 
@@ -74,6 +74,10 @@ BOOT-031 adds `control-plane.workflow-diagnostics` and read-only `agent explain 
 ### `recovery`
 
 BOOT-032 adds read-only `agent recovery check` and explicit offline `agent recovery apply <request-file>`. The checker reports representative corrupt/incomplete state, missing/mismatched evidence, held locks and interrupted runs. Apply supports bounded assignment release/transfer, original-journal run-lock release and authorized legal reset to REWORK_REQUIRED, with exact revision/hash preconditions and immutable prior/result audit. All writers/providers must be verified stopped; active-lock override and reset need separately configured host authorization. Recovery preserves evidence and never approves a review, merges, or marks completion. See [docs/RECOVERY.md](docs/RECOVERY.md) for examples, interrupted-review resume, emergency policy and limitations.
+
+### End-to-end canary
+
+BOOT-033 adds the CANARY-001 marker workload, `scripts/canary.mjs` and `npm run canary:rehearse`. The driver composes the existing native gates with the manual provider; its live path pauses before controlled merge unless the exact PR/head is separately authorized. The isolated rehearsal retains actual local Git/gate/evidence results with fixture GitHub and scripted judgments, which do not establish live acceptance. See [docs/CANARY.md](docs/CANARY.md) for clean-start reproduction, independent role handoffs, draft PR/CI, recovery and the pending live merge/DONE evidence. Generic `agent orchestrate` remains reserved.
 
 ### Lifecycle, assignment, branch, and context foundations
 

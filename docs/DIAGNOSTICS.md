@@ -17,7 +17,7 @@ npm run agent -- explain transition <request-file>
 npm run --silent agent -- --json explain validation <task-id>
 ```
 
-Each command accepts exactly a subject and its target. Task IDs must match the task schema and exist in the local registry. The current checkout's `tasks/definitions/` is empty: `status` and `next` correctly report empty, while explaining an unregistered task is an explicit usage error. GitHub bootstrap issue IDs/checklists are not imported or converted into synthetic lifecycle/approval records. Test fixtures demonstrate populated states without claiming real bootstrap completion.
+Each command accepts exactly a subject and its target. Task IDs must match the task schema and exist in the local registry. The BOOT-033 checkout registers `CANARY-001`; without persisted state, `status` reports it as PLANNED and `next` selects it. `explain task CANARY-001` inspects that real workload, while explaining an unregistered task remains an explicit usage error. GitHub bootstrap issue IDs/checklists are not imported or converted into synthetic lifecycle/approval records. Neither fixture results nor this native registration establish live canary completion; see [CANARY.md](CANARY.md).
 
 Human and JSON output use the same immutable `WorkflowExplanation`. The JSON envelope remains `schemaVersion: "1.0.0"`, `command: "explain"`; the payload is independently versioned as `data.diagnosticsVersion: "1.0.0"`. These are read models, not new persisted evidence schemas.
 
