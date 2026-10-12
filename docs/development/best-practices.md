@@ -16,6 +16,7 @@ not authorize new work, reviews, merges or lifecycle mutations.
   prove safe rejection. Recovery and diagnostic observations may intentionally add
   audit records; verify those authorized writes instead of demanding global silence.
 - **Evidence:** [BOOT-034 #36](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/36),
+  [implementation PR #72](https://github.com/Brain-Crumbs/IPTFantasyFootball/pull/72),
   ADV-001–016 in [the scenario map](../ADVERSARIAL_TESTS.md#scenario-and-invariant-map).
 
 ## BP-002 — Prove a safety test detects the guard's removal
@@ -31,6 +32,7 @@ not authorize new work, reviews, merges or lifecycle mutations.
   This bounded proof complements regular tests; it is not an exhaustive mutation
   score, and must never weaken the real checkout or production configuration.
 - **Evidence:** [BOOT-034 #36](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/36),
+  [implementation PR #72](https://github.com/Brain-Crumbs/IPTFantasyFootball/pull/72),
   SELF_APPROVAL/ADV-007 and PRE_MERGE_HEAD/ADV-009 in
   [the mutation proof](../ADVERSARIAL_TESTS.md#mutation-proof).
 
@@ -40,3 +42,5 @@ not authorize new work, reviews, merges or lifecycle mutations.
 | --- | --- | --- | --- | --- |
 | 2026-10-12 | BP-001 | added | Rejection must precede unsafe persistence/provider effects | BOOT-034 #36; ADV-001–016 |
 | 2026-10-12 | BP-002 | added | Confirm named tests detect two deliberately removed guards | BOOT-034 #36; mutation proof |
+| 2026-10-12 | BP-001 | revised | Link the submitted implementation for reviewable evidence | [PR #72](https://github.com/Brain-Crumbs/IPTFantasyFootball/pull/72) |
+| 2026-10-12 | BP-002 | revised | Link the submitted mutation proof implementation | [PR #72](https://github.com/Brain-Crumbs/IPTFantasyFootball/pull/72) |
