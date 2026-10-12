@@ -52,6 +52,9 @@ jobs:
       - name: Test (node --test)
         run: npm test
 
+      - name: Mutation-check adversarial workflow guards
+        run: npm run test:adversarial:mutations
+
   schema-validation:
     name: Schema and contract validation (Python)
     runs-on: ubuntu-latest
