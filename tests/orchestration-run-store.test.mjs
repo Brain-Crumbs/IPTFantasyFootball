@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import { FileOrchestrationRunStore, MemoryOrchestrationRunStore, RunStoreError } from "../dist/orchestration-engine/index.js";
 
@@ -217,7 +217,7 @@ test("file: symlink journals are rejected and cannot redirect writes", async t =
   const root = directory(t);
   const destination = join(directory(t), "target.json");
   writeFileSync(destination, JSON.stringify(journal()));
-  symlinkSync(destination, filePath(root));
+  symlinkSync(destination, filePath(root), process.platform === "win32" ? "junction" : undefined);
   const subject = new FileOrchestrationRunStore(root);
   assert.throws(() => subject.get("key-1"), code("INVALID_JOURNAL"));
   await assert.rejects(subject.withLock(async () => subject.save(journal())), code("INVALID_JOURNAL"));
@@ -321,7 +321,7 @@ test("file: a failed atomic replacement preserves the prior snapshot and removes
     });
   `], { encoding: "utf8", timeout: 10000 });
   assert.equal(child.status, 0, child.stderr);
-  assert.deepEqual(readdirSync(root), [filePath(root).split("/").at(-1)]);
+  assert.deepEqual(readdirSync(root), [basename(filePath(root))]);
   assert.equal(new FileOrchestrationRunStore(root).get("key-1").attempts["qa-agent"], 1);
 });
 

@@ -40,11 +40,15 @@ export function authoritativeFiles(root) {
 export function createCanaryFixture({ parentDirectory, reviewFailure, dirtyDeveloper = false, failingValidation = false } = {}) {
   const root = mkdtempSync(join(parentDirectory ?? tmpdir(), 'ipt-canary-'));
   cpSync(join(sourceRoot, 'schemas'), join(root, 'schemas'), { recursive: true });
-  const definition = readFileSync(join(sourceRoot, 'tasks/definitions/canary-001.task.json'), 'utf8');
+  const definition = JSON.parse(readFileSync(join(sourceRoot, 'tasks/definitions/canary-001.task.json'), 'utf8'));
+  // The isolated workload changes only the marker. Live compatibility changes
+  // retain their affected contracts in the real registry and live role packets.
+  definition.affectedContracts = [];
   // This is a task definition, never a lifecycle/evidence record. Seed it in
   // the clean base just as a repository would register an upcoming task.
-  put(root, 'tasks/definitions/canary-001.task.json', definition);
+  put(root, 'tasks/definitions/canary-001.task.json', JSON.stringify(definition, null, 2));
   put(root, '.gitignore', '.agent/\n');
+  put(root, '.gitattributes', '* text=auto eol=lf\n');
   put(root, '.npmrc', 'offline=true\nupdate-notifier=false\naudit=false\nfund=false\n');
   put(root, 'package.json', JSON.stringify({ name: 'isolated-canary-fixture', private: true, type: 'module',
     scripts: { build: 'node --check verify.mjs', test: 'node verify.mjs' } }, null, 2));

@@ -88,7 +88,7 @@ test("schema-validation job reruns fixture validation and real-record validation
 
 function runInvariantScript(cwd) {
   try {
-    const stdout = execFileSync("python3", [join(cwd, "schemas", "validate_repository_contracts.py")], {
+    const stdout = execFileSync(process.env.IPT_PYTHON ?? (process.platform === "win32" ? "python" : "python3"), [join(cwd, "schemas", "validate_repository_contracts.py")], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],

@@ -85,3 +85,7 @@ Empty local state says nothing about GitHub cutover. A live process can have a p
 - Recovery's direct assignment changes require supplemental audit readers; `getAudit()` alone is not a complete recovery history.
 - Architecture review must verify exact-state retry, offline concurrency assumptions, current evidence versus legal lifecycle after reset, normal resume versus new-judgment identities, and merge-controller ownership.
 - Future changes must preserve all accepted and required reachable ranges; type compatibility alone is insufficient.
+
+## Windows filesystem support
+
+On Windows, file contents are fsynced and publication remains atomic, but Node cannot fsync directories. Process-interruption recovery is supported; directory-entry durability across OS crash or power loss is not guaranteed. Use a POSIX filesystem host when that stronger durability is required.

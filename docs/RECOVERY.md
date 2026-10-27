@@ -167,3 +167,7 @@ python3 schemas/validate_repository_contracts.py
 ```
 
 The PR must report exact executed results and fixture evidence; this mapping is not a claim of independent QA/Architecture/UAT approval. Local behavior, lifecycle correctness, and downstream consumer semantics all require review.
+
+## Windows durability boundary
+
+On Windows, file contents are fsynced and publication remains atomic, but Node cannot fsync directories. Process-interruption recovery is supported; directory-entry durability across OS crash or power loss is not guaranteed. Use a POSIX filesystem host when that stronger durability is required.

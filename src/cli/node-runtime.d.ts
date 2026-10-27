@@ -3,6 +3,8 @@ interface IptCliStream {
 }
 
 interface IptCliProcess {
+  platform: string;
+  execPath: string;
   argv: string[];
   env: Record<string, string | undefined>;
   cwd(): string;

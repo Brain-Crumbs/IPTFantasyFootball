@@ -394,6 +394,9 @@ export class FileOrchestrationRunStore implements OrchestrationRunStore {
     } catch (error: unknown) { io(error, "scan orchestration journal identities"); }
   }
   private syncDirectory(): void {
+    // Node/Windows cannot fsync directories. File contents are still fsynced
+    // before atomic publication; power-loss directory durability is POSIX-only.
+    if (process.platform === "win32") return;
     const fd = openSync(this.root, "r");
     try { fsyncSync(fd); } finally { closeSync(fd); }
   }

@@ -205,8 +205,8 @@ test("symlinked state files and directories fail closed without following their 
   const s = setup(t);
   const external = join(s.root, "external.json"); writeFileSync(external, "private target remains unchanged");
   mkdirSync(join(s.root, ".agent/state/lifecycle"), { recursive: true });
-  symlinkSync(external, join(s.root, ".agent/state/lifecycle/BOOT-032.lifecycle.json"));
-  symlinkSync(s.root, join(s.root, ".agent/state/evidence"));
+  symlinkSync(external, join(s.root, ".agent/state/lifecycle/BOOT-032.lifecycle.json"), process.platform === "win32" ? "junction" : undefined);
+  symlinkSync(s.root, join(s.root, ".agent/state/evidence"), process.platform === "win32" ? "junction" : undefined);
   const report = await s.check();
   assert.ok(codes(report).includes("MALFORMED_LIFECYCLE"));
   assert.ok(codes(report).includes("STATE_DIRECTORY_UNREADABLE"));

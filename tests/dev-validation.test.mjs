@@ -330,6 +330,15 @@ test("RepositoryValidatorResolver resolves the repository build and test command
   assert.deepEqual(validators.map((validator) => validator.validatorId), ["repository:build", "repository:test"]);
   assert.ok(validators.every((validator) => validator.required === true));
   assert.ok(validators.every((validator) => validator.kind === "command"));
+  assert.deepEqual(validators[0].args.slice(-2), ["run", "build"]);
+  assert.equal(validators[1].args.at(-1), "test");
+  assert.equal(validators[1].timeoutMs, 900_000);
+  if (process.platform === "win32") {
+    assert.ok(validators.every(validator => validator.command === process.execPath));
+    assert.match(validators[0].args[0], /npm-cli\.js$/);
+  } else {
+    assert.ok(validators.every(validator => validator.command === "npm"));
+  }
 });
 
 test("RepositoryValidatorResolver rejects an empty repository root", () => {

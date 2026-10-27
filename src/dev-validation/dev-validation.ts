@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { LOCAL_AGENT_STATE_RELATIVE_PATH } from "../dev-start/index.js";
 import {
   EVIDENCE_STORE_SUPPORTED_SCHEMAS,
@@ -364,13 +364,21 @@ export class RepositoryValidatorResolver implements DeveloperValidatorResolver {
   }
 
   resolve(): readonly ValidatorSpec[] {
+    // Windows npm is a .cmd launcher, which spawnSync cannot execute without
+    // a shell. Invoke the installed CLI with Node; arguments remain literal.
+    const npmCli = process.env.npm_execpath ?? join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+    if (process.platform === "win32" && !existsSync(npmCli)) {
+      throw new DeveloperValidationError("VALIDATOR_RESOLUTION_FAILED", "Cannot find npm's JavaScript CLI. Run through npm or set npm_execpath to the installed npm-cli.js.");
+    }
+    const command = process.platform === "win32" ? process.execPath : "npm";
+    const prefix = process.platform === "win32" ? [npmCli] : [];
     return Object.freeze([
       Object.freeze({
         validatorId: "repository:build",
         category: "type-check" as const,
         kind: "command" as const,
-        command: "npm",
-        args: ["run", "build"],
+        command,
+        args: [...prefix, "run", "build"],
         cwd: this.repositoryRoot,
         required: true,
         description: "Compile the repository TypeScript sources.",
@@ -379,9 +387,10 @@ export class RepositoryValidatorResolver implements DeveloperValidatorResolver {
         validatorId: "repository:test",
         category: "test" as const,
         kind: "command" as const,
-        command: "npm",
-        args: ["test"],
+        command,
+        args: [...prefix, "test"],
         cwd: this.repositoryRoot,
+        timeoutMs: 900_000,
         required: true,
         description: "Run the repository's deterministic test suite.",
       }),

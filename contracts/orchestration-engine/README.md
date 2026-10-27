@@ -138,3 +138,7 @@ Unlimited retries; distributed/high-availability or parallel multi-task scheduli
 ## BOOT-032 pure journal parser consumer
 
 Version 2.1.0 exports `parseOrchestrationRunJournal(raw: string): OrchestrationRunJournal` for `control-plane.recovery-tools`. This additive `pure-run-journal-validation` capability exposes the existing parser without constructing a writable store, taking locks, changing retries or granting execution authority. Recovery accepts a valid original journal or INVALID_JOURNAL, and requires task/key/owner/run/time/pending-stage inspection to remain reachable without mutation. New judgments after legal reset use a new key/run and matching assignment; old attempts and journals are retained.
+
+## Windows filesystem support
+
+On Windows, file contents are fsynced and publication remains atomic, but Node cannot fsync directories. Process-interruption recovery is supported; directory-entry durability across OS crash or power loss is not guaranteed. Use a POSIX filesystem host when that stronger durability is required.

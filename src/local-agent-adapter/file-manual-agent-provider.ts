@@ -216,6 +216,8 @@ export class FileManualAgentProvider implements AgentProvider {
     this.#ensureDirectory();
     let fd: number | undefined;
     try {
+      // O_NOFOLLOW is unavailable on Windows; reject reparse points explicitly.
+      if (lstatSync(path).isSymbolicLink()) throw error("MALFORMED_RESULT", "Exchange records must not be symlinks.");
       fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const stat = fstatSync(fd);
       if (!stat.isFile() || stat.size > MAX_LOCAL_AGENT_JSON_BYTES + 1) throw error("MALFORMED_RESULT", "Exchange record must be a regular file within the 4 MiB limit.");
@@ -247,8 +249,12 @@ export class FileManualAgentProvider implements AgentProvider {
       closeSync(fd); fd = undefined;
       try { linkSync(temporary, path); } catch (cause: unknown) { if (hasCode(cause, "EEXIST")) return true; throw cause; }
       // Atomic, no-overwrite publication: readers never see a partial file.
-      const directoryFd = openSync(this.#root, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try { fsyncSync(directoryFd); } finally { closeSync(directoryFd); }
+      // Windows does not support directory fsync. The file itself was flushed
+      // above; power-loss durability of directory entries remains POSIX-only.
+      if (process.platform !== "win32") {
+        const directoryFd = openSync(this.#root, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try { fsyncSync(directoryFd); } finally { closeSync(directoryFd); }
+      }
       return false;
     } catch (cause: unknown) { throw normalize(cause, "PROVIDER_ERROR", true); }
     finally { if (fd !== undefined) closeSync(fd); try { unlinkSync(temporary); } catch { /* A crash may leave a harmless unpublished .tmp file. */ } }

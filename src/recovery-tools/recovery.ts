@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { mergeEvidenceLineageId } from "../evidence-store/index.js";
 import { isAssignmentLockExpired } from "../assignment-lock/index.js";
 import { transitionLifecycle, type LifecycleRecord, type ReviewRole } from "../lifecycle/index.js";
@@ -105,10 +105,10 @@ function read(root: string, relative: string): string | null {
   try { requireValue(lstatSync(join(root, relative)).isFile(), `Expected a regular file: ${relative}.`); return readFileSync(join(root, relative), "utf8"); }
   catch (error) { if (errorCode(error) === "ENOENT") return null; throw error; }
 }
-function syncDirectory(path: string): void { const fd = openSync(path, "r"); try { fsyncSync(fd); } finally { closeSync(fd); } }
+function syncDirectory(path: string): void { if (process.platform === "win32") return; const fd = openSync(path, "r"); try { fsyncSync(fd); } finally { closeSync(fd); } }
 function durableCreate(root: string, relative: string, data: string): void {
   assertRecoveryPath(root, relative);
-  const path = join(root, relative), parent = path.slice(0, path.lastIndexOf("/"));
+  const path = join(root, relative), parent = dirname(path);
   let directory = root;
   for (const segment of relative.split("/").slice(0, -1)) {
     const child = join(directory, segment);
@@ -236,7 +236,7 @@ export class LocalRecoveryTools {
           renameSync(join(this.root, temp), join(this.root, intent.targetPath));
         }
         const target = join(this.root, intent.targetPath);
-        syncDirectory(target.slice(0, target.lastIndexOf("/")));
+        syncDirectory(dirname(target));
       }
       requireValue(read(this.root, intent.targetPath) === intent.resultingState, "Cannot verify resulting state.", "STATE_CONFLICT");
       const result: RecoveryResult = { recoveryVersion: "1.0.0", operationId: request.operationId, status: "APPLIED", completedAt: now,

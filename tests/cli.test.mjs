@@ -2,17 +2,18 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { EXIT_CODES, OUTPUT_SCHEMA_VERSION } from "../dist/cli/contracts.js";
 import { runCli } from "../dist/cli/core.js";
 
 const cliPath = new URL("../dist/cli/cli.js", import.meta.url);
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmCommand = process.execPath;
+const npmPrefix = [process.env.npm_execpath ?? join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")];
 
 function spawnCli(args) {
-  return spawnSync(process.execPath, [cliPath.pathname, ...args], { encoding: "utf8" });
+  return spawnSync(process.execPath, [fileURLToPath(cliPath), ...args], { encoding: "utf8" });
 }
 
 function spawnDocumentedJsonCli(args) {
@@ -28,7 +29,7 @@ function spawnDocumentedJsonCli(args) {
     for (const path of ["src", "node_modules", "package.json", "tsconfig.json"]) {
       cpSync(join(source, path), join(root, path), { recursive: true });
     }
-    const result = spawnSync(npmCommand, ["run", "--silent", "agent", "--", "--json", ...args], {
+    const result = spawnSync(npmCommand, [...npmPrefix, "run", "--silent", "agent", "--", "--json", ...args], {
       encoding: "utf8", cwd: root,
     });
     assert.deepEqual(sharedArtifacts.map(path => statSync(join(source, path)).mtimeMs), before,
@@ -315,7 +316,7 @@ test("process-level help/version/invalid/reserved/start-usage/next exit behavior
 });
 
 test("CLI shell runs without provider credentials or provider environment", () => {
-  const result = spawnSync(process.execPath, [cliPath.pathname, "--json", "help"], {
+  const result = spawnSync(process.execPath, [fileURLToPath(cliPath), "--json", "help"], {
     encoding: "utf8",
     env: { PATH: process.env.PATH ?? "" },
   });

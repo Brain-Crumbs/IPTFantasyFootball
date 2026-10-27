@@ -2,7 +2,7 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.local-agent-adapter",
-  "moduleVersion": "1.0.0",
+  "moduleVersion": "1.1.0",
   "structuralContract": {
     "interfaces": [
       "new FileManualAgentProvider(root: string, options?: { repositoryRoot?: string, pollIntervalMs?: number }) implements AgentProvider",
@@ -43,7 +43,8 @@
       "invalid requests/context-policy conflicts throw INVALID_REQUEST nonrecoverable; malformed identity/import/tamper/conflict throws MALFORMED_RESULT nonrecoverable; filesystem failures use PROVIDER_ERROR",
       "operator must enforce external tool/network policy and fresh independent role sessions; cancellation cannot force-stop desktop tools",
       "adapter preserves supplied compiled context but does not authenticate its producer, recompile role context, verify claimed evidence, or execute any authoritative workflow gate",
-      "schema validation uses an adapter-local evaluator for the authored schema vocabulary; unsupported keywords fail closed rather than being silently ignored"
+      "schema validation uses an adapter-local evaluator for the authored schema vocabulary; unsupported keywords fail closed rather than being silently ignored",
+      "On Windows, file contents are fsynced and publication remains atomic, but Node cannot fsync directories. Process-interruption recovery is supported; directory-entry durability across OS crash or power loss is not guaranteed. Use a POSIX filesystem host when that stronger durability is required."
     ],
     "invariants": [
       "exchange packets/results are unauthenticated transport metadata, never evidence or lifecycle authority",

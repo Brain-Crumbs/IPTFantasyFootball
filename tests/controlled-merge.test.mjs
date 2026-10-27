@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,7 +17,7 @@ import { PullRequestProviderError } from "../dist/pr-lifecycle/index.js";
 const revision = "abcdef1234567890abcdef1234567890abcdef12";
 const canonicalBranch = "claude/vibrant-pasteur-ey7jgt";
 const occurredAt = "2026-09-10T12:00:00Z";
-const repositoryRoot = join(new URL("..", import.meta.url).pathname);
+const repositoryRoot = join(fileURLToPath(new URL("..", import.meta.url)));
 
 const task = Object.freeze({
   schemaId: "ipt.task",
@@ -1506,7 +1507,7 @@ test("a transient failure statting the rollback claim itself (not a genuine abse
     const { symlinkSync, existsSync } = await import("node:fs");
     const lockPath = join(dir, "BOOT-025.lifecycle.lock");
     const rollbackClaimPath = `${lockPath}.try-create-rollback-claim`;
-    symlinkSync(rollbackClaimPath, rollbackClaimPath);
+    symlinkSync(rollbackClaimPath, rollbackClaimPath, process.platform === "win32" ? "junction" : undefined);
 
     const taskLock = new FileControlledMergeTaskLock(dir, { staleLockMs: 5 * 60 * 1000 });
     let ran = false;

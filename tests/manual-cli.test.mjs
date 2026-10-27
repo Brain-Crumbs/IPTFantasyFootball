@@ -119,8 +119,13 @@ test("CLI waiting runner timeout preserves its packet for a later result", async
 
 test("real CLI SIGINT drains a waiting adapter and returns one JSON cancellation envelope", async (t) => {
   const f = fixture(t);
-  const child = spawn(process.execPath, ["dist/cli/cli.js", "--json", "manual", "run", f.requestPath, f.exchange], {
-    cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"],
+  const args = ["dist/cli/cli.js", "--json", "manual", "run", f.requestPath, f.exchange];
+  // Windows child.kill(SIGINT) force-terminates instead of delivering a console
+  // event. Drive the real process signal handler over IPC on that platform.
+  const windows = process.platform === "win32";
+  const launch = windows ? ["--input-type=module", "-e", `process.argv = [process.execPath, ...${JSON.stringify(args)}]; process.once('message', () => { process.disconnect(); process.emit('SIGINT'); }); await import('./dist/cli/cli.js');`] : args;
+  const child = spawn(process.execPath, launch, {
+    cwd: repositoryRoot, stdio: windows ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
   });
   t.after(() => { if (child.exitCode === null) child.kill("SIGKILL"); });
   let stdout = "";
@@ -136,7 +141,8 @@ test("real CLI SIGINT drains a waiting adapter and returns one JSON cancellation
     if (child.exitCode !== null) assert.fail(`CLI exited before packet export: ${stdout} ${stderr}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.equal(child.kill("SIGINT"), true);
+  if (windows) child.send("SIGINT");
+  else assert.equal(child.kill("SIGINT"), true);
   const exit = await exited;
   assert.deepEqual(exit, { code: EXIT_CODES.WORKFLOW_BLOCKED, signal: null });
   assert.equal(stderr, "");

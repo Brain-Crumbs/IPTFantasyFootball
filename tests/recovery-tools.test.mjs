@@ -1,6 +1,7 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, lstatSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -16,7 +17,7 @@ import { QaReviewGate } from "../dist/qa-review/index.js";
 import { ReviewFramework } from "../dist/review-framework/index.js";
 import { LocalRecoveryTools, RecoveryError, parseRecoveryRequest, recoveryHash } from "../dist/recovery-tools/recovery.js";
 
-const repositoryRoot = new URL("..", import.meta.url).pathname;
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const occurredAt = "2026-10-07T20:00:00.000Z";
 const now = "2026-10-07T21:00:00.000Z";
 const task = Object.freeze({
@@ -191,14 +192,14 @@ test("repair refuses target, ancestor, audit and supporting lifecycle symlinks",
     t.after(() => rmSync(outside, { recursive: true, force: true }));
     if (kind === "target" || kind === "lifecycle") {
       const relative = kind === "target" ? assignmentPath : lifecyclePath; const original = read(f.root, relative);
-      write(outside, "original.json", original); unlinkSync(join(f.root, relative)); symlinkSync(join(outside, "original.json"), join(f.root, relative));
+      write(outside, "original.json", original); unlinkSync(join(f.root, relative)); symlinkSync(join(outside, "original.json"), join(f.root, relative), process.platform === "win32" ? "junction" : undefined);
     } else if (kind === "ancestor") {
       cpSync(join(f.root, ".agent/state/assignments"), outside, { recursive: true });
-      rmSync(join(f.root, ".agent/state/assignments"), { recursive: true }); symlinkSync(outside, join(f.root, ".agent/state/assignments"));
-    } else symlinkSync(outside, join(f.root, auditRoot));
+      rmSync(join(f.root, ".agent/state/assignments"), { recursive: true }); symlinkSync(outside, join(f.root, ".agent/state/assignments"), process.platform === "win32" ? "junction" : undefined);
+    } else symlinkSync(outside, join(f.root, auditRoot), process.platform === "win32" ? "junction" : undefined);
     const before = snapshot(outside);
     await assert.rejects(() => recovery(f).then(tool => tool.apply(req)), /symlink/i);
-    assert.deepEqual(snapshot(outside), before); assert.equal(existsSync(join(f.root, assignmentPath)), true);
+    assert.deepEqual(snapshot(outside), before); assert.ok(lstatSync(join(f.root, assignmentPath)));
   }
 });
 

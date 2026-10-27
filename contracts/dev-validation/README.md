@@ -88,3 +88,7 @@ Required reachable producer-output ranges:
 ## BOOT-032 recovery consumer
 
 `control-plane.recovery-tools` depends on `pluggable-task-and-repository-validator-resolution`. recovery checker uses RepositoryValidatorResolver definitions without invoking validators. missing required evidence remains a finding rather than an invented pass. Accepted and required reachable outputs: required/optional validator definitions or resolver errors. Existing producer behavior and version are unchanged; this records the new consumer. See [the recovery contract](../recovery-tools/README.md) for offline mutation/audit boundaries.
+
+## Windows command execution
+
+On Windows the default resolver runs npm-cli.js with the current Node executable, using npm_execpath when provided or the npm installation beside Node. Arguments are passed without a shell. Missing npm fails closed. The repository test validator allows 15 minutes for the full integration suite; timeout remains an error that blocks validation.

@@ -239,3 +239,7 @@ Confirm each discovered packet belongs to the active engine run before executing
 - BOOT-028 owns durable orchestration retry budgets, execution locks, journals, and same-key resume. Retain key/owner/run and exchange files; `manual run` itself has no orchestration journal or automatic retry policy. Follow the [orchestration recovery procedure](../contracts/orchestration-engine/README.md) for an interrupted engine, including verifying all runners stopped before touching a stale lock.
 
 Export/import/run success proves transport behavior only. It never establishes independent QA/Architecture/UAT approval, an authoritative evidence record, a live canary merge, or Bootstrap v1 cutover.
+
+## Windows durability boundary
+
+On Windows, file contents are fsynced and publication remains atomic, but Node cannot fsync directories. Process-interruption recovery is supported; directory-entry durability across OS crash or power loss is not guaranteed. Use a POSIX filesystem host when that stronger durability is required.
