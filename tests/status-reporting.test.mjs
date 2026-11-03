@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -9,7 +10,7 @@ import { isAssignmentLockExpired } from "../dist/assignment-lock/index.js";
 import { runCli } from "../dist/cli/core.js";
 const now = "2026-10-07T23:00:00Z";
 const revision = "abc123";
-const repo = new URL("..", import.meta.url).pathname;
+const repo = fileURLToPath(new URL("..", import.meta.url));
 function task(taskId, dependencies = []) {
   return { schemaId: "ipt.task", schemaVersion: "1.0.0", taskId, title: `Task ${taskId}`, objective: "test", inScope: ["test"], outOfScope: ["none"], dependencies,
     canonicalBranch: `bootstrap/${taskId.toLowerCase()}-task`, allowedPaths: ["src/"], requirements: ["test"], acceptanceCriteria: ["test"], validationPlan: ["test"],

@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -11,7 +12,7 @@ import { transitionLifecycle } from "../dist/lifecycle/index.js";
 const observedAt = "2026-10-07T23:00:00Z";
 const revision = "abcdef1234567890abcdef1234567890abcdef12";
 const taskId = "BOOT-031";
-const repositoryRoot = new URL("..", import.meta.url).pathname;
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 function task(id = taskId, overrides = {}) {
   return { schemaId: "ipt.task", schemaVersion: "1.0.0", taskId: id, title: `Task ${id}`, objective: "Explain deterministic blockers",
     inScope: ["Read-only diagnostics"], outOfScope: ["Repairing state"], dependencies: [], canonicalBranch: `bootstrap/${id.toLowerCase()}-diagnostics`,

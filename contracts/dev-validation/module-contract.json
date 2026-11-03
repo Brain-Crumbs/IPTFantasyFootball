@@ -2,7 +2,7 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.dev-validation",
-  "moduleVersion": "1.0.0",
+  "moduleVersion": "1.1.0",
   "structuralContract": {
     "interfaces": [
       "DeveloperValidationGate.validate(request): Promise<DeveloperValidationResult>",
@@ -37,7 +37,8 @@
       "the lifecycle transitions to DEV_VALIDATED only when every required validator's persisted, revision-checked evidence is PASS; any other required outcome transitions to DEV_VALIDATION_FAILED instead",
       "an optional (non-required) validator's FAIL or ERROR status is recorded as evidence but never blocks DEV_VALIDATED",
       "the lifecycle transition is committed through the unmodified BOOT-009 state machine with FAILURE_EVIDENCE_RECORDED or DEV_VALIDATION_PASSED as the satisfied prerequisite, and is persisted only after every required evidence record is confirmed CURRENT",
-      "the result identifies every check's validator ID, category, required flag, status, evidence outcome, diagnostics, and the exact evidence lineage/sequence it was recorded at, plus a failedCheckIds list of required checks that did not pass"
+      "the result identifies every check's validator ID, category, required flag, status, evidence outcome, diagnostics, and the exact evidence lineage/sequence it was recorded at, plus a failedCheckIds list of required checks that did not pass",
+      "Repository validators invoke npm through Node and npm-cli.js on Windows without a shell; npm_execpath or the Node installation supplies the CLI. Missing npm fails closed. The full repository:test command has a 900000 ms timeout, including the real-Git canary integration tests."
     ],
     "invariants": [
       "the gate performs no QA, Architecture, or UAT review",

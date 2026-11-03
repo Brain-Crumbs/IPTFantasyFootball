@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -8,7 +9,7 @@ import { runCli } from "../dist/cli/core.js";
 import { renderRecoveryResult } from "../dist/cli/recovery.js";
 import { recoveryHash } from "../dist/recovery-tools/recovery.js";
 
-const repositoryRoot = new URL("..", import.meta.url).pathname;
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const cli = join(repositoryRoot, "dist/cli/cli.js");
 const now = "2026-10-07T21:00:00.000Z";
 const task = { schemaId: "ipt.task", schemaVersion: "1.0.0", taskId: "BOOT-901", title: "Recovery CLI fixture",

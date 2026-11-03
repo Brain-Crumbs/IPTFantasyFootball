@@ -74,10 +74,11 @@
       "an abrupt process death can retain the lock; operators must stop and verify all repository runners, inspect the original journal and token, use BOOT-032 audited release-run-lock with exact revision/token hash and confirmed quiescence, retain the journal, and resume the same key/owner/run; no automatic time/PID lock stealing or general state repair is provided",
       "2.0.0 requires custom constructors to supply durable runStore and read-only lifecycleState; BOOT-027 in-flight runs without journals and corrupted state are not automatically migrated or reconstructed",
       "a runId cannot be rebound to a different idempotency key; retry counts cannot decrease and completed start/provider checkpoints cannot be replaced or erased",
-      "FileOrchestrationRunStore uses SHA-256-key .run.json files and .orchestration.lock; same-directory temporary write, file fsync, atomic rename and directory fsync precede a successful save",
+      "FileOrchestrationRunStore uses SHA-256-key .run.json files and .orchestration.lock; same-directory temporary write, file fsync, atomic rename and (on POSIX) directory fsync precede a successful save",
       "journal reads return detached snapshots; writes require the owning withLock callback and lock token; malformed, non-JSON, oversized over 16 Mi-character, wrong-identity or symlinked journal paths fail closed",
       "IN_DEVELOPMENT resume calls DeveloperStart with expectedTaskId to revalidate the existing bound assignment/branch/context before provider or validation; mismatched task/branch/lock fails RECOVERY_REQUIRED and cannot select new work",
-      "an incomplete Developer provider run with changed refreshed revision/context fails RECOVERY_REQUIRED; a completed cached Developer result is retained only for traceability and not rerun, while BOOT-016 validates the actual current canonical revision"
+      "an incomplete Developer provider run with changed refreshed revision/context fails RECOVERY_REQUIRED; a completed cached Developer result is retained only for traceability and not rerun, while BOOT-016 validates the actual current canonical revision",
+      "On Windows, file contents are fsynced and publication remains atomic, but Node cannot fsync directories. Process-interruption recovery is supported; directory-entry durability across OS crash or power loss is not guaranteed. Use a POSIX filesystem host when that stronger durability is required."
     ],
     "invariants": [
       "authoritative lifecycle and recorded evidence outrank journal summaries or provider narrative; this engine never calls transitionLifecycle or writes authoritative evidence",

@@ -8,7 +8,8 @@
     "Create or verify bootstrap/canary-proof.txt as the deliberately tiny real repository change owned by BOOT-033 / issue #35.",
     "Implement and independently review the BOOT-033 canary driver, isolated rehearsal/tests, native task definition, package command and narrow operator/root documentation needed to exercise and reproduce the marker workload. The prepared live branch includes this scaffolding in its reviewed diff.",
     "Select this workload through the task engine and use existing assignment, canonical branch, deterministic validation, QA, Architect, UAT/Product, PR/CI, readiness, controlled-merge and completion gates.",
-    "Capture revision-bound evidence and read-only status/diagnostics; preserve the original run identity for interruption recovery and completed reconciliation."
+    "Capture revision-bound evidence and read-only status/diagnostics; preserve the original run identity for interruption recovery and completed reconciliation.",
+    "Operator-authorized Windows compatibility prerequisites (2026-10-26): native npm execution, filesystem paths and LF checkout policy, Windows publication/durability boundary, corresponding tests and semantic contracts. Review this follow-up and the original BOOT-033 scaffolding without waiving any gate."
   ],
   "outOfScope": [
     "Fantasy-football product behavior or unrelated repository changes.",
@@ -31,12 +32,42 @@
     "docs/CANARY.md",
     "docs/README.md",
     "docs/STATUS.md",
-    "docs/DIAGNOSTICS.md"
+    "docs/DIAGNOSTICS.md",
+    "contracts/dev-validation/README.md",
+    "contracts/dev-validation/module-contract.json",
+    "contracts/local-agent-adapter/README.md",
+    "contracts/local-agent-adapter/module-contract.json",
+    "contracts/orchestration-engine/README.md",
+    "contracts/orchestration-engine/module-contract.json",
+    "contracts/recovery-tools/README.md",
+    "contracts/recovery-tools/module-contract.json",
+    "docs/LOCAL_AGENT_ADAPTER.md",
+    "docs/RECOVERY.md",
+    "src/cli/node-runtime.d.ts",
+    "src/dev-validation/dev-validation.ts",
+    "src/local-agent-adapter/file-manual-agent-provider.ts",
+    "src/orchestration-engine/run-store.ts",
+    "src/recovery-tools/recovery.ts",
+    "tests/assignment-lock.test.mjs",
+    "tests/ci-workflow.test.mjs",
+    "tests/cli.test.mjs",
+    "tests/controlled-merge.test.mjs",
+    "tests/dev-validation.test.mjs",
+    "tests/diagnostics-cli.test.mjs",
+    "tests/local-agent-adapter.test.mjs",
+    "tests/orchestration-run-store.test.mjs",
+    "tests/recovery-check.test.mjs",
+    "tests/recovery-cli.test.mjs",
+    "tests/recovery-tools.test.mjs",
+    "tests/status-reporting.test.mjs",
+    "tests/workflow-diagnostics.test.mjs",
+    ".gitattributes",
+    "tests/manual-cli.test.mjs"
   ],
   "requirements": [],
   "acceptanceCriteria": [
     "CANARY-001 is selected by the existing next-task/start workflow, and its assignment identifies bootstrap/boot-033-canary-e2e rather than a substituted branch.",
-    "bootstrap/canary-proof.txt contains exactly the UTF-8 bytes IPT control plane canary v1 followed by one newline; its BOOT-033 harness/docs/test scaffolding is also reviewed, and the task adds no product behavior or core source/schema/shared-contract change.",
+    "bootstrap/canary-proof.txt contains exactly the UTF-8 bytes IPT control plane canary v1 followed by one newline; its BOOT-033 harness/docs/test scaffolding is also reviewed, and the task adds no product behavior; Windows compatibility changes are limited to the operator-authorized prerequisite fixes and documented platform durability boundary.",
     "Required deterministic validators PASS with persisted evidence for the final source revision, and QA, Architect and UAT/Product use distinct fresh role contexts with current revision-bound PASS evidence before MERGE_READY.",
     "The canonical PR targets main at the validated revision, both required CI checks succeed for that exact head, and live controlled merge requires separate authorization identifying the exact PR and head.",
     "Only the existing controlled-merge gate records confirmed merge evidence, releases the original assignment and transitions MERGED then DONE; no manual state mutation is used.",
@@ -48,7 +79,12 @@
     "Follow docs/CANARY.md for an explicitly authorized live run; retain exact assignment, branch, revision, validation, independent review, PR, CI, readiness, merge and completion evidence without rewriting state.",
     "Do not count the fixture rehearsal or a draft PR as issue #35's successful live controlled-merge/DONE acceptance."
   ],
-  "affectedContracts": [],
+  "affectedContracts": [
+    "control-plane.dev-validation",
+    "control-plane.local-agent-adapter",
+    "control-plane.orchestration-engine",
+    "control-plane.recovery-tools"
+  ],
   "requiredReviewRoles": [
     "Developer",
     "QA",

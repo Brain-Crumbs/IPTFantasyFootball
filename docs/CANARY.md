@@ -7,7 +7,7 @@
 
 ## Scope and acceptance status
 
-The canary's small real change is [bootstrap/canary-proof.txt](../bootstrap/canary-proof.txt): exactly the UTF-8 bytes `IPT control plane canary v1` followed by one newline. It adds no product behavior. The task also explicitly allows the necessary BOOT-033 driver, fixture/tests, native definition, package command and narrow documentation files listed in its `allowedPaths`; live review must cover that scaffolding too. No core `src/`, schema or public module contract change is authorized. The BOOT-033 driver composes existing task selection, assignment, branch, validation, independent-review, PR/CI, readiness, controlled-merge and completion APIs. It does not replace their policy or add a generic `agent orchestrate` command.
+The canary's small real change is [bootstrap/canary-proof.txt](../bootstrap/canary-proof.txt): exactly the UTF-8 bytes `IPT control plane canary v1` followed by one newline. It adds no product behavior. The task also explicitly allows the necessary BOOT-033 driver, fixture/tests, native definition, package command and narrow documentation files listed in its `allowedPaths`; live review must cover that scaffolding too. The operator authorized the Windows compatibility changes required for this live run on 2026-10-26: native npm execution, platform-correct paths and line endings, Windows file publication, and matching tests/contracts. No lifecycle gate or approval requirement is waived. The BOOT-033 driver composes existing task selection, assignment, branch, validation, independent-review, PR/CI, readiness, controlled-merge and completion APIs. It does not replace their policy or add a generic `agent orchestrate` command.
 
 **Live issue #35 acceptance remains PENDING.** Implementing this driver, passing its isolated rehearsal, and opening a draft implementation PR do not establish an independently reviewed live controlled merge or `DONE`. No live merge is authorized merely by following this document. Neither this canary nor a local `DONE` fixture declares Bootstrap v1 cutover.
 
@@ -24,9 +24,9 @@ From a clean checkout of the BOOT-033 implementation, with Node.js 20+, Git and 
 
 ```sh
 npm ci
+python3 -m pip install -r schemas/requirements.txt
 npm run build
 npm test
-python3 -m pip install -r schemas/requirements.txt
 python3 schemas/validate_fixtures.py
 python3 schemas/validate_repository_contracts.py
 npm run canary:rehearse
@@ -51,7 +51,7 @@ A real run may proceed only within separately granted task/PR/merge authority.
 1. Read [AGENTS.md](../AGENTS.md), [CONSTITUTION.md](../CONSTITUTION.md), [BOOTSTRAP.md](../BOOTSTRAP.md), master issue #1 and issue #35. Verify the declared dependencies and authoritative fetched `main`; a stale local `main` ref is not proof of the current integration base.
 2. Use a complete checkout containing this implementation and the exact canonical branch. Inspect existing source and runtime state before doing anything. Do not delete `.agent/`, rewrite state, reset branches, or import someone else's runtime state to obtain a "clean" start. A genuinely new run needs an isolated clean checkout and its own authorized context; an interrupted run needs the original state and identity.
 3. Commit the intended reviewable source. The driver rejects dirty/untracked source before assignment and after Developer output so evidence cannot certify an old `HEAD` while worktree changes remain. Ignored runtime files belong under `.agent/`; credentials must not enter tracked files, packets or reports.
-4. Install/build as above and run the full local validation commands. Configure already-authorized GitHub access for the intended owner/repository using `IPT_GITHUB_TOKEN`. The CLI reads this environment variable only; do not put a token in config JSON. Credential availability itself authorizes neither PR publication nor merge.
+4. Install/build as above and run the full local validation commands. Configure already-authorized GitHub access for the intended owner/repository using `IPT_GITHUB_TOKEN` (or `GITHUB_TOKEN` as fallback). The CLI reads credentials from the environment only; do not put a token in config JSON. Credential availability itself authorizes neither PR publication nor merge.
 5. Assign distinct, stable actor IDs for Developer, QA, Architect, UAT/Product and MergeController. Arrange fresh independent role sessions with enforceable tool/network policies. A different actor string alone does not prove independence. The local/manual adapter does not sandbox or authenticate external sessions.
 6. Preserve the request JSON once started, including its original `occurredAt`, `ownerId`, `runId` and `idempotencyKey`. Do not change policy/context under an existing role packet identity. The Developer actor must match the request owner.
 
@@ -159,3 +159,24 @@ The first implementation PR must leave the live items pending rather than claimi
 - The canary host expects only its declared native workload; unrelated registry work is rejected rather than accidentally selected. This narrowly scoped script is not a general scheduler, CLI contract replacement, provider sandbox, identity service, credential manager or branch-protection configurator.
 - An external role's tools may keep running after a local timeout/cancellation. Coordinate external termination before recovery. The GitHub credential, filesystem access and supplied actor/policy/authorization configuration remain trusted operator boundaries.
 - The fixture commits an offline npm configuration (`offline=true`, update notifier/audit/fund disabled); its HTTP adapter never forwards requests to the network. The rehearsal simulates remote PR/CI and scripted reviews. It proves local composition and failure behavior, not live GitHub permissions, branch protection, independent review quality, or issue #35 completion.
+
+## Running on Windows
+
+From Git Bash, install schema dependencies before running `npm test`, since its CI-invariant tests invoke Python:
+
+```sh
+python -m venv .agent/schema-venv
+./.agent/schema-venv/Scripts/python.exe -m pip install -r schemas/requirements.txt
+export IPT_PYTHON="$(pwd -W)/.agent/schema-venv/Scripts/python.exe"
+npm ci
+npm test
+npm run canary:rehearse
+```
+
+Set `IPT_PYTHON` again in each new terminal. In PowerShell, use `npm.cmd` to avoid the signed-script restriction on `npm.ps1`, and set `$env:IPT_PYTHON = (Resolve-Path '.agent/schema-venv/Scripts/python.exe').Path`.
+
+Use Node.js 20+, Git, npm and Python with `schemas/requirements.txt` installed. Set `IPT_PYTHON` to the Python executable with jsonschema installed when it is not the default `python`. The default validator invokes npm through Node without a shell. `.gitattributes` preserves LF, including the exact canary marker bytes. Junction tests retain reparse-point and loop rejection coverage without requiring Windows symlink privileges.
+
+On Windows, file contents are fsynced and publication remains atomic, but Node cannot fsync directories. Process-interruption recovery is supported; directory-entry durability across OS crash or power loss is not guaranteed. Use a POSIX filesystem host when that stronger durability is required.
+
+PR #71 was merged before live acceptance. Before a new live run, integrate fetched main into the existing canonical branch without discarding either its Windows fixes or newer BOOT-034 changes, and review the combined Windows compatibility follow-up as a new PR. Do not reuse the earlier merged PR as proof of a new run. Preserve the original marker bytes and all current gates.

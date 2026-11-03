@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -10,7 +11,7 @@ import { DEFAULT_REQUIRED_CI_CHECKS } from "../dist/merge-readiness/index.js";
 import { runCli } from "../dist/cli/core.js";
 
 const observedAt = "2026-10-07T23:00:00Z";
-const repositoryRoot = new URL("..", import.meta.url).pathname;
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const taskId = "BOOT-031";
 const task = {
   schemaId: "ipt.task", schemaVersion: "1.0.0", taskId, title: "Workflow diagnostics", objective: "Explain gates",

@@ -486,7 +486,7 @@ test("a transient failure statting the acquire() rollback claim itself (not a ge
   // errors.
   const activePath = join(root, "BOOT-010.lock.json");
   const rollbackClaimPath = `${activePath}.acquire-rollback-claim`;
-  symlinkSync(rollbackClaimPath, rollbackClaimPath);
+  symlinkSync(rollbackClaimPath, rollbackClaimPath, process.platform === "win32" ? "junction" : undefined);
 
   const attempted = store.acquire(acquire());
   assert.equal(attempted.ok, false);

@@ -244,10 +244,10 @@ test("path traversal and symlink exchanges are rejected", t => {
   assert.throws(() => provider.readPacket("../../outside"), rejects("INVALID_REQUEST"));
   assert.throws(() => provider.importResult("../wrong", {}), rejects("INVALID_REQUEST"));
   const other = join(root, "outside.json"); writeFileSync(other, "untouched\n");
-  symlinkSync(other, provider.resultPath(packet.packetId));
+  symlinkSync(other, provider.resultPath(packet.packetId), process.platform === "win32" ? "junction" : undefined);
   assert.throws(() => provider.importResult(packet.packetId, envelope(packet)), rejects("MALFORMED_RESULT"));
   assert.equal(readFileSync(other, "utf8"), "untouched\n");
-  const linkedRoot = join(root, "link"); symlinkSync(root, linkedRoot);
+  const linkedRoot = join(root, "link"); symlinkSync(root, linkedRoot, process.platform === "win32" ? "junction" : undefined);
   assert.throws(() => new FileManualAgentProvider(linkedRoot, { repositoryRoot }), rejects("INVALID_REQUEST"));
 });
 

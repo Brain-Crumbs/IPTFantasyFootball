@@ -123,3 +123,7 @@ The [standalone guide](../../docs/LOCAL_AGENT_ADAPTER.md) includes a full reques
 - [ ] Are context preservation, role independence, and deterministic gate authority retained?
 - [ ] Is dependency direction still adapter → neutral ports, with no vendor/domain coupling?
 - [ ] Have atomic publication, corrupt/symlinked input, and offline round-trip tests been rerun?
+
+## Windows filesystem support
+
+On Windows, file contents are fsynced and publication remains atomic, but Node cannot fsync directories. Process-interruption recovery is supported; directory-entry durability across OS crash or power loss is not guaranteed. Use a POSIX filesystem host when that stronger durability is required.

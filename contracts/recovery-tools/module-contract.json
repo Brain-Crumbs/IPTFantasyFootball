@@ -2,7 +2,7 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.recovery-tools",
-  "moduleVersion": "1.0.0",
+  "moduleVersion": "1.1.0",
   "structuralContract": {
     "interfaces": [
       "checkRecoveryState(repositoryRoot: string, options?: { registry?: TaskRegistry, now?: string }): Promise<RecoveryCheckReport>",
@@ -46,7 +46,8 @@
       "full prior assignment bytes are retained in recovery audit rather than added to AssignmentLockStore.getAudit; consumers must combine both audit sources",
       "normal BOOT-028 resume preserves original key/owner/run and durable attempts; new judgment after reset uses new run/key and matching assignment runId ${newOrchestrationRunId}::developer-start, with old journals/results/evidence retained",
       "replacement owner/run cannot already own another registered task ACTIVE assignment; ambiguous Developer-start identity is rejected",
-      "apply state-tree inspection requires depth below 32 and fewer than 100000 visited entries; oversized or unsupported non-file trees fail closed"
+      "apply state-tree inspection requires depth below 32 and fewer than 100000 visited entries; oversized or unsupported non-file trees fail closed",
+      "On Windows, file contents are fsynced and publication remains atomic, but Node cannot fsync directories. Process-interruption recovery is supported; directory-entry durability across OS crash or power loss is not guaranteed. Use a POSIX filesystem host when that stronger durability is required."
     ],
     "invariants": [
       "no repair approves validation/review, manufactures PASS evidence, reaches MERGED/DONE, or bypasses exact-head controlled merge",
