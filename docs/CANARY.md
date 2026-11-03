@@ -24,9 +24,9 @@ From a clean checkout of the BOOT-033 implementation, with Node.js 20+, Git and 
 
 ```sh
 npm ci
+python3 -m pip install -r schemas/requirements.txt
 npm run build
 npm test
-python3 -m pip install -r schemas/requirements.txt
 python3 schemas/validate_fixtures.py
 python3 schemas/validate_repository_contracts.py
 npm run canary:rehearse
@@ -162,8 +162,21 @@ The first implementation PR must leave the live items pending rather than claimi
 
 ## Running on Windows
 
+From Git Bash, install schema dependencies before running `npm test`, since its CI-invariant tests invoke Python:
+
+```sh
+python -m venv .agent/schema-venv
+./.agent/schema-venv/Scripts/python.exe -m pip install -r schemas/requirements.txt
+export IPT_PYTHON="$(pwd -W)/.agent/schema-venv/Scripts/python.exe"
+npm ci
+npm test
+npm run canary:rehearse
+```
+
+Set `IPT_PYTHON` again in each new terminal. In PowerShell, use `npm.cmd` to avoid the signed-script restriction on `npm.ps1`, and set `$env:IPT_PYTHON = (Resolve-Path '.agent/schema-venv/Scripts/python.exe').Path`.
+
 Use Node.js 20+, Git, npm and Python with `schemas/requirements.txt` installed. Set `IPT_PYTHON` to the Python executable with jsonschema installed when it is not the default `python`. The default validator invokes npm through Node without a shell. `.gitattributes` preserves LF, including the exact canary marker bytes. Junction tests retain reparse-point and loop rejection coverage without requiring Windows symlink privileges.
 
 On Windows, file contents are fsynced and publication remains atomic, but Node cannot fsync directories. Process-interruption recovery is supported; directory-entry durability across OS crash or power loss is not guaranteed. Use a POSIX filesystem host when that stronger durability is required.
 
-PR #71 was merged before live acceptance. For this clean live run, fast-forward the existing canonical branch to fetched main and review the Windows compatibility follow-up as a new PR. Do not reuse the earlier merged PR as proof of a new run. Preserve the original marker bytes and all current gates.
+PR #71 was merged before live acceptance. Before a new live run, integrate fetched main into the existing canonical branch without discarding either its Windows fixes or newer BOOT-034 changes, and review the combined Windows compatibility follow-up as a new PR. Do not reuse the earlier merged PR as proof of a new run. Preserve the original marker bytes and all current gates.
