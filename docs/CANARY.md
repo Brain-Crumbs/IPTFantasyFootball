@@ -16,7 +16,7 @@ The root registry now contains one workload, `CANARY-001`. In a clean checkout w
 Two execution modes must remain distinct:
 
 - **Isolated rehearsal:** a fresh local Git repository starts without the marker; its scripted Developer creates and commits the real marker after task-engine assignment. Actual local gates, validators, stores and manual packet transport run, while role judgments and the GitHub HTTP service are fixtures. The fixture service performs a real local Git merge, never a live GitHub merge.
-- **Live implementation branch:** BOOT-033's marker and driver are already prepared in the implementation diff. The live Developer session verifies that existing change at the exact committed revision. Do not claim this live path created the marker after native assignment. Independent reviewers must assess both the marker and the BOOT-033 implementation/acceptance evidence; a marker-only approval does not accept issue #35.
+- **Live implementation branch:** the live Developer session verifies the prepared marker, driver and any authorized follow-up change at the exact committed revision. After earlier implementation PRs have merged, some of that code is already on `main`; the next live PR must contain a new, scoped follow-up change. Do not claim this live path created the marker after native assignment. Independent reviewers must assess the follow-up together with the marker and BOOT-033 implementation/acceptance evidence; a marker-only approval does not accept issue #35.
 
 ## Reproduce the isolated rehearsal
 
@@ -38,6 +38,8 @@ The final command builds the runtime and runs `scripts/canary-rehearsal.mjs`. It
 node scripts/canary-rehearsal.mjs /absolute/private/rehearsal-directory
 ```
 
+Every invocation creates a new rehearsal. The optional path is a **parent destination**, not a run to resume: passing an earlier `fixtureRoot` creates another fixture inside it. To inspect an existing rehearsal, read its summary and reports instead of running the script again. Rehearsal `DONE` does not change the live checkout's task state, verify live credentials, or supply independent role judgments.
+
 Read `<fixtureRoot>/.agent/summary.json` and its linked per-invocation reports. The summary records the fixture's initial and implementation revisions, merge revision, original request, role identities and packet IDs, lifecycle stages and evidence references, final state and completed-reconciliation assertion. `kind: "ISOLATED_REHEARSAL_ONLY"` is an essential qualification, not decoration.
 
 The rehearsal expects the first run to stop at `MERGE_READY` without a PR, then creates a draft fixture PR. An unauthorized attempt must stop before merge. The isolated fixture operator releases its draft and supplies the exact fixture PR/head authorization; the existing controlled-merge gate reaches `MERGED` then `DONE`. A same-key completed rerun must preserve lifecycle, validation/review/merge evidence and assignment files, invoke no new role session and perform no second merge. New observational reports are allowed.
@@ -55,9 +57,21 @@ A real run may proceed only within separately granted task/PR/merge authority.
 5. Assign distinct, stable actor IDs for Developer, QA, Architect, UAT/Product and MergeController. Arrange fresh independent role sessions with enforceable tool/network policies. A different actor string alone does not prove independence. The local/manual adapter does not sandbox or authenticate external sessions.
 6. Preserve the request JSON once started, including its original `occurredAt`, `ownerId`, `runId` and `idempotencyKey`. Do not change policy/context under an existing role packet identity. The Developer actor must match the request owner.
 
+## Prepare a follow-up after an earlier merge
+
+PRs [#71](https://github.com/Brain-Crumbs/IPTFantasyFootball/pull/71) and [#73](https://github.com/Brain-Crumbs/IPTFantasyFootball/pull/73) merged the original implementation and Windows follow-up before live acceptance was established. Their merged status does not provide the native live run's assignment, reviews, controlled-merge evidence or `DONE`.
+
+Before the first assignment/review of a follow-up, inspect `git status --short --branch`, `git worktree list`, the existing run report and `node dist/cli/cli.js --json recovery check`. Preserve any existing request and runtime state. Fetch `origin`, update local `main`, and integrate it into `bootstrap/boot-033-canary-e2e`. When the canonical branch is strictly behind `main`, `git merge --ff-only main` from its checkout updates it without rewriting history. If that command refuses, inspect the histories and resolve the integration explicitly; do not reset or force-move the branch.
+
+A branch already checked out in another worktree must be handled there. To keep a failed run in its original checkout, stop work in the other checkout, verify it is clean, update its canonical branch, then use `git switch --detach` there before switching the original checkout to `bootstrap/boot-033-canary-e2e`. This leaves the other checkout's files intact. Do not copy runtime state between checkouts.
+
+Being ahead of `origin/bootstrap/boot-033-canary-e2e` can simply reflect commits brought in from `main`. Inspect `git log --oneline main..HEAD` and `git diff main...HEAD` on the canonical branch to see whether there is actually a new change to review. Prepare an explicitly authorized follow-up within CANARY-001's allowed scope, such as correcting this operator guide. Preserve the exact marker bytes and all existing gates. Review the diff, commit the intended source, run the documented validation commands, and confirm `git status --short` is empty before invoking the live driver. A new source commit after reviews have started requires the existing rework/revalidation/review procedures instead.
+
+If a run stopped at `developer-start` with `BRANCH_REJECTED` before assignment or evidence was created, correct the branch prerequisite and resume the original request. Inspect the report and recovery findings first; a branch error is not permission to clear a pending journal or create a replacement identity. Previously merged PRs must not be reused as proof of this follow-up's controlled merge.
+
 ## Prepare operator inputs
 
-Create config and request files in ignored `.agent/` or another private directory. These are operator inputs, not authoritative lifecycle/evidence records. Replace the example identities and policies with actual authorized actors and supported tool names. The following read-only policy is appropriate when the live Developer verifies the already prepared marker; it grants no implementation edits, publication or merge capability to an external role session.
+Run commands from the repository root of the checkout that will host the live run. Save the examples below as `.agent/canary-config.json` and `.agent/canary-request.json` in that same checkout (for example, `<repository>/.agent/canary-request.json`). Create `.agent/` if needed; it is ignored by Git. Another private directory is also supported when its paths are supplied explicitly. These are operator inputs, not authoritative lifecycle/evidence records. Replace the example identities and policies with actual authorized actors and supported tool names. The following read-only policy is appropriate when the live Developer verifies the already prepared marker; it grants no implementation edits, publication or merge capability to an external role session.
 
 ```json
 {
@@ -81,9 +95,11 @@ Create config and request files in ignored `.agent/` or another private director
 }
 ```
 
+Actor IDs are operator-chosen audit labels, not GitHub accounts, model names or agents that this config creates. The example labels can be retained if assigned to the actual role sessions; keep them stable for the run. Use four fresh sessions for Developer, QA, Architect and UAT/Product. MergeController is deterministic program logic, not a fifth discretionary AI reviewer.
+
 All five role keys must be explicit in both maps. Policies describe external role-session access; they do not disable or authorize the host's own separately gated GitHub adapter operations. MergeController performs deterministic integration work and supplies no independent semantic judgment. `roleTimeoutMs` is optional; choose a timeout that accommodates the human handoff. `networkAccess` uses the existing provider contract (`none`, `restricted` or `full`); enforce the selected level externally.
 
-Example request; set the timestamp once to the actual start time, then keep the file unchanged for resume:
+Save the following shape as `.agent/canary-request.json`. The CLI currently reads an existing file; it does not generate one automatically. The example timestamp and run identity are illustrative, not values to reuse for a new run. Set them once when preparing to start, then keep the file unchanged for resume:
 
 ```json
 {
@@ -93,6 +109,33 @@ Example request; set the timestamp once to the actual start time, then keep the 
   "occurredAt": "2026-10-08T00:00:00.000Z"
 }
 ```
+
+| Request field | How to choose it |
+| --- | --- |
+| `ownerId` | Copy `roleActors.Developer` exactly from the config. |
+| `runId` | Choose a unique identity for this live run; every stage derives its own identity from it. |
+| `idempotencyKey` | Use the same value as `runId` to recognize retries. The engine defaults to `runId` if this field is omitted. |
+| `occurredAt` | Record the original request time as an RFC 3339 timestamp, preferably UTC as shown above. Do not refresh it on resume. |
+
+For a genuinely new run with no existing request or runtime history to resume, this Git Bash/POSIX-shell command generates the request using the saved config and current UTC time. It refuses to overwrite an existing file:
+
+```sh
+node -e '
+const fs = require("node:fs");
+const config = JSON.parse(fs.readFileSync(".agent/canary-config.json", "utf8"));
+const ownerId = config.roleActors?.Developer;
+if (typeof ownerId !== "string" || !ownerId.trim() || ownerId !== ownerId.trim()) {
+  throw new Error("Configure roleActors.Developer before creating a request.");
+}
+const occurredAt = new Date().toISOString();
+const runId = "canary-live-" + occurredAt.replace(/[-:.]/g, "");
+const request = { ownerId, runId, idempotencyKey: runId, occurredAt };
+fs.writeFileSync(".agent/canary-request.json", JSON.stringify(request, null, 2) + "\n", { flag: "wx" });
+console.log(JSON.stringify(request, null, 2));
+'
+```
+
+An `EEXIST` error means a request is already present: inspect and preserve it. Creating these operator files does not assign the task, approve a stage or launch the live run. Never put a GitHub token in either file; the host reads it from its environment.
 
 The initial BOOT-033 implementation draft PR can be published through the authorized manual bootstrap handoff before a native live run, using truthful developer/fixture evidence and pending live acceptance. That is separate from the canary driver's `pr` command, which requires native `MERGE_READY` and cannot be used to bypass the review gates. If the authorized initial draft already exists, the live run must inspect and reuse that canonical PR rather than assume it is absent.
 
@@ -106,6 +149,8 @@ The canary-specific CLI is separate from the generic agent CLI:
 node scripts/canary.mjs run .agent/canary-config.json .agent/canary-request.json
 node scripts/canary.mjs pr .agent/canary-config.json
 ```
+
+The manual adapter does not launch Codex or another agent automatically. Waiting for an imported response is expected. Keep the driver terminal open and use a second terminal to inspect `.agent/canary-exchange/*.packet.json`. Give the complete current packet to its assigned fresh session, configure that environment to enforce the packet's tool/network policy, and save its actual response outside the exchange result destination. Import it with the command in step 2. A new actor label alone does not isolate context or enforce permissions. See [the adapter's packet discovery instructions](LOCAL_AGENT_ADAPTER.md) for identifying pending packets without changing them.
 
 Use the sequence below rather than running both commands blindly:
 
@@ -179,4 +224,6 @@ Use Node.js 20+, Git, npm and Python with `schemas/requirements.txt` installed. 
 
 On Windows, file contents are fsynced and publication remains atomic, but Node cannot fsync directories. Process-interruption recovery is supported; directory-entry durability across OS crash or power loss is not guaranteed. Use a POSIX filesystem host when that stronger durability is required.
 
-PR #71 was merged before live acceptance. Before a new live run, integrate fetched main into the existing canonical branch without discarding either its Windows fixes or newer BOOT-034 changes, and review the combined Windows compatibility follow-up as a new PR. Do not reuse the earlier merged PR as proof of a new run. Preserve the original marker bytes and all current gates.
+If you already have a working `.venv`, you can reuse it instead of creating a second environment: run `source .venv/Scripts/activate` and set `export IPT_PYTHON="$(pwd -W)/.venv/Scripts/python.exe"`. Use `python` for the schema commands when `python3` resolves to the Microsoft Store shortcut. Changing into `.venv` does not activate it.
+
+For the branch and follow-up preparation required after the earlier merges, follow [Prepare a follow-up after an earlier merge](#prepare-a-follow-up-after-an-earlier-merge).
