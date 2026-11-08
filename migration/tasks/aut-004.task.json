@@ -1,0 +1,58 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "AUT-004",
+  "title": "[AUT-004] Prove and release the fully automated auditable workflow",
+  "objective": "Demonstrate the user's end state: an installed configurable tool completes authorized development work without routine human handoffs and explains every outcome.",
+  "inScope": [
+    "Run an acceptance matrix against the installed release candidate in an independent consumer and the migrated Fantasy Football integration. After documented one-time setup/credentials and a scoped execution grant, complete a representative dependency chain using a real headless provider through Developer, deterministic validation, required independent reviews, publication/CI and controlled completion.",
+    "Prove no routine clipboard exchange, manual role switching, response import, per-task assignment, push/PR creation or merge confirmation is required within the configured policy. Do not count a fake-provider test or the retired live canary as this proof.",
+    "Exercise bounded review/validation rework, durable stop/resume, process restart, duplicate work, unavailable provider, stale head/CI, denied/revoked policy, budget exhaustion and uncertain merge. Deterministic fault injection may prove failures; identify exactly which scenarios use real integrations.",
+    "Have a fresh maintainer inspect why work ran, what changed, who/which role judged it, which configuration/package/policy applied, and why each gate passed/stopped, with redacted audit export.",
+    "Publish the supported unattended release, provider/runtime support matrix, upgrade/rollback playbook and exception procedures. Document manual fallback as an option, not a hidden required stage. Cross-link #74/#75 and the roadmap with precise achieved/deferred capability boundaries.",
+    "**Expected surfaces:** Installed end-to-end acceptance harness/reports, genuine task/review/CI/merge evidence, release artifacts and operations/support docs."
+  ],
+  "outOfScope": [
+    "No claim of perfect autonomy for ambiguous requirements, no new canary acceptance prerequisite, distributed deployment or release by test fixture assertion."
+  ],
+  "dependencies": [
+    "AUT-003"
+  ],
+  "canonicalBranch": "automation/aut-004-unattended-acceptance",
+  "allowedPaths": [
+    "tests/**",
+    "scripts/**",
+    "docs/**",
+    ".github/**",
+    "migration/**",
+    "package.json",
+    "package-lock.json"
+  ],
+  "requirements": [
+    "AUT-004-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: A real authorized dependent-task chain completes through exact-head controlled merge/DONE with zero routine human handoffs after the initial grant.",
+    "AC-02: All required role judgments are independently sourced from fresh role contexts and validated against the final revision.",
+    "AC-03: Restart, rework and uncertain-outcome tests preserve audit history and avoid duplicate effects; failures do not become PASS.",
+    "AC-04: Policy-denied/expired/revoked or over-budget work stops with an actionable durable reason and no unauthorized effects.",
+    "AC-05: A fresh operator can install, configure, inspect audit evidence, pause/drain, resume and safely roll back using docs alone.",
+    "AC-06: Fantasy Football remains a pinned consumer with no embedded engine, and release evidence distinguishes M1 extraction from achieved M2 automation."
+  ],
+  "validationPlan": [
+    "Record per-scenario package checksum, source SHAs, grant/config digest, task/run/session/evidence references, actual human interventions and result. Require independent QA, Architecture and UAT acceptance of the final release; test replay/reconciliation after DONE and inspect the package payload.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.orchestration-engine",
+    "control-plane.controlled-merge"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}
+

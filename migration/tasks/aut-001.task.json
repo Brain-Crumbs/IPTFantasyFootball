@@ -1,0 +1,60 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "AUT-001",
+  "title": "[AUT-001] Add enforceable scoped policy for unattended execution and exact-head merge",
+  "objective": "Allow fully automated progress inside a pre-authorized scope without asking for routine stage/merge confirmations or allowing an agent to approve itself.",
+  "inScope": [
+    "Define a versioned host-owned grant/policy covering project/task queue or approved plan, allowed paths/tools/commands/network, role/provider/model selection, validator/review requirements, publishing/ready/merge rights, time/turn/cost/concurrency/rework budgets, expiry and revocation.",
+    "Make the trust boundary concrete: agents and generated repository changes cannot edit their active grant, mint merge authority or weaken their own CI/review requirements. Trusted host enforcement, not prompt text or actor labels alone, enforces tool capabilities and role isolation.",
+    "Preserve #78's exact repository/PR/head authorization requirement. An independent trusted policy evaluator may automatically issue a scoped decision for the actual PR/head once all deterministic prerequisites pass; no per-PR human click is required within the existing grant. A blanket agent-supplied allowMerge flag is insufficient. Existing required human-only gates still produce an explicit exception unless policy/governance has intentionally removed that requirement.",
+    "Record allow/deny decisions, grant/config digest, observed facts and revocations in additive audit records. Recheck scope, budget, current head and grant validity immediately before side effects. In-flight cancellation/revocation must drain or quarantine external writers before another attempt.",
+    "Explicitly review/reconcile any former manual-only authorization rule before enabling unattended mode; preserve controlled merge, independent reviews and exact-revision evidence.",
+    "Configure/verify the supported GitHub protection and credential separation: worker/reviewer credentials cannot push protected integration refs, bypass required checks or invoke merge outside the controller. Repository/CI policy changes are separately authorized and cannot approve themselves. Document any platform limitation rather than claiming prompt-only protection.",
+    "**Expected surfaces:** Policy/grant schemas and evaluator, trusted host capability enforcement interface, merge authorization adapter, audit records, governance/config docs and conformance tests."
+  ],
+  "outOfScope": [
+    "No hidden permission escalation, automatic authorization from issue text, removal of deterministic gates, hosted identity platform or unattended execution enabled by default."
+  ],
+  "dependencies": [
+    "MIG-007"
+  ],
+  "canonicalBranch": "automation/aut-001-scoped-policy",
+  "allowedPaths": [
+    "src/**",
+    "schemas/**",
+    "contracts/**",
+    "tests/**",
+    "docs/**",
+    ".github/**",
+    "AGENTS.md"
+  ],
+  "requirements": [
+    "AUT-001-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: One explicit scoped grant can authorize the complete workflow and multiple eligible tasks without routine per-stage/per-task confirmation.",
+    "AC-02: Agents cannot expand scope, alter active host policy, approve their own role work or issue their own merge authority.",
+    "AC-03: Exact repo/PR/head authorization is generated and verified by the trusted boundary; stale/changed head, expiry/revocation and denied actions reject before effects.",
+    "AC-04: Budgets persist across restarts and apply to actual provider/command work; unsupported cost accounting fails or uses an explicit conservative limit.",
+    "AC-05: Policy/role/tool enforcement and allow/deny evidence are inspectable and secret-free.",
+    "AC-06: Manual mode and explicit human-only exception gates remain supported without pretending that a waiting run is complete.",
+    "AC-07: The configured GitHub permissions/protection prevent ordinary worker credentials from bypassing the controller or required checks; enforcement is verified."
+  ],
+  "validationPlan": [
+    "Threat-focused tests for malicious task/agent output, policy-file edits, unknown tools, scope escape, wrong PR/head, revoked grant and budget races. Assert no unauthorized provider/GitHub/state writes. Independent Architecture review evaluates the enforceable trust boundary and authority-rule amendment.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.agent-provider",
+    "control-plane.controlled-merge"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}
+

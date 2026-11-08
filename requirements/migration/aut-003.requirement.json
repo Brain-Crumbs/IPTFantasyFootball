@@ -1,0 +1,20 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "AUT-003-R1",
+  "taskId": "AUT-003",
+  "statement": "Keep approved work progressing end to end without human coordination between tasks, roles, failures or GitHub stages.",
+  "acceptanceCriteria": [
+    "AC-01: A grant covering at least two dependent tasks executes them in order through completion without routine human handoffs or per-task selection.",
+    "AC-02: Real isolated role sessions, validators, reviews, legal rework, PR/CI and controlled merge are driven by the same existing authority owners.",
+    "AC-03: Semantic failure creates an auditable successor attempt when allowed; infrastructure retry preserves identity; budgets survive restart.",
+    "AC-04: Duplicate starts/events and uncertain side effects cannot duplicate assignment, evidence, active provider work, PRs or merge.",
+    "AC-05: Out-of-scope work, exhausted budgets, unsafe recovery and unresolved clarification become durable actionable exceptions.",
+    "AC-06: Cancellation, revocation and pause/drain reflect real external writers and retain a supported resume path.",
+    "AC-07: Service/CLI operation semantics align with #75 and use the installed package; no competing supervisor is introduced."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/Vibez/issues/11",
+    "sha256:187173982cc27345fa7f18ba6b19b7633e6d29579808a21c7ad56f27766f0139"
+  ]
+}

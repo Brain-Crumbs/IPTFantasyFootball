@@ -1,0 +1,61 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "MIG-009",
+  "title": "[MIG-009] Adopt a pinned Vibez release and rehearse Fantasy Football cutover and rollback",
+  "objective": "Make Fantasy Football use the installed Vibez artifact while proving parity and reversibility before deleting local implementation.",
+  "inScope": [
+    "Install the exact accepted candidate with lockfile/integrity and project-owned configuration. Replace scripts/imports/CI entry points with supported public API/CLI. Keep Fantasy Football tasks, requirements, project contracts and runtime history in the consumer; resolve engine schemas/contracts from the installed version.",
+    "Inventory and stop active writers and external sessions under MIG-007's rules. Preserve/checksum backup and classify stopped historical runs read-only; do not migrate or complete the retired canary. Record the old engine commit, new package version, configuration and state layout.",
+    "Switch one authoritative entry point at a time in a reviewable consumer PR. The legacy implementation may remain temporarily as dormant rollback material, with commands/CI preventing accidental dual execution. No new engine features land there.",
+    "Exercise the actual installed operator journey and an authorized real feature task under current governance, including required independent reviews, exact-head CI and controlled completion as applicable. An existing closed issue or fixture PASS is not completion evidence.",
+    "Rehearse rollback with stopped writers, supported version/config compatibility and preserved evidence. Specify an evidence-based observation window and cleanup handoff; do not wait indefinitely without defined exit criteria.",
+    "**Expected surfaces:** Consumer package/lockfile, scripts/imports, project configuration/definitions, CI, AGENTS/operator docs and cutover/rollback records."
+  ],
+  "outOfScope": [
+    "No bulk deletion of legacy implementation yet, copied upstream schemas/source, new reusable workflow features, or runtime-state rewriting."
+  ],
+  "dependencies": [],
+  "canonicalBranch": "migration/mig-009-consume-vibez",
+  "allowedPaths": [
+    "package.json",
+    "package-lock.json",
+    "scripts/**",
+    "src/**",
+    "tests/**",
+    ".github/**",
+    "tasks/**",
+    "requirements/**",
+    "contracts/**",
+    "docs/**",
+    "AGENTS.md",
+    "README.md"
+  ],
+  "requirements": [
+    "MIG-009-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: All supported Fantasy Football workflow entry points use the exact installed artifact, with no file: source dependency or internal/deep imports.",
+    "AC-02: Existing project tasks/requirements/contracts and preserved evidence remain accessible under the correct project identity.",
+    "AC-03: Complete supported installed workflow and diagnostics operate with real configured validators; genuine feature evidence is linked separately from tests.",
+    "AC-04: Only one engine can mutate consumer state; active/stopped historical runs are handled under the documented quiescence policy.",
+    "AC-05: Rollback to the recorded supported version/configuration is rehearsed with history intact and no invented completion.",
+    "AC-06: Independent review accepts a cleanup-ready manifest and explicit observation/rollback exit criteria for MIG-010."
+  ],
+  "validationPlan": [
+    "Run consumer checks/CI, the installed conformance profile, source-reference scans, an operator walkthrough and actual feature acceptance mapping. Prove shutdown/backup/rollback/restore and compare preserved history hashes. Validate Windows paths used by this project.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.orchestration-engine",
+    "control-plane.recovery-tools"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}
+

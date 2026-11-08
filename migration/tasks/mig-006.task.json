@@ -1,0 +1,62 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "MIG-006",
+  "title": "[MIG-006] Integrate BOOT-037 as the installed standalone Vibez workflow driver",
+  "objective": "Deliver a usable installed CLI for the complete existing workflow without duplicating the driver already assigned to Fantasy Football #78.",
+  "inScope": [
+    "Integrate the verified #78 implementation through MIG-003's provenance/delta process. #78 remains the single feature owner for setup, issue preparation, self-contained packets, inbox import, errors/repair, PR/CI and explicit next-task handoff. Do not create a second driver or silently mark its acceptance complete. If implementation location changes, reconcile that existing issue/branch before coding.",
+    "Adapt its imports and composition to the supported public library/configuration. Align its reusable profile and persistent session/request formats with MIG-002/004. Expose the accepted command surface through the packaged CLI.",
+    "Exercise a non-canary task using only the installed artifact: guided setup → issue input → valid registered task → manual role packets/inbox → deterministic validation → required reviews/rework → PR/CI/readiness → authorized controlled completion → reconciliation. Include nonempty requirements and contracts.",
+    "Bind PR/publication/GitHub config to the selected consumer and preserve exact-head authorization, durable receipt/attempt identity and errors. Reuse #75's application-service seam where available; HTTP is not required.",
+    "Keep manual exchange as a supported adapter and report the remaining human copy/paste steps explicitly. Headless agent execution is owned by AUT-002/003.",
+    "**Expected surfaces:** Imported driver/CLI/setup/intake/inbox code, application composition, package exports/assets, profile/session schemas, operator docs and integration tests."
+  ],
+  "outOfScope": [
+    "No duplicate #78 feature build, automatic agent launching, weakening of merge authority, or claiming the manual driver is fully autonomous."
+  ],
+  "dependencies": [
+    "MIG-005"
+  ],
+  "canonicalBranch": "migration/mig-006-standalone-driver-integration",
+  "allowedPaths": [
+    "src/**",
+    "schemas/**",
+    "contracts/**",
+    "tests/**",
+    "scripts/**",
+    "docs/**",
+    "migration/**",
+    "package.json",
+    "package-lock.json"
+  ],
+  "requirements": [
+    "MIG-006-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: The current #78 acceptance mapping and source revision are recorded; any remaining gap is visible and blocks complete-driver acceptance.",
+    "AC-02: An operator completes setup and the manual-handoff task/repair journey from the installed CLI without custom JavaScript, source edits or hand-authored request JSON.",
+    "AC-03: Requests, imports, resume, PR/CI and completion retain their original identities and gate ownership across restart.",
+    "AC-04: A contract-bearing UAT path passes the #76 regression through installed assets and project configuration.",
+    "AC-05: CLI and library share configuration/behavior and supported service interfaces; #75 need not depend on source layout.",
+    "AC-06: All imported source deltas are accounted for; reusable driver ownership ends in Vibez."
+  ],
+  "validationPlan": [
+    "Run inherited #78 CLI/inbox/driver tests against the actual tarball. Cover partial/duplicate/stale inputs, failed validation/review, restart, changed head, missing CI and withheld merge authority. Use fake external boundaries for deterministic failure tests and clearly separate genuine feature-delivery evidence.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.cli-shell",
+    "control-plane.orchestration-engine",
+    "control-plane.local-agent-adapter",
+    "control-plane.uat-review"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}
+

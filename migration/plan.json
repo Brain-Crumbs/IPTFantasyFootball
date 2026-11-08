@@ -1,0 +1,326 @@
+{
+  "formatVersion": 1,
+  "sourceEngine": {
+    "repository": "Brain-Crumbs/IPTFantasyFootball",
+    "commit": "fbc46888ce0bd2af454f471561911a913d32e6fc",
+    "package": "@iptfantasyfootball/control-plane",
+    "version": "0.1.0",
+    "config": "migration/README.md"
+  },
+  "tasks": [
+    {
+      "taskId": "MIG-001",
+      "repository": "Brain-Crumbs/IPTFantasyFootball",
+      "issue": "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/80",
+      "canonicalBranch": "migration/mig-001-authority-and-task-registration",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/mig-001.task.json",
+      "requirement": "requirements/migration/mig-001.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/IPTFantasyFootball via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [],
+      "sourceBodySha256": "d41335ec1a34ce1739159f5df979a9605c0abd48aede2184dadf3a5f00783ae2"
+    },
+    {
+      "taskId": "MIG-002",
+      "repository": "Brain-Crumbs/Vibez",
+      "issue": "https://github.com/Brain-Crumbs/Vibez/issues/2",
+      "canonicalBranch": "migration/mig-002-boundaries-and-contracts",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/mig-002.task.json",
+      "requirement": "requirements/migration/mig-002.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/Vibez via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "MIG-001",
+          "repository": "Brain-Crumbs/IPTFantasyFootball",
+          "issue": "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/80",
+          "kind": "external",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "027e8fb09b5c7778f86adc1e6ff46a89ccbe70f28e3faede43a7e91ebe68193b"
+    },
+    {
+      "taskId": "MIG-003",
+      "repository": "Brain-Crumbs/Vibez",
+      "issue": "https://github.com/Brain-Crumbs/Vibez/issues/3",
+      "canonicalBranch": "migration/mig-003-provenance-extraction",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/mig-003.task.json",
+      "requirement": "requirements/migration/mig-003.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/Vibez via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "MIG-002",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/2",
+          "kind": "native",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "706cf4c1f92981526ae61b2725b549f2d243dcb6022a75ac97a6be2749b5719a"
+    },
+    {
+      "taskId": "MIG-004",
+      "repository": "Brain-Crumbs/Vibez",
+      "issue": "https://github.com/Brain-Crumbs/Vibez/issues/4",
+      "canonicalBranch": "migration/mig-004-portable-project-composition",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/mig-004.task.json",
+      "requirement": "requirements/migration/mig-004.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/Vibez via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "MIG-003",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/3",
+          "kind": "native",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "0a30b17003aa5c17e34e89464113e8880e7f4a729628e94e13f28b97f4be7726"
+    },
+    {
+      "taskId": "MIG-005",
+      "repository": "Brain-Crumbs/Vibez",
+      "issue": "https://github.com/Brain-Crumbs/Vibez/issues/5",
+      "canonicalBranch": "migration/mig-005-library-cli-package",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/mig-005.task.json",
+      "requirement": "requirements/migration/mig-005.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/Vibez via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "MIG-004",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/4",
+          "kind": "native",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "e66b9e2f71fbb4a5317147a6479c3efe94a5f836afeb97011384f357111be7c3"
+    },
+    {
+      "taskId": "MIG-006",
+      "repository": "Brain-Crumbs/Vibez",
+      "issue": "https://github.com/Brain-Crumbs/Vibez/issues/6",
+      "canonicalBranch": "migration/mig-006-standalone-driver-integration",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/mig-006.task.json",
+      "requirement": "requirements/migration/mig-006.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/Vibez via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "MIG-005",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/5",
+          "kind": "native",
+          "acceptance": null
+        },
+        {
+          "taskId": "BOOT-037",
+          "repository": "Brain-Crumbs/IPTFantasyFootball",
+          "issue": "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/78",
+          "kind": "external",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "bf1a5fd7d3bae5733e2d59c6f37648592c929aa631f4cc877983ec5b958724c8"
+    },
+    {
+      "taskId": "MIG-007",
+      "repository": "Brain-Crumbs/Vibez",
+      "issue": "https://github.com/Brain-Crumbs/Vibez/issues/7",
+      "canonicalBranch": "migration/mig-007-audit-and-upgrade-compatibility",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/mig-007.task.json",
+      "requirement": "requirements/migration/mig-007.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/Vibez via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "MIG-005",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/5",
+          "kind": "native",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "8dcbaf9af534249a1a06168c82025f6c7e819d90e5544e8f2fb7ed7151669a36"
+    },
+    {
+      "taskId": "MIG-008",
+      "repository": "Brain-Crumbs/Vibez",
+      "issue": "https://github.com/Brain-Crumbs/Vibez/issues/8",
+      "canonicalBranch": "migration/mig-008-consumer-conformance-release",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/mig-008.task.json",
+      "requirement": "requirements/migration/mig-008.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/Vibez via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "MIG-006",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/6",
+          "kind": "native",
+          "acceptance": null
+        },
+        {
+          "taskId": "MIG-007",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/7",
+          "kind": "native",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "a0cd98b2c80d1d139747ec651a32f7c95851bc919017a3068f432957cba35eac"
+    },
+    {
+      "taskId": "AUT-001",
+      "repository": "Brain-Crumbs/Vibez",
+      "issue": "https://github.com/Brain-Crumbs/Vibez/issues/9",
+      "canonicalBranch": "automation/aut-001-scoped-policy",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/aut-001.task.json",
+      "requirement": "requirements/migration/aut-001.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/Vibez via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "MIG-007",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/7",
+          "kind": "native",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "a22a1465063996f0002e220ad247d49783a9b44ff9a4c9cf323c4663524b1e58"
+    },
+    {
+      "taskId": "AUT-002",
+      "repository": "Brain-Crumbs/Vibez",
+      "issue": "https://github.com/Brain-Crumbs/Vibez/issues/10",
+      "canonicalBranch": "automation/aut-002-headless-provider",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/aut-002.task.json",
+      "requirement": "requirements/migration/aut-002.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/Vibez via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "MIG-006",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/6",
+          "kind": "native",
+          "acceptance": null
+        },
+        {
+          "taskId": "AUT-001",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/9",
+          "kind": "native",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "b8f40eece89cc3d21599cdd3b70929aebd901ca77e250db15e07eb32d5e6a823"
+    },
+    {
+      "taskId": "AUT-003",
+      "repository": "Brain-Crumbs/Vibez",
+      "issue": "https://github.com/Brain-Crumbs/Vibez/issues/11",
+      "canonicalBranch": "automation/aut-003-unattended-supervisor",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/aut-003.task.json",
+      "requirement": "requirements/migration/aut-003.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/Vibez via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "AUT-002",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/10",
+          "kind": "native",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "187173982cc27345fa7f18ba6b19b7633e6d29579808a21c7ad56f27766f0139"
+    },
+    {
+      "taskId": "AUT-004",
+      "repository": "Brain-Crumbs/Vibez",
+      "issue": "https://github.com/Brain-Crumbs/Vibez/issues/12",
+      "canonicalBranch": "automation/aut-004-unattended-acceptance",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/aut-004.task.json",
+      "requirement": "requirements/migration/aut-004.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/Vibez via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "AUT-003",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/11",
+          "kind": "native",
+          "acceptance": null
+        },
+        {
+          "taskId": "MIG-010",
+          "repository": "Brain-Crumbs/IPTFantasyFootball",
+          "issue": "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/82",
+          "kind": "external",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "d55d4b86072522898ebb191a7b7cc8c14e93cf50d03c7f43f8d0e8432a808efa"
+    },
+    {
+      "taskId": "MIG-009",
+      "repository": "Brain-Crumbs/IPTFantasyFootball",
+      "issue": "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/81",
+      "canonicalBranch": "migration/mig-009-consume-vibez",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/mig-009.task.json",
+      "requirement": "requirements/migration/mig-009.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/IPTFantasyFootball via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "MIG-008",
+          "repository": "Brain-Crumbs/Vibez",
+          "issue": "https://github.com/Brain-Crumbs/Vibez/issues/8",
+          "kind": "external",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "b3d32e14c4cfe1b36dbbd461017c10213c6d06502c813175fea4fdaa2cf06ec4"
+    },
+    {
+      "taskId": "MIG-010",
+      "repository": "Brain-Crumbs/IPTFantasyFootball",
+      "issue": "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/82",
+      "canonicalBranch": "migration/mig-010-remove-embedded-workflow",
+      "integrationTarget": "main",
+      "definition": "migration/tasks/mig-010.task.json",
+      "requirement": "requirements/migration/mig-010.requirement.json",
+      "admissionOwner": "Brain-Crumbs maintainer of Brain-Crumbs/IPTFantasyFootball via reviewed admission PR",
+      "registration": "staged",
+      "prerequisites": [
+        {
+          "taskId": "MIG-009",
+          "repository": "Brain-Crumbs/IPTFantasyFootball",
+          "issue": "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/81",
+          "kind": "native",
+          "acceptance": null
+        }
+      ],
+      "sourceBodySha256": "cb80366d5dd925e825de1e7f5207927e4896a5ca3146b36f26f69796e99c217a"
+    }
+  ]
+}

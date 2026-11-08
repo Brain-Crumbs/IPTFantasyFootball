@@ -1,0 +1,19 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "MIG-009-R1",
+  "taskId": "MIG-009",
+  "statement": "Make Fantasy Football use the installed Vibez artifact while proving parity and reversibility before deleting local implementation.",
+  "acceptanceCriteria": [
+    "AC-01: All supported Fantasy Football workflow entry points use the exact installed artifact, with no file: source dependency or internal/deep imports.",
+    "AC-02: Existing project tasks/requirements/contracts and preserved evidence remain accessible under the correct project identity.",
+    "AC-03: Complete supported installed workflow and diagnostics operate with real configured validators; genuine feature evidence is linked separately from tests.",
+    "AC-04: Only one engine can mutate consumer state; active/stopped historical runs are handled under the documented quiescence policy.",
+    "AC-05: Rollback to the recorded supported version/configuration is rehearsed with history intact and no invented completion.",
+    "AC-06: Independent review accepts a cleanup-ready manifest and explicit observation/rollback exit criteria for MIG-010."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/81",
+    "sha256:b3d32e14c4cfe1b36dbbd461017c10213c6d06502c813175fea4fdaa2cf06ec4"
+  ]
+}

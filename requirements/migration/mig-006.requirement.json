@@ -1,0 +1,19 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "MIG-006-R1",
+  "taskId": "MIG-006",
+  "statement": "Deliver a usable installed CLI for the complete existing workflow without duplicating the driver already assigned to Fantasy Football #78.",
+  "acceptanceCriteria": [
+    "AC-01: The current #78 acceptance mapping and source revision are recorded; any remaining gap is visible and blocks complete-driver acceptance.",
+    "AC-02: An operator completes setup and the manual-handoff task/repair journey from the installed CLI without custom JavaScript, source edits or hand-authored request JSON.",
+    "AC-03: Requests, imports, resume, PR/CI and completion retain their original identities and gate ownership across restart.",
+    "AC-04: A contract-bearing UAT path passes the #76 regression through installed assets and project configuration.",
+    "AC-05: CLI and library share configuration/behavior and supported service interfaces; #75 need not depend on source layout.",
+    "AC-06: All imported source deltas are accounted for; reusable driver ownership ends in Vibez."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/Vibez/issues/6",
+    "sha256:bf1a5fd7d3bae5733e2d59c6f37648592c929aa631f4cc877983ec5b958724c8"
+  ]
+}

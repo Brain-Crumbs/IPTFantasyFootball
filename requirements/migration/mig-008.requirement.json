@@ -1,0 +1,19 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "MIG-008-R1",
+  "taskId": "MIG-008",
+  "statement": "Produce the evidence-backed immutable Vibez candidate that Fantasy Football can safely adopt.",
+  "acceptanceCriteria": [
+    "AC-01: Supported JS/types/CLI/assets and complete current workflow pass from a clean installed artifact without source checkout access.",
+    "AC-02: At least two independent project roots are isolated; a non-npm consumer uses only configured validators.",
+    "AC-03: Happy path, role/revision/CI rejection, failed review/rework, duplicate attempts, restart and uncertain merge outcomes preserve current guarantees.",
+    "AC-04: Source-delta reconciliation is complete and the artifact maps to a reviewed destination SHA and checksum.",
+    "AC-05: The release candidate is downloadable/installable through the agreed channel; fresh maintainer install/configure/diagnose/rollback instructions are exercised.",
+    "AC-06: Fixtures, live feature evidence and untested limitations are clearly distinguished in the acceptance report."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/Vibez/issues/8",
+    "sha256:a0cd98b2c80d1d139747ec651a32f7c95851bc919017a3068f432957cba35eac"
+  ]
+}

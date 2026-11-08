@@ -1,0 +1,19 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "MIG-005-R1",
+  "taskId": "MIG-005",
+  "statement": "Create an installable package whose library API, types, CLI and runtime assets work outside the source tree.",
+  "acceptanceCriteria": [
+    "AC-01: An independent JS and TypeScript consumer imports only documented paths, including declarations, without development/source-tree dependencies.",
+    "AC-02: The installed CLI runs via the supported local/standalone invocation on Windows and POSIX; existing compatibility behavior is tested.",
+    "AC-03: Pack contents include every required asset and exclude secrets, .agent data, source-project history and unnecessary fixtures.",
+    "AC-04: Artifact identity and integrity are recorded; clean installation does not run workflows or overwrite project files.",
+    "AC-05: Missing runtime dependencies and unsupported package/API versions produce actionable errors.",
+    "AC-06: Distribution identity, rights/license and channel decisions from MIG-002 are satisfied before release."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/Vibez/issues/5",
+    "sha256:e66b9e2f71fbb4a5317147a6479c3efe94a5f836afeb97011384f357111be7c3"
+  ]
+}

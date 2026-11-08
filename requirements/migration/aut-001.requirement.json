@@ -1,0 +1,20 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "AUT-001-R1",
+  "taskId": "AUT-001",
+  "statement": "Allow fully automated progress inside a pre-authorized scope without asking for routine stage/merge confirmations or allowing an agent to approve itself.",
+  "acceptanceCriteria": [
+    "AC-01: One explicit scoped grant can authorize the complete workflow and multiple eligible tasks without routine per-stage/per-task confirmation.",
+    "AC-02: Agents cannot expand scope, alter active host policy, approve their own role work or issue their own merge authority.",
+    "AC-03: Exact repo/PR/head authorization is generated and verified by the trusted boundary; stale/changed head, expiry/revocation and denied actions reject before effects.",
+    "AC-04: Budgets persist across restarts and apply to actual provider/command work; unsupported cost accounting fails or uses an explicit conservative limit.",
+    "AC-05: Policy/role/tool enforcement and allow/deny evidence are inspectable and secret-free.",
+    "AC-06: Manual mode and explicit human-only exception gates remain supported without pretending that a waiting run is complete.",
+    "AC-07: The configured GitHub permissions/protection prevent ordinary worker credentials from bypassing the controller or required checks; enforcement is verified."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/Vibez/issues/9",
+    "sha256:a22a1465063996f0002e220ad247d49783a9b44ff9a4c9cf323c4663524b1e58"
+  ]
+}

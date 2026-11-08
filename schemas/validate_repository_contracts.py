@@ -31,6 +31,18 @@ RECORD_FAMILIES = [
         "glob": "tasks/definitions/*.task.json",
         "require_at_least_one": False,
     },
+    {
+        "label": "staged migration task (not runtime admission)",
+        "schema": SCHEMA_DIR / "task.schema.json",
+        "glob": "migration/tasks/*.task.json",
+        "require_at_least_one": True,
+    },
+    {
+        "label": "migration requirement",
+        "schema": SCHEMA_DIR / "requirement.schema.json",
+        "glob": "requirements/migration/*.requirement.json",
+        "require_at_least_one": True,
+    },
 ]
 
 failures = []
@@ -53,7 +65,7 @@ for family in RECORD_FAMILIES:
         total_checked += 1
         relative = path.relative_to(ROOT)
         try:
-            instance = json.loads(path.read_text())
+            instance = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as error:
             failures.append(f"{relative}: invalid JSON ({error})")
             continue

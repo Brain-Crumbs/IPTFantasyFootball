@@ -1,0 +1,56 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "MIG-002",
+  "title": "[MIG-002] Define the extraction inventory, public API and project configuration contract",
+  "objective": "Agree the smallest complete reusable library boundary and compatibility contract before moving implementation.",
+  "inScope": [
+    "Inventory all 24 source modules plus schemas, semantic contracts, CLI commands, tests/helpers, scripts, docs, task records, runtime assets and CI. Classify each as Vibez implementation, consumer-owned input, test/example, or historical archive; assign exact source/destination paths and owners.",
+    "Recommend one ESM TypeScript/Node package with deliberate supported exports for project composition, registry/lifecycle, validation/evidence/review, orchestration/provider, PR/merge and diagnostics/recovery. Publish a supported capability map, not every accidental internal path.",
+    "Define a versioned project configuration and injected service graph: canonical project/worktree identity, tasks/requirements/contracts, state/evidence/exchange roots, validators, branch/base/check policy, review roles, providers, credential references and budgets. Separate immutable packaged schemas from exact-revision project inputs. Define precedence and hash/currency rules; secrets never enter tracked config.",
+    "Agree seams with #78's reusable profile/driver and #75's application service/supervisor so neither invents another config or lifecycle engine.",
+    "Record decisions for final package identity, distribution/license rights, supported Node/Windows/POSIX/local-filesystem matrix, history strategy and rollback window. Default: allowlisted provenance snapshot, compatible ipt.* record IDs, immutable tarball/checksum first; do not presume npm publication or choose a license without owner rights.",
+    "Specify how library-owned semantic contracts are discoverable in downstream architecture context while project-owned requirements/contracts remain revision-bound.",
+    "**Expected surfaces:** Architecture decision records, migration path manifest, public interface/config/schema specifications, capability/support matrix, consumer example specifications."
+  ],
+  "outOfScope": [
+    "No source export, provider implementation, HTTP server, arbitrary workflow designer or renaming of persisted schema identities."
+  ],
+  "dependencies": [],
+  "canonicalBranch": "migration/mig-002-boundaries-and-contracts",
+  "allowedPaths": [
+    "docs/**",
+    "migration/**",
+    "requirements/**",
+    "tasks/**"
+  ],
+  "requirements": [
+    "MIG-002-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: Every reusable and historical surface has an explicit ownership/destination decision, including reusable scripts/CI and consumer contract context.",
+    "AC-02: Documented API and configuration support the complete existing lifecycle and #75/#78 consumers without internal imports or duplicated configuration.",
+    "AC-03: Package assets, project content and mutable state have distinct resolution rules and project-scoped identities.",
+    "AC-04: API, CLI, schema, state and adapter compatibility policies are explicit; first extraction preserves ipt.* historical identities and meaning.",
+    "AC-05: Release-blocking identity/channel/license/support decisions have recorded owners and resolution criteria; public distribution cannot proceed while rights are unresolved.",
+    "AC-06: Source-delta capture, final synchronization checkpoint and end of duplicate code ownership are specified."
+  ],
+  "validationPlan": [
+    "Trace each #74 M-AC requirement and each current module/CLI capability to an inventory entry and downstream test owner. Review two example consumers with different roots, validators and overlapping task IDs. Architecture review evaluates semantic producer/consumer behavior, including #75/#78.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.task-registry",
+    "control-plane.context-compiler",
+    "control-plane.orchestration-engine",
+    "control-plane.local-agent-adapter"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}
+

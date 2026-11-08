@@ -1,0 +1,57 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "MIG-007",
+  "title": "[MIG-007] Preserve audit history and add safe compatibility, upgrade and rollback checks",
+  "objective": "Make library upgrades explainable and safe while keeping historical evidence valid only for its original repository, role and revision.",
+  "inScope": [
+    "Implement the agreed compatibility checks across package/API/CLI, schemas, state, evidence, provider contracts, configuration and persistent driver/run identities. Keep existing ipt.* identities and record bytes immutable. New provenance belongs in versioned additive metadata/receipts, not rewritten old approvals.",
+    "Correlate project, task, run/attempt, role, actor/provider, exact source revision, engine/artifact version and config/policy digest in an inspectable audit view/export. Include gate decisions, evidence references and rejection/rework lineage; distinguish observations/logs from authoritative evidence. Redact credentials and exclude hidden model reasoning.",
+    "Provide a read-only compatibility/upgrade check, a manifest of affected data versions and documented quiescence requirements. Initial default: no migration of active runs between engine versions or repositories. Detect concurrent writers/external role sessions and require their actual drain before supported migration/recovery.",
+    "Define stopped historical-run quarantine/read-only access and backup/restore verification. The retired canary need not finish; it must not be resumed or rebound automatically. Same-project package adoption may preserve existing paths/history; copying the source library to Vibez never copies live state.",
+    "Reject unsupported downgrade or schema reinterpretation with a concrete recovery path. Audit integrity verification should detect broken/missing/hash-mismatched references where recorded; do not claim tamper-proof local files.",
+    "**Expected surfaces:** Version/compatibility metadata, audit/provenance views, status/diagnostics/recovery integration, upgrade preflight and backup/rollback docs/tests."
+  ],
+  "outOfScope": [
+    "No automatic historical approval conversion, active-run rebinding, administrative override, distributed storage redesign or global state reset."
+  ],
+  "dependencies": [
+    "MIG-005"
+  ],
+  "canonicalBranch": "migration/mig-007-audit-and-upgrade-compatibility",
+  "allowedPaths": [
+    "src/**",
+    "schemas/**",
+    "contracts/**",
+    "tests/**",
+    "docs/**"
+  ],
+  "requirements": [
+    "MIG-007-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: Historical records are readable without byte/content mutation and retain their original schema, repository/revision and role meaning.",
+    "AC-02: An operator can trace each task outcome to engine/config version, role attempts and authoritative validation/review/merge evidence.",
+    "AC-03: Unsupported versions and changed immutable run inputs reject before lifecycle/provider writes.",
+    "AC-04: Quiescent same-project upgrade and supported rollback preserve append-only history; an incompatible downgrade is blocked honestly.",
+    "AC-05: Active writers and preserved stopped runs have explicit handling, including the retired canary; no duplicate engine controls one state store.",
+    "AC-06: Audit/export and diagnostics contain no secrets and never substitute a log summary for approval."
+  ],
+  "validationPlan": [
+    "Golden compatibility fixtures from the actual source version; unknown-major, stale/changed bindings, corrupted references, concurrent writers and unsupported downgrade tests. Rehearse stopped-writer backup/restore with nonempty evidence and compare hashes before/after.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.evidence-store",
+    "control-plane.recovery-tools",
+    "control-plane.orchestration-engine"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}
+
