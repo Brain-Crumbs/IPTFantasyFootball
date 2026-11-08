@@ -1,5 +1,7 @@
 # End-to-end canary operator guide
 
+**Live completion is optional, not a cutover prerequisite.** On 2026-11-07 the owner retired the remaining live CANARY-001 completion/reconciliation requirement. See [the decision record](CANARY_RETIREMENT.md) and issues [#1](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1), [#35](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/35) and [#37](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/37). The runbook below is retained for explicitly assigned optional exercises and historical interpretation. Automated regression tests remain required; the stopped live run is not marked PASS or DONE.
+
 **Task:** [BOOT-033 / issue #35](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/35)
 **Architecture:** [master issue #1](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1)
 **Canonical branch:** `bootstrap/boot-033-canary-e2e`; integration target: `main`
@@ -9,7 +11,7 @@
 
 The canary's small real change is [bootstrap/canary-proof.txt](../bootstrap/canary-proof.txt): exactly the UTF-8 bytes `IPT control plane canary v1` followed by one newline. It adds no product behavior. The task also explicitly allows the necessary BOOT-033 driver, fixture/tests, native definition, package command and narrow documentation files listed in its `allowedPaths`; live review must cover that scaffolding too. The operator authorized the Windows compatibility changes required for this live run on 2026-10-26: native npm execution, platform-correct paths and line endings, Windows file publication, and matching tests/contracts. No lifecycle gate or approval requirement is waived. The BOOT-033 driver composes existing task selection, assignment, branch, validation, independent-review, PR/CI, readiness, controlled-merge and completion APIs. It does not replace their policy or add a generic `agent orchestrate` command.
 
-**Live issue #35 acceptance remains PENDING.** Implementing this driver, passing its isolated rehearsal, and opening a draft implementation PR do not establish an independently reviewed live controlled merge or `DONE`. No live merge is authorized merely by following this document. Neither this canary nor a local `DONE` fixture declares Bootstrap v1 cutover.
+**Remaining live issue #35 acceptance is retired as a prerequisite.** Implementing this driver, passing its isolated rehearsal, and opening a draft implementation PR do not establish an independently reviewed live controlled merge or `DONE`. No live merge is authorized merely by following this document. Neither this retirement nor a local `DONE` fixture declares Bootstrap v1 cutover.
 
 The root registry now contains one workload, `CANARY-001`. In a clean checkout without runtime state it defaults to `PLANNED` and is eligible for deterministic selection. It has `dependencies: []` because it is a native smoke workload over the already implemented control plane, not a native migration of the historical BOOT tracker. BOOT-033's prerequisite issues (BOOT-025 and BOOT-027–032) must still be verified accepted on authoritative `main` under the manual bootstrap procedure. Do not invent native records for them or seed fabricated `DONE` states.
 
@@ -182,18 +184,20 @@ Each invocation that passes preflight retains a report under `.agent/canary-runs
 
 A complete live acceptance handoff must attach or link the actual run artifacts and CI/PR evidence. Local ignored paths are not accessible PR artifacts by themselves; publish only a reviewed, secret-free evidence bundle to the authorized destination. Never include `IPT_GITHUB_TOKEN` or credential-bearing environment dumps.
 
-## Acceptance map and remaining live work
+## Historical acceptance map and optional live work
 
-| Issue #35 criterion / scenario | Reproducible implementation evidence | Remaining live acceptance |
+The remaining live steps below describe what would be needed to claim an actual successful live run. They are no longer requirements for BOOT-034 acceptance, BOOT-035 or Bootstrap v1 cutover under the [owner decision](CANARY_RETIREMENT.md).
+
+| Issue #35 criterion / scenario | Reproducible implementation evidence | Optional live evidence (not a prerequisite) |
 | --- | --- | --- |
 | Task engine selects canary | Registered CANARY-001; isolated baseline and real start/assignment | Record live selector and assignment |
 | Every required lifecycle stage has current revision-bound evidence | Rehearsal exercises all local gates and stores at its actual fixture revision | Obtain independent live judgments and exact-head gate records |
 | Canonical branch and PR-to-main | Driver/fixture assert the exact branch, base and head; new PR is draft | Verify actual pushed head, draft PR and live CI |
-| Controlled merge reaches DONE without state edits | Fixture controlled merge, immutable evidence and final state | **PENDING: separately authorized live controlled merge and completion** |
+| Controlled merge reaches DONE without state edits | Fixture controlled merge, immutable evidence and final state | **NOT REQUIRED for cutover; an optional live run still needs separately authorized controlled merge and completion** |
 | Repeatable clean-start run log | Retained rehearsal summary, per-invocation reports and this runbook | Retain and publish authorized live evidence |
-| Full successful run; before/during/after visibility; completed reconciliation | Isolated successful run and focused automated tests | **PENDING: live end-to-end run and same-key completed reconciliation** |
+| Full successful run; before/during/after visibility; completed reconciliation | Isolated successful run and focused automated tests | **NOT REQUIRED for cutover; an optional successful live run still needs completed reconciliation** |
 
-The first implementation PR must leave the live items pending rather than claiming that a fixture or draft PR satisfies them. BOOT-034's broader adversarial program and BOOT-035's hardening/cutover remain outside this task.
+Historical implementation PRs left these live items pending. Their current disposition is retired as prerequisites, with no claim that fixtures or merged PRs satisfied them. BOOT-034's automated adversarial program and BOOT-035's remaining hardening/cutover criteria are unaffected.
 
 ## Recovery and limits
 

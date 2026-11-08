@@ -8,6 +8,8 @@ This repository is building a deterministic, provider-neutral development contro
 
 ## 1. Mandatory start procedure
 
+**Live canary prerequisite retired:** The owner's 2026-11-07 decision in master issue #1 and issues #35-37 removes live CANARY-001 completion as a prerequisite for BOOT-035/v1 cutover. Follow [docs/CANARY_RETIREMENT.md](docs/CANARY_RETIREMENT.md). Preserve its real runtime state; do not fabricate PASS/DONE or automatically resume the exercise. Automated canary/adversarial tests and ordinary task review/CI/merge gates remain required. This decision does not itself declare cutover.
+
 Before changing any file:
 
 1. Read this document.
