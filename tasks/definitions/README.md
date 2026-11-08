@@ -10,3 +10,5 @@ BOOT-006 designates this directory as the canonical repository location for mach
 - Nested directories are not traversed by the BOOT-006 loader.
 
 During the manual bootstrap phase, GitHub issues remain authoritative for task selection/status. Adding a file here does not by itself assign, start, complete, or prioritize a task.
+
+MIG-001 stages future migration work under `migration/tasks/`, outside this discovery boundary. Follow the [reviewed admission gate](../../migration/README.md) before publishing any of it here. The default registry and CANARY-001 history remain unchanged.

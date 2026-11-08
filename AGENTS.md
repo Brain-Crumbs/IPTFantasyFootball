@@ -8,6 +8,8 @@ This repository is building a deterministic, provider-neutral development contro
 
 ## 1. Mandatory start procedure
 
+**Migration authority (MIG-001):** #37 is closed, but the accepted main change was only canary-prerequisite retirement; #1 has not declared native cutover. Explicitly assigned MIG/AUT work may use the existing native primitives under the same manual authorization regime. Follow [migration/README.md](migration/README.md) for the authority audit, staged manifests, external admission gates and pinned engine, and [migration/SEED.md](migration/SEED.md) for the one-time empty-Vibez exception. Staged records never authorize execution. #37/#1 still own the remaining cutover acceptance.
+
 **Live canary prerequisite retired:** The owner's 2026-11-07 decision in master issue #1 and issues #35-37 removes live CANARY-001 completion as a prerequisite for BOOT-035/v1 cutover. Follow [docs/CANARY_RETIREMENT.md](docs/CANARY_RETIREMENT.md). Preserve its real runtime state; do not fabricate PASS/DONE or automatically resume the exercise. Automated canary/adversarial tests and ordinary task review/CI/merge gates remain required. This decision does not itself declare cutover.
 
 Before changing any file:
@@ -46,7 +48,7 @@ The control-plane foundation currently includes:
 However, the project has **not** thereby declared Bootstrap v1 cutover. Until issue #1 explicitly does so:
 
 - GitHub issue #1 is the bootstrap architecture/master tracker.
-- The assigned BOOT child issue is authoritative for task-specific scope and authorization.
+- The explicitly assigned BOOT or migration/automation child issue is authoritative for task-specific scope and authorization.
 - GitHub branch and PR state provide the integration boundary.
 - `agent next` remains a read-only query and does not authorize self-selection.
 - `agent start` and `agent validate` are operational workflow primitives, not permission to replace an explicit assignment with unrelated automatically selected work during the manual regime.
@@ -150,11 +152,11 @@ For every acceptance criterion in the assigned issue:
 
 A test command passing is not sufficient when the acceptance criterion is semantic or documentation-oriented; validate the actual promised behavior.
 
-### Bootstrap exception: independent review evidence is still manual until its owning tasks land
+### Independent review: operational library gates, manually coordinated sessions
 
 BOOT-014/015/016 make deterministic developer validation/evidence capture operational end-to-end: `agent validate <task-id> <actor-id> <run-id>` runs the required checks, persists revision-bound `ipt.validation-evidence`, and gates `IN_DEVELOPMENT -> DEV_VALIDATED`/`DEV_VALIDATION_FAILED` on it. Use it (or the strongest reproducible equivalent checks when it cannot run in the current tool environment) rather than narrative self-report of "tests passed."
 
-Independent QA/Architecture/UAT review is still manual until BOOT-017 onward lands. For that, continue to use the strongest reproducible checks currently available — exact file inspection, repository/path verification, diff inspection, and explicit acceptance-criteria mapping.
+BOOT-017 through BOOT-021 are implemented. Use their library gates for actual independent QA/Architecture/UAT judgments and legal rework; generic review/orchestrate CLI wiring remains reserved pending #78. Fresh role sessions, exact file/revision inspection and acceptance mapping remain required. If a tool limitation prevents a gate from running, record the exact blocker and distinguish external review evidence from native gate acceptance; never fabricate either.
 
 Do not label manual inspection as a future automated validation gate. State exactly what was checked and what evidence exists.
 
