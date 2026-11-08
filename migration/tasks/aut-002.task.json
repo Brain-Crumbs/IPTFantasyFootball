@@ -1,0 +1,59 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "AUT-002",
+  "title": "[AUT-002] Implement a real headless agent adapter with isolated role sessions",
+  "objective": "Replace manual chat copy/paste with real automated agent execution while keeping the core provider-neutral.",
+  "inScope": [
+    "Choose one documented headless runtime/API adapter based on the required tool, credential and cancellation capabilities; record the choice and support matrix. A general subprocess bridge or FakeAgentProvider alone is not acceptance.",
+    "Implement the existing neutral AgentProvider boundary (versioned extensions only where necessary). Launch fresh Developer/QA/Architecture/UAT sessions with gate-compiled context, distinct durable attempt/session bindings and host-enforced role tools. Review roles cannot gain Developer write privileges or inherit private developer conversation state.",
+    "Bind structured results to project/task/run/role/invocation revision and validate all fields before existing gates consume them. Developer may produce a new commit: preserve invocation identity while final validators/reviewers bind to actual source HEAD.",
+    "Provide durable dispatch/reconciliation for uncertain launch responses, bounded retries and provider session lookup/idempotency where supported. Do not blindly launch a second agent when a previous session may still write.",
+    "Implement timeout/cancellation with actual termination acknowledgement or an explicit still-running/quarantined state. Enforce budgets and credential redaction; record public execution metadata, provider/model/config version and evidence references without hidden reasoning.",
+    "Retain manual and fake providers as supported fallback/test adapters, not the automation completion proof.",
+    "**Expected surfaces:** Concrete provider adapter, session/dispatch persistence, role execution environment integration, provider capability/conformance tests, runtime setup docs."
+  ],
+  "outOfScope": [
+    "No core vendor dependency, synthetic reviewer PASS, autonomous arbitrary shell permissions, fake-only demo or GUI automation requirement."
+  ],
+  "dependencies": [
+    "MIG-006",
+    "AUT-001"
+  ],
+  "canonicalBranch": "automation/aut-002-headless-provider",
+  "allowedPaths": [
+    "src/**",
+    "schemas/**",
+    "contracts/**",
+    "tests/**",
+    "docs/**",
+    "package.json",
+    "package-lock.json"
+  ],
+  "requirements": [
+    "AUT-002-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: At least one real provider runs all configured required roles without copying packets/results or manually switching chats.",
+    "AC-02: Every role has fresh scoped context and enforced tool permissions; Developer cannot self-approve via labels or shared session state.",
+    "AC-03: Returned results validate through the unchanged owning gates; malformed/wrong-binding output cannot advance lifecycle.",
+    "AC-04: Restart/uncertain dispatch reconciles the original session or blocks safely, without duplicate active writers.",
+    "AC-05: Cancellation/timeout and budget enforcement are honest about external work still running.",
+    "AC-06: Manual-provider compatibility and a documented neutral conformance contract remain intact."
+  ],
+  "validationPlan": [
+    "Provider contract tests plus a bounded real-provider task in an isolated configured repository. Exercise wrong/stale result bindings, transport failure, malformed output, cancellation, token/cost limits and lost dispatch acknowledgement. Distinguish test fixtures from actual independent role-run evidence.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.agent-provider",
+    "control-plane.local-agent-adapter"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}

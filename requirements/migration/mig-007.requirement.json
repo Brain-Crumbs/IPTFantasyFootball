@@ -1,0 +1,19 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "MIG-007-R1",
+  "taskId": "MIG-007",
+  "statement": "Make library upgrades explainable and safe while keeping historical evidence valid only for its original repository, role and revision.",
+  "acceptanceCriteria": [
+    "AC-01: Historical records are readable without byte/content mutation and retain their original schema, repository/revision and role meaning.",
+    "AC-02: An operator can trace each task outcome to engine/config version, role attempts and authoritative validation/review/merge evidence.",
+    "AC-03: Unsupported versions and changed immutable run inputs reject before lifecycle/provider writes.",
+    "AC-04: Quiescent same-project upgrade and supported rollback preserve append-only history; an incompatible downgrade is blocked honestly.",
+    "AC-05: Active writers and preserved stopped runs have explicit handling, including the retired canary; no duplicate engine controls one state store.",
+    "AC-06: Audit/export and diagnostics contain no secrets and never substitute a log summary for approval."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/Vibez/issues/7",
+    "sha256:8dcbaf9af534249a1a06168c82025f6c7e819d90e5544e8f2fb7ed7151669a36"
+  ]
+}

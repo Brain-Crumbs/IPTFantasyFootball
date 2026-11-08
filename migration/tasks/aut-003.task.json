@@ -1,0 +1,58 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "AUT-003",
+  "title": "[AUT-003] Automate authorized task queues, rework, PR/CI and durable continuation",
+  "objective": "Keep approved work progressing end to end without human coordination between tasks, roles, failures or GitHub stages.",
+  "inScope": [
+    "Build the unattended execution adapter over the single shared driver/application-service supervisor. #75 owns generic operation IDs/status/cancel/resume semantics; #78 owns manual driver coordination. Reuse their implementation where available and record the shared contract/ownership before adding behavior. No second lifecycle engine or competing supervisor.",
+    "Admit only schema-valid work within an approved task set/plan or configured intake grant, then use existing dependency/selection/assignment gates. Scope ambiguous or incomplete input to a durable clarification exception; issue text cannot authorize itself.",
+    "Drive isolated provider sessions, deterministic validation, declared reviews, bounded rework, non-force publication, canonical PR creation/update, readiness/CI polling and policy-authorized exact-head controlled merge/DONE. After completion/reconciliation, choose the next eligible authorized task automatically.",
+    "Initially keep one active task writer per project/workspace. Persist operation, run/attempt, grants, budgets and checkpoints before dispatch; enforce writer locks and reconcile side effects across crashes, duplicate events, lost PR/push/merge responses and process restarts.",
+    "Reuse legal rework for review failures; supply an explicit reviewed transition/composition for validation failures currently needing manual recovery. Distinguish a new semantic attempt from retrying infrastructure. Preserve rejected judgments and invalidate stale approvals. Administrative destructive recovery still requires its authorized/quiescent boundary.",
+    "Implement bounded exponential backoff/polling and stop reasons, not infinite retries. Provide inspect/status, pause/drain, resume and cancel with audit evidence. Normal authorized work needs no clipboard, import command, manual PR/push or merge confirmation.",
+    "**Expected surfaces:** Shared application/driver supervisor, authorized queue adapter, rework/publication/CI composition, durable operation checkpoints/budgets, CLI and audit/status views."
+  ],
+  "outOfScope": [
+    "No distributed scheduler, parallel writers, conversational-planning/HTTP rebuild, automatic admission of arbitrary issues or unbounded self-repair."
+  ],
+  "dependencies": [
+    "AUT-002"
+  ],
+  "canonicalBranch": "automation/aut-003-unattended-supervisor",
+  "allowedPaths": [
+    "src/**",
+    "schemas/**",
+    "contracts/**",
+    "tests/**",
+    "docs/**"
+  ],
+  "requirements": [
+    "AUT-003-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: A grant covering at least two dependent tasks executes them in order through completion without routine human handoffs or per-task selection.",
+    "AC-02: Real isolated role sessions, validators, reviews, legal rework, PR/CI and controlled merge are driven by the same existing authority owners.",
+    "AC-03: Semantic failure creates an auditable successor attempt when allowed; infrastructure retry preserves identity; budgets survive restart.",
+    "AC-04: Duplicate starts/events and uncertain side effects cannot duplicate assignment, evidence, active provider work, PRs or merge.",
+    "AC-05: Out-of-scope work, exhausted budgets, unsafe recovery and unresolved clarification become durable actionable exceptions.",
+    "AC-06: Cancellation, revocation and pause/drain reflect real external writers and retain a supported resume path.",
+    "AC-07: Service/CLI operation semantics align with #75 and use the installed package; no competing supervisor is introduced."
+  ],
+  "validationPlan": [
+    "Deterministic integration scenarios for queue order, rework, dirty/drifting head, CI waits/failures, lost push/PR/merge response, restart at each side-effect boundary and two competing invocations. Demonstrate an authorized real-provider path; retain exact grant, package, revision and evidence bindings.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.orchestration-engine",
+    "control-plane.review-rework",
+    "control-plane.controlled-merge"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}

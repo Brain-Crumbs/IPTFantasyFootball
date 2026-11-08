@@ -1,0 +1,60 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "MIG-005",
+  "title": "[MIG-005] Ship supported library exports, CLI entry points and a versioned package artifact",
+  "objective": "Create an installable package whose library API, types, CLI and runtime assets work outside the source tree.",
+  "inScope": [
+    "Implement the agreed package identity and documented exports/types with a distribution file allowlist. Bundle compiled ESM, declarations, required schemas/templates and license/notices; make public subpaths explicit and reject unsupported deep imports.",
+    "Provide a Vibez standalone binary and a documented compatibility decision for the existing agent binary/commands, JSON envelope and exit codes. Preserve supported commands; describe reserved operations honestly until MIG-006 integrates #78. Standalone means a supported executable install, not a request to write a custom host script.",
+    "Add reproducible build/pack metadata, package-version lookup from the installation, content checksum/provenance, dependency declarations and release-candidate generation. Distinguish consumer runtime dependencies from developer-only TypeScript/Python schema tooling.",
+    "Use the agreed private/public distribution channel only. An immutable packed tarball with integrity is sufficient for the initial candidate; npm registry publication is not assumed. Never depend on a local file: path, moving main branch or source symlink for the delivered artifact.",
+    "Align docs with supported API/CLI and #75 service consumers.",
+    "**Expected surfaces:** package.json/lock/build config, public entry points, bin launcher, runtime asset packaging, pack/release scripts, API/CLI/install documentation."
+  ],
+  "outOfScope": [
+    "No general driver reimplementation, live consumer migration, unapproved registry publication or mass dependency upgrade."
+  ],
+  "dependencies": [
+    "MIG-004"
+  ],
+  "canonicalBranch": "migration/mig-005-library-cli-package",
+  "allowedPaths": [
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+    "src/**",
+    "scripts/**",
+    "tests/**",
+    "docs/**",
+    "LICENSE*",
+    "NOTICE*",
+    ".github/**"
+  ],
+  "requirements": [
+    "MIG-005-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: An independent JS and TypeScript consumer imports only documented paths, including declarations, without development/source-tree dependencies.",
+    "AC-02: The installed CLI runs via the supported local/standalone invocation on Windows and POSIX; existing compatibility behavior is tested.",
+    "AC-03: Pack contents include every required asset and exclude secrets, .agent data, source-project history and unnecessary fixtures.",
+    "AC-04: Artifact identity and integrity are recorded; clean installation does not run workflows or overwrite project files.",
+    "AC-05: Missing runtime dependencies and unsupported package/API versions produce actionable errors.",
+    "AC-06: Distribution identity, rights/license and channel decisions from MIG-002 are satisfied before release."
+  ],
+  "validationPlan": [
+    "npm pack then install into a fresh external directory; compile an external TypeScript consumer and run JS imports, CLI help/version and configured primitive operations. Inspect the tarball allowlist and verify execution from a different cwd with the source checkout unavailable.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.cli-shell",
+    "control-plane.local-agent-adapter"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}

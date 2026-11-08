@@ -1,0 +1,18 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "MIG-003-R1",
+  "taskId": "MIG-003",
+  "statement": "Give Vibez its own buildable source, tests and governance without altering Fantasy Football's running workflows.",
+  "acceptanceCriteria": [
+    "AC-01: A clean Vibez checkout builds and runs inherited tests, schema/contract checks and adversarial checks independently of the Fantasy Football checkout.",
+    "AC-02: An automated inventory/provenance comparison accounts for every included, excluded and intentionally transformed path.",
+    "AC-03: Artifact/working-tree scan finds no credentials, live runtime data, stopped canary exchange or unrelated project content.",
+    "AC-04: UAT requirements/affected/dependency-contract regressions and current workflow guarantees survive export.",
+    "AC-05: Destination CI, licensing decision references and the delta ledger are present; an extraction is not described as new independent review of historical source runs."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/Vibez/issues/3",
+    "sha256:706cf4c1f92981526ae61b2725b549f2d243dcb6022a75ac97a6be2749b5719a"
+  ]
+}

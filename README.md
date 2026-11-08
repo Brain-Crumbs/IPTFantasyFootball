@@ -12,6 +12,8 @@ The control plane now has a start-only Developer workflow that composes determin
 
 ## Governing documents
 
+Vibez migration work follows the [MIG-001 execution and admission record](migration/README.md), including the exact source engine pin and [empty-repository seed protocol](migration/SEED.md). The roadmap's 14 tasks are staged, not active work. #37 is closed, but explicit native-authority cutover remains unestablished; see the evidence and remaining prerequisite in that record.
+
 - [AGENTS.md](AGENTS.md) — repository-wide operating procedure for development agents.
 - [CONSTITUTION.md](CONSTITUTION.md) — architectural invariants that bootstrap work must preserve.
 - [BOOTSTRAP.md](BOOTSTRAP.md) — temporary bootstrap authority, current capability boundary, and handoff rules.

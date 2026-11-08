@@ -1,0 +1,59 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "MIG-008",
+  "title": "[MIG-008] Prove portable installed-consumer parity and publish the migration candidate",
+  "objective": "Produce the evidence-backed immutable Vibez candidate that Fantasy Football can safely adopt.",
+  "inScope": [
+    "Build a conformance harness that consumes only the actual packed artifact in a clean separate Git repository/workspace. Make the source checkouts unavailable on the module path and prohibit deep imports/copying core schemas. Include a non-npm project profile plus task requirements, affected/dependency contracts and varying required review-role subsets.",
+    "Exercise library and CLI from task loading through start, validation, independent role handling, rework, PR/CI/readiness, controlled merge and DONE reconciliation, plus status/explain/recovery/compatibility surfaces. Cover rejection side effects and uncertain outcomes.",
+    "Run the support matrix agreed in MIG-002, including Windows/PowerShell and POSIX, paths with spaces, alternate cwd and overlapping task IDs across two projects. Preserve existing full suites/schema checks/adversarial guards. Declare untested OS/filesystems unsupported.",
+    "Finish the source-delta checkpoint: verify #78/#76 and every accepted reusable source fix is present in Vibez or explicitly excluded with rationale. No ongoing product code fork is allowed after this checkpoint.",
+    "Publish an immutable versioned release candidate via the agreed channel with integrity/provenance, compatibility matrix, changelog, installation and upgrade/rollback docs. No public npm release absent that recorded decision.",
+    "**Expected surfaces:** Consumer conformance fixtures/harness, CI portability/pack jobs, release workflow/artifacts, migration evidence report and operator docs."
+  ],
+  "outOfScope": [
+    "No Fantasy Football deletion/cutover, new UI or blanket claim of live independent review from fake-provider fixture results."
+  ],
+  "dependencies": [
+    "MIG-006",
+    "MIG-007"
+  ],
+  "canonicalBranch": "migration/mig-008-consumer-conformance-release",
+  "allowedPaths": [
+    "tests/**",
+    "scripts/**",
+    ".github/**",
+    "docs/**",
+    "migration/**",
+    "package.json",
+    "package-lock.json"
+  ],
+  "requirements": [
+    "MIG-008-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: Supported JS/types/CLI/assets and complete current workflow pass from a clean installed artifact without source checkout access.",
+    "AC-02: At least two independent project roots are isolated; a non-npm consumer uses only configured validators.",
+    "AC-03: Happy path, role/revision/CI rejection, failed review/rework, duplicate attempts, restart and uncertain merge outcomes preserve current guarantees.",
+    "AC-04: Source-delta reconciliation is complete and the artifact maps to a reviewed destination SHA and checksum.",
+    "AC-05: The release candidate is downloadable/installable through the agreed channel; fresh maintainer install/configure/diagnose/rollback instructions are exercised.",
+    "AC-06: Fixtures, live feature evidence and untested limitations are clearly distinguished in the acceptance report."
+  ],
+  "validationPlan": [
+    "Run destination build/full tests/schema validations/adversarial checks and the complete installed-artifact conformance suite on the declared platform matrix. Inspect the package payload and acceptance-to-evidence mapping; independent QA, Architecture and UAT review the same candidate revision.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.orchestration-engine",
+    "control-plane.controlled-merge",
+    "control-plane.uat-review"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}

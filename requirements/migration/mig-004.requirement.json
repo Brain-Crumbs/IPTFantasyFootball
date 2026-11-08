@@ -1,0 +1,19 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "MIG-004-R1",
+  "taskId": "MIG-004",
+  "statement": "Run the same installed library against different projects without reading the library source checkout, leaking state or restoring hidden defaults.",
+  "acceptanceCriteria": [
+    "AC-01: One configured project context reaches every gate/store/adapter; a sentinel configuration test detects any nested factory reverting to repository defaults.",
+    "AC-02: The runtime works without copied core schemas in the consumer and from an unrelated current working directory.",
+    "AC-03: Two projects with identical task IDs and distinct roots cannot share locks, state, evidence or exchange by accident; invalid/escaping roots reject before writes.",
+    "AC-04: A non-npm consumer executes only its declared validators; Windows paths with spaces and command arguments work without shell interpolation.",
+    "AC-05: Current role context, exact-revision artifacts, history durability and fail-closed behavior are preserved.",
+    "AC-06: Initialization is repeatable/non-destructive and doctor reports missing tools, assets, config or incompatible storage clearly."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/Vibez/issues/4",
+    "sha256:0a30b17003aa5c17e34e89464113e8880e7f4a729628e94e13f28b97f4be7726"
+  ]
+}

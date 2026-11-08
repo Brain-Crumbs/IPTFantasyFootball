@@ -36,7 +36,7 @@ Implemented foundation through the task-start boundary:
 - BOOT-031 — Workflow diagnostics and explainability
 - BOOT-032 — Recovery and administrative repair procedures
 - BOOT-033 — canary implementation retained; remaining live completion prerequisite retired by owner decision on 2026-11-07 (see [decision record](docs/CANARY_RETIREMENT.md)).
-- **Current cutover task: BOOT-035 / issue #37 (open; other acceptance criteria remain)**
+- **Cutover owner: BOOT-035 / issue #37 (closed on GitHub; full cutover is not established by main or #1).** See the [MIG-001 authority audit and actionable prerequisite](migration/README.md#authority-at-the-inspected-base). Until #37/#1 reconcile the remaining criteria and declare cutover, explicit issue assignment still governs authorization; native gates govern their operational state.
 - Canonical BOOT-033 branch: `bootstrap/boot-033-canary-e2e`
 - Bootstrap marker: see [BOOTSTRAP_VERSION](BOOTSTRAP_VERSION)
 
@@ -97,7 +97,7 @@ BOOT-033 adds one native smoke workload, `CANARY-001`, whose real change is the 
 Until Bootstrap v1 cutover is **explicitly declared** in issue #1:
 
 1. GitHub issue #1 is the authoritative bootstrap architecture/master tracker.
-2. Dedicated child BOOT issues are authoritative for task-specific implementation scope and acceptance criteria.
+2. Explicitly assigned child BOOT/MIG/AUT issues are authoritative for task-specific implementation scope and acceptance criteria. Migration definitions remain staged until the [audited admission procedure](migration/README.md) is satisfied; issue closure never supplies native DONE.
 3. Pull requests and repository state provide implementation/review evidence.
 4. Repository-native lifecycle/lock facts are deterministic operational facts for the commands that own them, but their existence alone does not supersede the manual GitHub tracker for bootstrap authorization.
 5. Agent memory, conversation history, or self-reported status are never authoritative.

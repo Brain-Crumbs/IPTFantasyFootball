@@ -1,0 +1,59 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "MIG-004",
+  "title": "[MIG-004] Make configuration, runtime assets and service composition project-independent",
+  "objective": "Run the same installed library against different projects without reading the library source checkout, leaking state or restoring hidden defaults.",
+  "inScope": [
+    "Implement MIG-002's validated project configuration and a common composition factory/service graph. Pass the same task registry, lifecycle/assignment/evidence/run stores, context sources, validator resolver and provider/policy adapters into start, validation, all reviews/rework, PR/readiness/merge, CLI, status, diagnostics and recovery.",
+    "Fix registry/evidence/manual-adapter schema resolution to use package-owned immutable assets. Keep supported project schema extension/override semantics explicit; do not silently trust arbitrary project files as core schemas. Project requirements/contracts/tasks still resolve at their required exact source revision.",
+    "Replace npm-only assumptions with configured validator commands/executors and literal arguments, scoped working directories and explicit toolchain preflight. Preserve a documented npm profile without imposing it on non-Node consumers.",
+    "Validate canonical roots and project/worktree identity, containment/symlink behavior, worktree locks, shared-state rules and unsupported filesystem durability. No hidden process.cwd fallback when an explicit project is selected; never write into node_modules or change the current project accidentally.",
+    "Provide non-destructive config/init/doctor primitives for #78's guided setup: preview intended files, refuse overwrites, validate missing inputs and keep credentials host-injected. Installation itself must perform no project mutation.",
+    "**Expected surfaces:** Configuration schema/loader, shared composition factory, all createLocal* factories, schema asset resolver, validator and context sources, CLI adapter wiring, diagnostics/recovery."
+  ],
+  "outOfScope": [
+    "No new lifecycle/review authority, automatic agent launcher, source consumer cutover or second independent setup/driver implementation."
+  ],
+  "dependencies": [
+    "MIG-003"
+  ],
+  "canonicalBranch": "migration/mig-004-portable-project-composition",
+  "allowedPaths": [
+    "src/**",
+    "schemas/**",
+    "contracts/**",
+    "tests/**",
+    "docs/**"
+  ],
+  "requirements": [
+    "MIG-004-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: One configured project context reaches every gate/store/adapter; a sentinel configuration test detects any nested factory reverting to repository defaults.",
+    "AC-02: The runtime works without copied core schemas in the consumer and from an unrelated current working directory.",
+    "AC-03: Two projects with identical task IDs and distinct roots cannot share locks, state, evidence or exchange by accident; invalid/escaping roots reject before writes.",
+    "AC-04: A non-npm consumer executes only its declared validators; Windows paths with spaces and command arguments work without shell interpolation.",
+    "AC-05: Current role context, exact-revision artifacts, history durability and fail-closed behavior are preserved.",
+    "AC-06: Initialization is repeatable/non-destructive and doctor reports missing tools, assets, config or incompatible storage clearly."
+  ],
+  "validationPlan": [
+    "Installed-style fixture tests for renamed paths, alternate cwd, missing assets/config, read-only installation, symlink/path escape and overlapping IDs. Exercise nonempty requirements/contracts through UAT and all configured state readers/writers. Verify rejected operations cause no provider calls or state mutations.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.task-registry",
+    "control-plane.dev-start",
+    "control-plane.dev-validation",
+    "control-plane.evidence-store",
+    "control-plane.orchestration-engine",
+    "control-plane.recovery-tools"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}

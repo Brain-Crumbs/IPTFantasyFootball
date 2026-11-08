@@ -1,0 +1,19 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "MIG-002-R1",
+  "taskId": "MIG-002",
+  "statement": "Agree the smallest complete reusable library boundary and compatibility contract before moving implementation.",
+  "acceptanceCriteria": [
+    "AC-01: Every reusable and historical surface has an explicit ownership/destination decision, including reusable scripts/CI and consumer contract context.",
+    "AC-02: Documented API and configuration support the complete existing lifecycle and #75/#78 consumers without internal imports or duplicated configuration.",
+    "AC-03: Package assets, project content and mutable state have distinct resolution rules and project-scoped identities.",
+    "AC-04: API, CLI, schema, state and adapter compatibility policies are explicit; first extraction preserves ipt.* historical identities and meaning.",
+    "AC-05: Release-blocking identity/channel/license/support decisions have recorded owners and resolution criteria; public distribution cannot proceed while rights are unresolved.",
+    "AC-06: Source-delta capture, final synchronization checkpoint and end of duplicate code ownership are specified."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/Vibez/issues/2",
+    "sha256:027e8fb09b5c7778f86adc1e6ff46a89ccbe70f28e3faede43a7e91ebe68193b"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "AUT-004-R1",
+  "taskId": "AUT-004",
+  "statement": "Demonstrate the user's end state: an installed configurable tool completes authorized development work without routine human handoffs and explains every outcome.",
+  "acceptanceCriteria": [
+    "AC-01: A real authorized dependent-task chain completes through exact-head controlled merge/DONE with zero routine human handoffs after the initial grant.",
+    "AC-02: All required role judgments are independently sourced from fresh role contexts and validated against the final revision.",
+    "AC-03: Restart, rework and uncertain-outcome tests preserve audit history and avoid duplicate effects; failures do not become PASS.",
+    "AC-04: Policy-denied/expired/revoked or over-budget work stops with an actionable durable reason and no unauthorized effects.",
+    "AC-05: A fresh operator can install, configure, inspect audit evidence, pause/drain, resume and safely roll back using docs alone.",
+    "AC-06: Fantasy Football remains a pinned consumer with no embedded engine, and release evidence distinguishes M1 extraction from achieved M2 automation."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/Vibez/issues/12",
+    "sha256:d55d4b86072522898ebb191a7b7cc8c14e93cf50d03c7f43f8d0e8432a808efa"
+  ]
+}

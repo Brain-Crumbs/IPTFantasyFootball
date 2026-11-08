@@ -10,6 +10,8 @@ See [../docs/TASK_REGISTRY.md](../docs/TASK_REGISTRY.md) for the loader, version
 
 ## Current authority boundary
 
-The registry loader, dependency resolver, and deterministic next-task selector are operational. Authoritative lifecycle transitions, assignment/locks, and completion are not. BOOT-008 is read-only and treats omitted lifecycle entries as `PLANNED` until BOOT-009 supplies authoritative lifecycle integration.
+The registry, DAG, selector, lifecycle/assignment, validation/review and controlled-completion primitives are operational. Selection is read-only and treats omitted lifecycle entries as `PLANNED`; only the owning gates may mutate lifecycle state. Operational capability does not itself declare cutover.
 
 Until the bootstrap explicitly cuts over, GitHub issue #1 and child BOOT issues remain authoritative for actual task selection/status. Adding a task definition or receiving an `agent next` result does not by itself assign, start, complete, or transition a task.
+
+Explicitly assigned migration tasks follow [migration/README.md](../migration/README.md). Their schema-valid definitions live outside this active registry in `migration/tasks/`; external prerequisites require audited acceptance before admission. Never copy the staged directory into `tasks/definitions/` or invent DONE records to satisfy it.

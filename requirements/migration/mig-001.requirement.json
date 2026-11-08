@@ -1,0 +1,18 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "MIG-001-R1",
+  "taskId": "MIG-001",
+  "statement": "Make migration tasks executable under a documented, evidence-backed operating regime, including the one-time seed of an empty Vibez repository.",
+  "acceptanceCriteria": [
+    "AC-01: Current operating authority and the #37/docs mismatch are resolved or precisely recorded with an actionable prerequisite; issue closure alone is not treated as cutover evidence.",
+    "AC-02: Every planned migration task has a manifest/admission owner and exact repository/branch mapping; invalid, cyclic, missing or unresolved external prerequisites cannot become eligible.",
+    "AC-03: The empty-repository seed protocol, external engine version and one-time exception boundary are reviewable before seed implementation; normal independent review/CI remain required.",
+    "AC-04: A real migration implementation can be assigned and delivered without inventing bootstrap task lifecycle records or treating an ordinary merge as controlled completion.",
+    "AC-05: Live CANARY-001 retirement and historical runtime records remain unchanged."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/80",
+    "sha256:d41335ec1a34ce1739159f5df979a9605c0abd48aede2184dadf3a5f00783ae2"
+  ]
+}

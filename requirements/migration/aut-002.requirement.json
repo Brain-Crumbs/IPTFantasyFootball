@@ -1,0 +1,19 @@
+{
+  "schemaId": "ipt.requirement",
+  "schemaVersion": "1.0.0",
+  "requirementId": "AUT-002-R1",
+  "taskId": "AUT-002",
+  "statement": "Replace manual chat copy/paste with real automated agent execution while keeping the core provider-neutral.",
+  "acceptanceCriteria": [
+    "AC-01: At least one real provider runs all configured required roles without copying packets/results or manually switching chats.",
+    "AC-02: Every role has fresh scoped context and enforced tool permissions; Developer cannot self-approve via labels or shared session state.",
+    "AC-03: Returned results validate through the unchanged owning gates; malformed/wrong-binding output cannot advance lifecycle.",
+    "AC-04: Restart/uncertain dispatch reconciles the original session or blocks safely, without duplicate active writers.",
+    "AC-05: Cancellation/timeout and budget enforcement are honest about external work still running.",
+    "AC-06: Manual-provider compatibility and a documented neutral conformance contract remain intact."
+  ],
+  "sourceRefs": [
+    "https://github.com/Brain-Crumbs/Vibez/issues/10",
+    "sha256:b8f40eece89cc3d21599cdd3b70929aebd901ca77e250db15e07eb32d5e6a823"
+  ]
+}

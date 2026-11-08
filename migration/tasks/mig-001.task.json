@@ -1,0 +1,63 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "MIG-001",
+  "title": "[MIG-001] Reconcile workflow authority and register the Vibez migration",
+  "objective": "Make migration tasks executable under a documented, evidence-backed operating regime, including the one-time seed of an empty Vibez repository.",
+  "inScope": [
+    "Read current #1/#37/#74/#75/#78, AGENTS.md, CONSTITUTION.md and BOOTSTRAP.md. At the planning baseline, #37 is closed while main still documents manual bootstrap authority and #1 has unchecked completion criteria. Establish what authority actually applies; coordinate any unfinished cutover acceptance with existing #37 rather than implementing a second bootstrap.",
+    "Define how a pinned known-good source engine controls the migration until the installed Vibez artifact can control its own development. Document a narrowly scoped first-commit/seed procedure for empty Vibez, its independent review/CI evidence and subsequent switch to normal task execution; do not pretend the empty repository already runs its own engine.",
+    "Prepare schema-valid task/requirement manifests from the linked migration issues, with canonical branch, scope, validators and roles. Stage future tasks without making unresolved cross-repository dependencies eligible. Record external acceptance references and hashes in the supported mechanism; if the registry cannot represent a cross-repo prerequisite, document an explicit audited admission gate rather than inventing DONE records.",
+    "Coordinate #78 ownership and the source-delta ledger with MIG-002/003. Preserve the stopped historical canary.",
+    "**Expected surfaces:** Root governance/operator docs, migration execution/registration records, tasks/definitions and requirements; issue #1/#37 reconciliation only where justified by evidence."
+  ],
+  "outOfScope": [
+    "No library extraction, package release, canary rerun, arbitrary workflow execution, or fabricated review/completion records."
+  ],
+  "dependencies": [],
+  "canonicalBranch": "migration/mig-001-authority-and-task-registration",
+  "allowedPaths": [
+    "AGENTS.md",
+    "BOOTSTRAP.md",
+    "README.md",
+    "docs/**",
+    "migration/**",
+    "requirements/migration/**",
+    "tasks/README.md",
+    "tasks/definitions/README.md",
+    "scripts/validate-migration.mjs",
+    "tests/migration-registration.test.mjs",
+    "schemas/validate_repository_contracts.py",
+    "package.json"
+  ],
+  "requirements": [
+    "MIG-001-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: Current operating authority and the #37/docs mismatch are resolved or precisely recorded with an actionable prerequisite; issue closure alone is not treated as cutover evidence.",
+    "AC-02: Every planned migration task has a manifest/admission owner and exact repository/branch mapping; invalid, cyclic, missing or unresolved external prerequisites cannot become eligible.",
+    "AC-03: The empty-repository seed protocol, external engine version and one-time exception boundary are reviewable before seed implementation; normal independent review/CI remain required.",
+    "AC-04: A real migration implementation can be assigned and delivered without inventing bootstrap task lifecycle records or treating an ordinary merge as controlled completion.",
+    "AC-05: Live CANARY-001 retirement and historical runtime records remain unchanged."
+  ],
+  "validationPlan": [
+    "Validate all authored manifests and references using current schema/contract tooling; audit the dependency graph against issue links. Walk a fresh agent through the start and seed procedure and exercise invalid/unresolved admission cases. Reconcile governance against current main and actual evidence, not the earlier audit summary.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.task-registry",
+    "control-plane.dependency-dag",
+    "control-plane.next-task",
+    "control-plane.dev-start",
+    "control-plane.dev-validation",
+    "control-plane.review-framework",
+    "control-plane.controlled-merge"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}

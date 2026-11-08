@@ -1,0 +1,63 @@
+{
+  "schemaId": "ipt.task",
+  "schemaVersion": "1.0.0",
+  "taskId": "MIG-010",
+  "title": "[MIG-010] Remove the embedded workflow only after verified Vibez adoption",
+  "objective": "End duplicate workflow maintenance in Fantasy Football without losing project data, audit history or the ability to use Vibez.",
+  "inScope": [
+    "Use the reviewed MIG-002/009 ownership/removal manifest to delete only migrated reusable implementation, redundant core schemas/contracts, engine-only tests/scripts and replaced CI/build wiring. Because this baseline is mostly control-plane code, do not assume every path under src/tests/docs is disposable: classify any later consumer/product additions before removal.",
+    "Retain consumer task/requirement/project-contract definitions, configuration, pinned dependency, integration smoke tests, project docs and historical evidence/archive pointers. Library-owned semantic contracts must remain available through the supported installed package. Never remove ignored .agent state, exchanges, stopped canary records or Git history by recursive cleanup.",
+    "Update AGENTS/README/bootstrap references to explain the consumer workflow, Vibez maintenance location and historical archive. Keep old issues/PRs accessible; do not close unrelated #75/#78 or bootstrap work merely because files moved.",
+    "Block merges that reintroduce copied engine source/schemas or deep imports; retain a lightweight installed-consumer CI contract. Verify the final source-delta ledger and ongoing reusable ownership in Vibez.",
+    "Record completion evidence against #74 and the roadmap only after the removal PR satisfies required review/CI/controlled completion. A rollback reverts the cleanup commit or restores the pinned consumer version under the supported quiescent procedure, not history rewriting.",
+    "**Expected surfaces:** Only inventoried migrated paths, consumer scripts/build/CI, AGENTS/README/archive navigation, lightweight consumer integration test and source-reference guard."
+  ],
+  "outOfScope": [
+    "No deletion of project requirements/configuration, runtime/evidence data, Git history or unrelated code; no disabling required validation/review to make cleanup pass."
+  ],
+  "dependencies": [
+    "MIG-009"
+  ],
+  "canonicalBranch": "migration/mig-010-remove-embedded-workflow",
+  "allowedPaths": [
+    "src/**",
+    "schemas/**",
+    "contracts/**",
+    "tests/**",
+    "scripts/**",
+    ".github/**",
+    "docs/**",
+    "migration/**",
+    "AGENTS.md",
+    "README.md",
+    "BOOTSTRAP.md",
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json"
+  ],
+  "requirements": [
+    "MIG-010-R1"
+  ],
+  "acceptanceCriteria": [
+    "AC-01: MIG-009 parity, observation criteria, independent reviews and rollback evidence are accepted before removal starts.",
+    "AC-02: The final removal manifest accounts for every deleted path and retains all project-owned and historical material.",
+    "AC-03: No authoritative duplicate workflow implementation remains; consumer imports/commands resolve only through the pinned supported Vibez surface.",
+    "AC-04: Fresh clone/install and full supported consumer journey work without the deleted source; required CI remains enabled.",
+    "AC-05: Runtime/evidence/history records are unchanged by cleanup, and old archive/source links remain usable.",
+    "AC-06: Ownership/docs and a regression guard prevent future embedded forks; #74 has an evidence-backed completion map."
+  ],
+  "validationPlan": [
+    "Review the deletion diff path-by-path against the ownership manifest. Run fresh-install consumer CI/conformance smoke, reference/deep-import scans and history checksum comparison. Demonstrate rollback from the cleanup commit without modifying runtime data.\n\nUse applicable repository build/test/schema/contract checks. Retain exact commands/results, package/source/config identities and an acceptance-to-evidence map. Existing or fake-provider fixtures are not independent live review or task-completion evidence. This task is normal feature work, not a new canary requirement.",
+    "npm run build; npm test; python schemas/validate_fixtures.py; python schemas/validate_repository_contracts.py; npm run test:adversarial:mutations. Add issue-specific checks before admission."
+  ],
+  "affectedContracts": [
+    "control-plane.orchestration-engine"
+  ],
+  "requiredReviewRoles": [
+    "Developer",
+    "QA",
+    "Architect",
+    "UAT/Product",
+    "MergeController"
+  ]
+}
