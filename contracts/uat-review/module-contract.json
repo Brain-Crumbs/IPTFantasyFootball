@@ -121,6 +121,46 @@
   ],
   "knownConsumers": [
     {
+      "consumerId": "control-plane.orchestration-engine",
+      "expectations": [
+        "prepareContext supplies the task, role, and revision binding for the provider request",
+        "review binds the provider judgment to the verified context and persists evidence before advancing lifecycle"
+      ],
+      "requiredCapabilities": [
+        "read-only-context-preparation-before-judgment",
+        "supplied-context-identity-verification",
+        "review-framework-bound-uat-judgment-persistence",
+        "uat-failure-routing-without-skipping-stages"
+      ],
+      "acceptedRanges": [
+        "UatReviewContextResult for the current UAT_REVIEW task and revision",
+        "UatReviewResult with PASS and MERGE_READY, or FAIL or BLOCKED and UAT_FAILED"
+      ],
+      "requiredReachableRanges": [
+        "a persisted exact-revision PASS advancing to MERGE_READY",
+        "a persisted FAIL or BLOCKED advancing to UAT_FAILED for rework"
+      ]
+    },
+    {
+      "consumerId": "boot-033-canary-driver",
+      "expectations": [
+        "the UAT/Product context prepared by the gate can round-trip through the manual role packet and bind the returned judgment",
+        "a current exact-revision Developer PASS is reused for a task with affected contracts"
+      ],
+      "requiredCapabilities": [
+        "exact-revision-uat-context-compilation-with-minimized-implementation-detail",
+        "supplied-context-identity-verification",
+        "unconditional-merge-ready-advancement-on-pass"
+      ],
+      "acceptedRanges": [
+        "role-scoped UAT/Product context and exact-revision review results with evidence references",
+        "PASS and MERGE_READY, or FAIL or BLOCKED and UAT_FAILED"
+      ],
+      "requiredReachableRanges": [
+        "a contract-bearing task reaches MERGE_READY with one Developer handoff and a UAT PASS bound to the prepared packet context"
+      ]
+    },
+    {
       "consumerId": "future-review-rework-invalidation-loop",
       "expectations": [
         "BOOT-021 can read the UAT review-result lineage this gate writes (through the unmodified evidence store) to decide which UAT approvals remain valid after a revision changes"

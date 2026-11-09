@@ -17,7 +17,7 @@ Identical shape to BOOT-018/BOOT-019, applied to the UAT/Product role:
 - `UatReviewGate.prepareContext(request: UatReviewContextRequest): UatReviewContextResult` — the read-only step a reviewer (human or agent) calls to fetch the exact UAT/Product-role `ContextPackage` for a task before deciding anything. Performs every entry gate (lifecycle state, branch/revision, developer-validation and QA/Architecture-passed evidence verification, context compilation) but bridges no Developer handoff and submits no judgment.
 - `UatReviewGate.review(request: UatReviewRequest): UatReviewResult` — the write step. `request.context` must be the exact `ContextPackage` a prior `prepareContext()` call returned; the reviewer's judgment is decided from that package, and `review()` binds exactly that package (not a freshly recompiled one) to the persisted `ipt.review-result` record.
 
-This split matters for the same audit-integrity reason BOOT-018/BOOT-019 established: BOOT-017's persisted `contextPackageId` is only meaningful proof of "what the reviewer saw before judging" if the reviewer's judgment call actually supplies a package obtained from `prepareContext()`. Because `review()` re-runs the same entry gates against the *current* state before committing, a `context` prepared for a revision that has since moved on is rejected by `ReviewFramework.submit()`'s own `CONTEXT_PACKAGE_MISMATCH` check.
+The persisted `contextPackageId` identifies the package the reviewer used to make the judgment. Before submission, the gate verifies that review entry still belongs to the current revision and checks the supplied context against a freshly compiled package. Stale entry evidence produces `TASK_STATE_NOT_REVIEWABLE`. A context identity mismatch produces `CONTEXT_REJECTED`.
 
 ## Structural contract
 
@@ -103,7 +103,10 @@ UAT review only starts from `UAT_REVIEW`, and every lifecycle transition it make
 
 - BOOT-021 reads the same UAT review-result lineage to evaluate stale approvals after a revision change.
 - BOOT-024/BOOT-025 consume the same exact-revision `MERGE_READY` transition and apply their own readiness and merge checks.
-- BOOT-027 and the canary driver use the same prepare/submit API and UAT/Product context identity, including for pending manual role packets produced by the default source. BOOT-036 adds no stored-data migration.
+- BOOT-027 uses the prepared task and revision to bind a role request. It relies on `MERGE_READY` after a persisted UAT PASS and on `UAT_FAILED` after FAIL or BLOCKED to route rework.
+- The BOOT-033 canary driver (`scripts/canary.mjs`) passes the gate's prepared UAT context through the manual transport. A contract-bearing workload can submit that same context with an existing exact-revision Developer PASS and advance to `MERGE_READY`.
+
+Default-source UAT packages keep the same identity for an unchanged task, revision, and evidence. For pending judgments, retain the source that prepared the packet. Switching from an injected shared catalog can change the context identity through its manifest, including excluded entries. Follow the [recovery guidance](../../docs/RECOVERY.md) if the gate rejects a changed context. Stored records keep their existing formats.
 
 ## Out-of-scope follow-up
 
