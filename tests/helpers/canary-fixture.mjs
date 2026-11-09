@@ -37,13 +37,20 @@ export function authoritativeFiles(root) {
 }
 
 /** Creates an isolated real Git repository. No live credentials or network calls. */
-export function createCanaryFixture({ parentDirectory, reviewFailure, dirtyDeveloper = false, failingValidation = false } = {}) {
+export function createCanaryFixture({ parentDirectory, reviewFailure, dirtyDeveloper = false, failingValidation = false,
+  withAffectedContracts = false } = {}) {
   const root = mkdtempSync(join(parentDirectory ?? tmpdir(), 'ipt-canary-'));
   cpSync(join(sourceRoot, 'schemas'), join(root, 'schemas'), { recursive: true });
   const definition = JSON.parse(readFileSync(join(sourceRoot, 'tasks/definitions/canary-001.task.json'), 'utf8'));
-  // The isolated workload changes only the marker. Live compatibility changes
-  // retain their affected contracts in the real registry and live role packets.
-  definition.affectedContracts = [];
+  if (withAffectedContracts) {
+    for (const moduleId of definition.affectedContracts) {
+      const path = `contracts/${moduleId.slice('control-plane.'.length)}/module-contract.json`;
+      cpSync(join(sourceRoot, path), join(root, path));
+    }
+  } else {
+    // Most isolated cases exercise only the marker workload.
+    definition.affectedContracts = [];
+  }
   // This is a task definition, never a lifecycle/evidence record. Seed it in
   // the clean base just as a repository would register an upcoming task.
   put(root, 'tasks/definitions/canary-001.task.json', JSON.stringify(definition, null, 2));
