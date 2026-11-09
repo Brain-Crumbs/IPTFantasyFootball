@@ -2,7 +2,7 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.uat-review",
-  "moduleVersion": "1.0.0",
+  "moduleVersion": "1.1.0",
   "structuralContract": {
     "interfaces": [
       "UatReviewGate.prepareContext(request): UatReviewContextResult",
@@ -13,7 +13,7 @@
       "UatReviewStateStore.get/save lifecycle persistence boundary",
       "UatReviewTaskLock.withLock(taskId, fn) mutual-exclusion boundary",
       "UatReviewBranchAdapter.assertCurrentTaskBranch/currentRevision boundary",
-      "UatReviewContextSource.artifactsFor(task, registry, revision) boundary",
+      "UatReviewContextSource.artifactsFor(task, registry, revision, role?: UAT/Product | Developer) accepts existing shared-catalog sources",
       "UatReviewFrameworkPort.submit(request) boundary onto control-plane.review-framework",
       "UatReviewEvidencePort.getCurrent(lineageId) boundary onto control-plane.evidence-store",
       "UatReviewResult { taskId, outcome, lifecycleState, revision, reviewId, blockingFindings, context, evidenceLocation, evidenceLineageId, evidenceSequence }",
@@ -52,11 +52,11 @@
       "the task's lifecycle history must record a UAT_REVIEW transition bound to the exact current revision, or prepareContext()/review() is rejected as TASK_STATE_NOT_REVIEWABLE before context is compiled",
       "the task's lifecycle history must also record a DEV_VALIDATED transition bound to the exact current revision, and every lineageId@sequence entry that event's evidenceRef names is resolved through the evidence store and confirmed CURRENT at that exact sequence and revision-matched before it is trusted as context or as the basis for a bridged Developer handoff",
       "when the task's requiredReviewRoles includes QA, a current QA review-result record with outcome PASS bound to the exact revision must exist in the evidence store or the gate rejects as TASK_STATE_NOT_REVIEWABLE; independently, when requiredReviewRoles includes Architect, the same check applies to the Architect review-result record; both are verified by reading the evidence record itself, never inferred from lifecycle state alone; when a role is not required, no record for it is required",
-      "UAT/Product and Developer context packages are compiled through the unmodified control-plane.context-compiler from the same artifact catalog, including a derived Developer evidence artifact and, when required, derived QA and/or Architecture evidence artifacts -- neither prior outcome is included as an implicit UAT PASS",
+      "UAT/Product and Developer context packages use the same control-plane.context-compiler with role-specific artifact requests and derived evidence. Prior QA and Architecture outcomes are context for UAT/Product and confer no UAT authority",
       "the control-plane.context-compiler's own UAT/Product-role behavior (unmodified by this module) admits only local scenario artifacts and local QA/Architect evidence artifacts, requires no requirement/contract/diff artifact, and reduces the compiled task view to {taskId, title, objective, acceptanceCriteria}",
       "review() recompiles the UAT/Product-role context package from the current artifact catalog and rejects, as CONTEXT_REJECTED, a caller-supplied context whose content identity (computeContextPackageId) does not match it exactly; only once verified is that exact caller-supplied ContextPackage object bound to the submission, so the persisted contextPackageId is proof both that the reviewer's package matches the current catalog and of what the reviewer actually saw before deciding",
       "review() holds an exclusive per-task lock (UatReviewTaskLock) across its entire re-verification, developer-handoff-bridge, UAT-evidence-submission, and lifecycle-transition sequence; a concurrent review() for the same task is rejected as STATE_CONFLICT rather than interleaving reads and writes with the lock holder",
-      "a Developer role review-result record is bridged from the DEV_VALIDATED evidence when no current record exists for the exact revision, or the current exact-revision record is already PASS (no-op); a current exact-revision record that is FAIL or BLOCKED is never overwritten and is rejected as DEVELOPER_HANDOFF_REJECTED instead",
+      "a current exact-revision Developer PASS is reused without compiling Developer context or appending a record. A current exact-revision FAIL or BLOCKED is rejected as DEVELOPER_HANDOFF_REJECTED. The gate compiles Developer context and bridges verified DEV_VALIDATED evidence only for a missing or stale handoff",
       "the caller-supplied UAT outcome/findings/details are submitted unmodified through the unmodified control-plane.review-framework, which enforces blocking-finding/PASS contradiction, non-PASS detail, self-approval, and context-package-identity rules",
       "an outcome PASS submission whose details.intendedOutcomesScenarios or details.observedBehavior is an empty array is rejected as INVALID_REQUEST before any dependency is touched, because the shared ipt.review-result schema requires only that these be arrays of non-empty strings, not that the arrays themselves be non-empty",
       "a QA PASS and/or an Architecture PASS never force or imply a UAT PASS: the gate performs no automated outcome judgment of its own and only binds the caller-supplied outcome",
@@ -66,7 +66,7 @@
       "a task that already advanced past UAT_REVIEW rejects a further review() call as TASK_STATE_NOT_REVIEWABLE rather than silently reusing a stale revision",
       "a task-lock file older than five minutes is treated as abandoned and reclaimed via an atomic rename-based compare-and-take, so at most one of several callers that concurrently observe the same stale lock ever wins the reclaim; release only removes the lock file when it still holds this holder's own per-acquisition token, so a holder that merely ran past the staleness threshold (without crashing) can never delete a different holder's freshly reclaimed lock. This exact lock path is also managed by four sibling task-lock classes in other bootstrap modules (control-plane.qa-review, control-plane.architecture-review, control-plane.review-rework, control-plane.controlled-merge) at different lifecycle phases for the same task, so both release() and reclaimIfStale() additionally take a shared, fixed-path reservation marker before claiming the lock path itself, keeping ordinary lock creation blocked for the whole window the path is claimed away — without it, a sibling class's own reclaim could otherwise land in that window and run its critical section concurrently with this one's. Restoring a mismatched or abandoned claim uses an exclusive-create write, never a plain rename (which POSIX allows to silently overwrite an existing destination), so a fresh concurrent lock is never clobbered; a reservation itself abandoned by a crashed release()/reclaimIfStale() is recovered the same way an abandoned lock file is",
       "a lock-file-creation failure other than ordinary contention (EEXIST) -- a permission error, a read-only state directory, exhausted disk -- is surfaced as STATE_IO_FAILED rather than misreported as a concurrent reviewer holding the task",
-      "RepositoryUatContextSource performs no Git revision resolution because the UAT/Product role requires no requirement/contract/diff artifact; it discovers no scenario artifacts today because no repository convention for them exists yet"
+      "RepositoryUatContextSource returns an empty catalog for UAT/Product or an omitted role. For Developer it uses the Developer-start resolver to read task requirements, affected contracts, and direct dependency contracts from the exact reviewed Git revision"
     ],
     "invariants": [
       "the gate decides no UAT/Product judgment itself; outcome/findings/details are the reviewer's, not derived here",
@@ -93,6 +93,7 @@
       "a task whose requiredReviewRoles includes QA but has no current QA PASS evidence for the exact revision is rejected as TASK_STATE_NOT_REVIEWABLE before context is compiled; the same applies independently to Architect",
       "an evidence-store read failure while resolving a required QA or Architecture review-result (malformed record, unreadable storage) is converted to TASK_STATE_NOT_REVIEWABLE rather than propagating a raw exception, mirroring the same normalization already applied to developer-validation evidence reads",
       "a caller-supplied context whose content identity does not match a freshly recompiled UAT/Product package for the exact task/role/revision artifact catalog is rejected as CONTEXT_REJECTED and persists no UAT evidence",
+      "a missing required artifact for a Developer bridge produces CONTEXT_REJECTED before either Developer or UAT evidence is written or lifecycle advances",
       "a DEV_VALIDATED history event referencing validation evidence that was deleted, never persisted, or since superseded by a later run is rejected as TASK_STATE_NOT_REVIEWABLE",
       "two concurrent review() calls for the same task never both proceed past the task lock; the loser is rejected as STATE_CONFLICT without touching evidence or lifecycle state",
       "a lock file left behind by a crashed review() call is reclaimed once it is older than the abandonment threshold",
@@ -119,6 +120,46 @@
     "control-plane.architecture-review"
   ],
   "knownConsumers": [
+    {
+      "consumerId": "control-plane.orchestration-engine",
+      "expectations": [
+        "prepareContext supplies the task, role, and revision binding for the provider request",
+        "review binds the provider judgment to the verified context and persists evidence before advancing lifecycle"
+      ],
+      "requiredCapabilities": [
+        "read-only-context-preparation-before-judgment",
+        "supplied-context-identity-verification",
+        "review-framework-bound-uat-judgment-persistence",
+        "uat-failure-routing-without-skipping-stages"
+      ],
+      "acceptedRanges": [
+        "UatReviewContextResult for the current UAT_REVIEW task and revision",
+        "UatReviewResult with PASS and MERGE_READY, or FAIL or BLOCKED and UAT_FAILED"
+      ],
+      "requiredReachableRanges": [
+        "a persisted exact-revision PASS advancing to MERGE_READY",
+        "a persisted FAIL or BLOCKED advancing to UAT_FAILED for rework"
+      ]
+    },
+    {
+      "consumerId": "boot-033-canary-driver",
+      "expectations": [
+        "the UAT/Product context prepared by the gate can round-trip through the manual role packet and bind the returned judgment",
+        "a current exact-revision Developer PASS is reused for a task with affected contracts"
+      ],
+      "requiredCapabilities": [
+        "exact-revision-uat-context-compilation-with-minimized-implementation-detail",
+        "supplied-context-identity-verification",
+        "unconditional-merge-ready-advancement-on-pass"
+      ],
+      "acceptedRanges": [
+        "role-scoped UAT/Product context and exact-revision review results with evidence references",
+        "PASS and MERGE_READY, or FAIL or BLOCKED and UAT_FAILED"
+      ],
+      "requiredReachableRanges": [
+        "a contract-bearing task reaches MERGE_READY with one Developer handoff and a UAT PASS bound to the prepared packet context"
+      ]
+    },
     {
       "consumerId": "future-review-rework-invalidation-loop",
       "expectations": [

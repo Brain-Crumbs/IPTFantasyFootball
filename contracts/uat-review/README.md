@@ -17,7 +17,7 @@ Identical shape to BOOT-018/BOOT-019, applied to the UAT/Product role:
 - `UatReviewGate.prepareContext(request: UatReviewContextRequest): UatReviewContextResult` — the read-only step a reviewer (human or agent) calls to fetch the exact UAT/Product-role `ContextPackage` for a task before deciding anything. Performs every entry gate (lifecycle state, branch/revision, developer-validation and QA/Architecture-passed evidence verification, context compilation) but bridges no Developer handoff and submits no judgment.
 - `UatReviewGate.review(request: UatReviewRequest): UatReviewResult` — the write step. `request.context` must be the exact `ContextPackage` a prior `prepareContext()` call returned; the reviewer's judgment is decided from that package, and `review()` binds exactly that package (not a freshly recompiled one) to the persisted `ipt.review-result` record.
 
-This split matters for the same audit-integrity reason BOOT-018/BOOT-019 established: BOOT-017's persisted `contextPackageId` is only meaningful proof of "what the reviewer saw before judging" if the reviewer's judgment call actually supplies a package obtained from `prepareContext()`. Because `review()` re-runs the same entry gates against the *current* state before committing, a `context` prepared for a revision that has since moved on is rejected by `ReviewFramework.submit()`'s own `CONTEXT_PACKAGE_MISMATCH` check.
+The persisted `contextPackageId` identifies the package the reviewer used to make the judgment. Before submission, the gate verifies that review entry still belongs to the current revision and checks the supplied context against a freshly compiled package. Stale entry evidence produces `TASK_STATE_NOT_REVIEWABLE`. A context identity mismatch produces `CONTEXT_REJECTED`.
 
 ## Structural contract
 
@@ -32,7 +32,8 @@ Primary API:
 - `UatReviewResult { taskId, outcome, lifecycleState, revision, reviewId, blockingFindings, context, evidenceLocation, evidenceLineageId, evidenceSequence }`
 - `new FileUatReviewStateStore(root)` — local lifecycle persistence adapter, interoperable with the same `.agent/state/lifecycle/<taskId>.lifecycle.json` file BOOT-013/BOOT-016/BOOT-018/BOOT-019 read and write
 - `new FileUatReviewTaskLock(root)` — exclusive per-task file lock guarding `review()`'s entire commit transaction, with ownership-safe abandoned-lock reclaim (mirroring BOOT-019's hardened lock, not BOOT-018's earlier simpler one)
-- `new RepositoryUatContextSource(repositoryRoot)` — resolves UAT/Product-role artifacts (today: none — see "Out-of-scope follow-up"); needs no Git revision resolution because UAT/Product requires no requirement/contract/diff artifact
+- `UatReviewContextSource.artifactsFor(task, registry, revision, role?)` — supports a role-specific catalog. Existing three-argument sources can keep supplying a shared catalog.
+- `new RepositoryUatContextSource(repositoryRoot)` — supplies exact-revision Developer artifacts when a handoff needs to be bridged. UAT/Product and calls with an omitted role use the empty repository scenario catalog.
 - `createLocalUatReviewGate(repositoryRoot)` — local composition root, mirroring BOOT-018's `createLocalQaReviewGate` and BOOT-019's `createLocalArchitectureReviewGate`
 
 No CLI command is added by BOOT-020; `agent review` remains reserved for a later BOOT task to expose the role-specific review workflows uniformly.
@@ -51,12 +52,10 @@ No CLI command is added by BOOT-020; `agent review` remains reserved for a later
 `review()`, holding an exclusive per-task lock (`UatReviewTaskLock`) across the whole of the following:
 
 1. re-run steps 1-4 above against the *current* state (defense against a stale caller who held onto a `UatReviewRequest` without calling `review()` promptly);
-2. compile the Developer-role context package from the same artifact catalog;
-3. ensure a current, `PASS`, exact-revision Developer handoff review-result record exists so BOOT-017's independent-review gate is satisfied, bridging one from the `DEV_VALIDATED` evidence when none exists yet (a no-op whenever an earlier BOOT-018/BOOT-019 gate already bridged it, which it always will have when QA or Architect was required);
-4. reject a caller-supplied UAT/Product context that does not match a freshly recompiled package for the exact task/role/revision artifact catalog (`assertSuppliedContextMatches`, mirroring BOOT-019's hardened check);
-5. submit the caller-supplied UAT/Product judgment through the unmodified BOOT-017 `ReviewFramework.submit()`, bound to the caller-supplied `context` (the exact package `prepareContext()` returned) and the exact current revision;
-6. transition `UAT_REVIEW -> MERGE_READY` on `PASS` (UAT/Product is always the last review stage the BOOT-009 state machine's own `REVIEW_ORDER` names, so this gate never needs to branch on `requiredReviewRoles` to pick a destination, unlike BOOT-018/BOOT-019) or `UAT_REVIEW -> UAT_FAILED` on `FAIL`/`BLOCKED`, through the unmodified BOOT-009 `transitionLifecycle`;
-7. persist the lifecycle transition.
+2. recompile the UAT/Product package and reject a supplied context whose identity differs for this task, role, revision, or artifact catalog.
+3. reuse the current exact-revision Developer `PASS`. Reject a current `FAIL` or `BLOCKED`. Compile Developer context and bridge a handoff from verified `DEV_VALIDATED` evidence only when the handoff is missing or stale.
+4. submit the UAT/Product judgment through BOOT-017's `ReviewFramework.submit()`, bound to the verified caller-supplied context and exact current revision.
+5. persist the BOOT-009 transition from `UAT_REVIEW` to `MERGE_READY` on `PASS`, or to `UAT_FAILED` on `FAIL` or `BLOCKED`.
 
 A branch, evidence-verification, context-compilation, developer-handoff, or review-submission failure is raised as a structured `UatReviewError` and leaves the task's lifecycle state unchanged.
 
@@ -67,10 +66,8 @@ Like BOOT-019's `ArchitectureReviewGate` (and unlike BOOT-018, which transitions
 Issue #1 section 9 authorizes UAT/Product to receive "original objective/user outcome, acceptance scenarios, relevant exposed behavior, enough system context to judge outcome" but explicitly "not internal implementation details unless required to exercise the behavior." BOOT-012's context compiler already implements this for the `UAT/Product` role, unmodified by BOOT-020:
 
 - the compiled `task` view is reduced to `{taskId, title, objective, acceptanceCriteria}` — no `inScope`/`outOfScope`/`allowedPaths`/`dependencies`/`affectedContracts`/`validationPlan`, unlike every other role's view;
-- no `requirement`, `contract`, or `diff` artifact is ever included for `UAT/Product` — `compileRoleContext`'s own `requireReferencedArtifacts` and `dependencyTasksForRole` both explicitly exclude this role from needing them, so `UatReviewContextSource` needs no Git diff/requirement/contract resolution at all (unlike `RepositoryQaContextSource`/`RepositoryArchitectureContextSource`, both of which shell out to Git);
+- the default UAT/Product catalog requires no Git artifact reads. The Developer bridge uses a separate role request for requirements and contracts, and the compiler keeps those artifacts out of the UAT/Product package.
 - only local `scenario`-kind artifacts and local QA/Architect-authored `evidence`-kind artifacts are admitted — every other artifact kind is excluded as `ROLE_POLICY`, including any Developer-narrative `evidence` (`DEVELOPER_NARRATIVE_NOT_AUTHORITY`, enforced by the compiler for every non-Developer role).
-
-BOOT-020 therefore does not need to invent a new context-compiler code path: `RepositoryUatContextSource` only needs to supply UAT-specific `scenario` artifacts (none exist in the repository today — see "Out-of-scope follow-up"), and the compiler's existing UAT/Product-role behavior does the rest.
 
 ## PASS requires exercised evidence, not merely a well-typed outcome
 
@@ -82,7 +79,9 @@ Per issue #1 section 4's acceptance criterion ("UAT PASS requires current QA and
 
 ## Bridging the Developer handoff
 
-Identical mechanism to BOOT-018/BOOT-019: BOOT-017 rejects any non-Developer review submission (`DEVELOPER_HANDOFF_MISSING`) until a `PASS`, exact-revision Developer role review-result record exists. When the task required QA or Architect, an earlier BOOT-018/BOOT-019 gate will already have bridged this handoff before UAT review can be reached, making this bridge a no-op. When a task reaches `UAT_REVIEW` directly from `DEV_VALIDATED` (neither QA nor Architect required for that task), no earlier gate has bridged the handoff yet, so `UatReviewGate` bridges it itself from the same `DEV_VALIDATED` lifecycle evidence BOOT-018/BOOT-019 use. A current, exact-revision Developer handoff that is instead `FAIL` or `BLOCKED` is never overwritten by a synthetic bridge — `ensureDeveloperHandoff` rejects with `DEVELOPER_HANDOFF_REJECTED` instead.
+BOOT-017 requires a Developer `PASS` for the reviewed revision before it accepts an independent judgment. UAT reuses a current `PASS` without compiling a Developer package or writing another handoff. A current Developer `FAIL` or `BLOCKED` for that revision produces `DEVELOPER_HANDOFF_REJECTED`.
+
+When a handoff is missing or stale, including when the task reaches UAT directly from `DEV_VALIDATED`, the gate compiles Developer context and bridges the verified validation evidence. The repository source uses the Developer-start resolver to read requirements, affected contracts, and direct dependency contracts from the reviewed Git revision. A missing required artifact produces `CONTEXT_REJECTED` before either handoff or UAT evidence is written. The bridge appends its record to the existing lineage and preserves older revision records.
 
 ## Supplied-context verification
 
@@ -102,9 +101,12 @@ UAT review only starts from `UAT_REVIEW`, and every lifecycle transition it make
 
 ## Known consumers
 
-- BOOT-021 (review rework and approval invalidation loop) will use the UAT review-result lineage this gate writes to decide which UAT approvals remain valid after a revision changes.
-- BOOT-024/BOOT-025 (merge policy and controlled merge) will treat a task's arrival at `MERGE_READY` through this gate's `PASS` path as one of the facts merge readiness is computed from, once those tasks exist.
-- A later CLI/orchestration task may expose `UatReviewGate.prepareContext()`/`review()` through `agent review` once the role-specific review commands are unified.
+- BOOT-021 reads the same UAT review-result lineage to evaluate stale approvals after a revision change.
+- BOOT-024/BOOT-025 consume the same exact-revision `MERGE_READY` transition and apply their own readiness and merge checks.
+- BOOT-027 uses the prepared task and revision to bind a role request. It relies on `MERGE_READY` after a persisted UAT PASS and on `UAT_FAILED` after FAIL or BLOCKED to route rework.
+- The BOOT-033 canary driver (`scripts/canary.mjs`) passes the gate's prepared UAT context through the manual transport. A contract-bearing workload can submit that same context with an existing exact-revision Developer PASS and advance to `MERGE_READY`.
+
+Default-source UAT packages keep the same identity for an unchanged task, revision, and evidence. For pending judgments, retain the source that prepared the packet. Switching from an injected shared catalog can change the context identity through its manifest, including excluded entries. Follow the [recovery guidance](../../docs/RECOVERY.md) if the gate rejects a changed context. Stored records keep their existing formats.
 
 ## Out-of-scope follow-up
 
@@ -112,5 +114,5 @@ BOOT-020 deliberately does not decide the UAT/Product judgment itself, does not 
 
 Two limitations are inherited unchanged from already-merged BOOT-013/BOOT-018/BOOT-019 precedent rather than introduced here, and are left for a dedicated follow-up rather than fixed unilaterally in this module alone (which would make UAT review's composition inconsistent with the Developer/QA/Architecture ones it deliberately mirrors):
 
-- `RepositoryUatContextSource` discovers no `scenario` artifacts today — no repository convention for where such files live exists yet, so `artifactsFor()` always returns an empty list. A future task defining such a convention (for example, a `scenarios/<taskId>.json` file describing realistic usage scenarios a UAT reviewer should exercise) can supply them here without any `UatReviewGate` change, since the context compiler's UAT/Product-role policy already admits local `scenario`-kind artifacts unconditionally.
+- `RepositoryUatContextSource` returns an empty catalog for UAT/Product because the repository has no convention for scenario files. Injected sources can supply local scenario artifacts under the existing context policy.
 - `createLocalUatReviewGate` loads the task registry from the working tree rather than pinning it to the exact Git revision, matching `createLocalDeveloperStartWorkflow` (BOOT-013), `createLocalQaReviewGate` (BOOT-018), and `createLocalArchitectureReviewGate` (BOOT-019). An uncommitted edit to a task definition (for example, to `requiredReviewRoles`) between `prepareContext()` and `review()` is therefore reflected in both calls identically, so `assertSuppliedContextMatches` cannot detect it — it proves the submitted context matches what the current working tree would produce, not that the working tree matches the exact reviewed revision. Pinning task-registry resolution to the resolved Git revision is a repository-wide change affecting every BOOT-013/016/018/019/020 composition root alike, not a UAT-specific fix.

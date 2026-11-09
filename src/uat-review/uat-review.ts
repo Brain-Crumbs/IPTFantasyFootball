@@ -16,7 +16,7 @@ import {
   type ContextArtifact,
   type ContextPackage,
 } from "../context-compiler/index.js";
-import { LOCAL_AGENT_STATE_RELATIVE_PATH } from "../dev-start/index.js";
+import { LOCAL_AGENT_STATE_RELATIVE_PATH, RepositoryDeveloperContextSource } from "../dev-start/index.js";
 import {
   EVIDENCE_STORE_SUPPORTED_SCHEMAS,
   FileEvidenceStore,
@@ -178,7 +178,13 @@ export interface UatReviewTaskLock {
 }
 
 export interface UatReviewContextSource {
-  artifactsFor(task: RegisteredTask, registry: TaskRegistry, revision: string): readonly ContextArtifact[];
+  /** Sources may return a shared catalog or use the role to scope artifact resolution. */
+  artifactsFor(
+    task: RegisteredTask,
+    registry: TaskRegistry,
+    revision: string,
+    role?: "UAT/Product" | "Developer",
+  ): readonly ContextArtifact[];
 }
 
 export interface UatReviewFrameworkPort {
@@ -355,17 +361,9 @@ export class UatReviewGate {
       architectureRecord,
     );
     this.assertSuppliedContextMatches(task, uatContext, request.context);
-    const developerContext = this.compileContextPackage(
-      "Developer",
-      task,
-      revision,
-      devValidatedEvent,
-      records,
-      qaRecord,
-      architectureRecord,
+    this.ensureDeveloperHandoff(task, revision, devValidatedEvent, () =>
+      this.compileContextPackage("Developer", task, revision, devValidatedEvent, records, qaRecord, architectureRecord),
     );
-
-    this.ensureDeveloperHandoff(task, revision, devValidatedEvent, developerContext);
 
     let submission: ReviewSubmissionResult;
     try {
@@ -596,7 +594,7 @@ export class UatReviewGate {
   ): ContextPackage {
     let repositoryArtifacts: readonly ContextArtifact[];
     try {
-      repositoryArtifacts = this.dependencies.contextSource.artifactsFor(task, this.dependencies.registry, revision);
+      repositoryArtifacts = this.dependencies.contextSource.artifactsFor(task, this.dependencies.registry, revision, role);
     } catch (error: unknown) {
       throw normalizeContextSourceError(task.taskId, error);
     }
@@ -671,7 +669,6 @@ export class UatReviewGate {
   }
 
   /**
-   * Mirrors BOOT-018's/BOOT-019's own ensureDeveloperHandoff exactly.
    * BOOT-017's review framework rejects any non-Developer submission
    * (`DEVELOPER_HANDOFF_MISSING`) until a Developer role review-result
    * record exists for the exact revision. Whenever a task's
@@ -683,13 +680,14 @@ export class UatReviewGate {
    * `UatReviewGate` bridges it itself from the same `DEV_VALIDATED`
    * lifecycle evidence BOOT-018/BOOT-019 use. A current, exact-revision
    * Developer handoff that is instead `FAIL` or `BLOCKED` is never
-   * overwritten by a synthetic bridge.
+   * overwritten by a synthetic bridge. Compile Developer context only when
+   * a bridge is needed.
    */
   private ensureDeveloperHandoff(
     task: RegisteredTask,
     revision: string,
     devValidatedEvent: LifecycleHistoryEvent,
-    developerContext: ContextPackage,
+    compileDeveloperContext: () => ContextPackage,
   ): void {
     const lineageId = reviewResultLineageId(task.taskId, "Developer");
     const current = this.dependencies.evidenceStore.getCurrent(lineageId);
@@ -713,6 +711,7 @@ export class UatReviewGate {
       );
     }
 
+    const developerContext = compileDeveloperContext();
     try {
       this.dependencies.reviewFramework.submit({
         taskId: task.taskId,
@@ -1613,30 +1612,26 @@ function errorCode(error: unknown): string | undefined {
 }
 
 /**
- * Default repository-backed UAT context source. The BOOT-012 context
- * compiler's UAT/Product role policy only ever admits local `scenario`
- * artifacts and local QA/Architect `evidence` artifacts (the latter are
- * supplied directly by `UatReviewGate` itself, not by this source) — no
- * `requirement`, `contract`, or `diff` artifact is ever included for
- * UAT/Product, so unlike `RepositoryQaContextSource`/
- * `RepositoryArchitectureContextSource` this source needs no Git revision
- * resolution at all.
- *
- * Known limitation shared with BOOT-013/BOOT-018/BOOT-019 precedent, not
- * introduced here: no repository convention for `scenario` artifacts exists
- * yet, so this source discovers none today. A future task defining such a
- * convention (for example, a `scenarios/<taskId>.json` file describing
- * realistic usage scenarios) can supply them here without any UatReviewGate
- * change, exactly as BOOT-019's own README documents for its inherited
- * `fixture`/`scenario`/`policy` gap.
+ * UAT/Product has no repository scenario discovery. A Developer bridge
+ * uses the same exact-revision requirement and contract catalog as Developer
+ * start. The gate requests that catalog only for the Developer role.
  */
 export class RepositoryUatContextSource implements UatReviewContextSource {
-  constructor(private readonly repositoryRoot: string) {
-    if (repositoryRoot.trim().length === 0) throw new RangeError("Repository root must be non-empty.");
+  private readonly developerContextSource: RepositoryDeveloperContextSource;
+
+  constructor(repositoryRoot: string) {
+    this.developerContextSource = new RepositoryDeveloperContextSource(repositoryRoot);
   }
 
-  artifactsFor(_task: RegisteredTask, _registry: TaskRegistry, _revision: string): readonly ContextArtifact[] {
-    return Object.freeze([]);
+  artifactsFor(
+    task: RegisteredTask,
+    registry: TaskRegistry,
+    revision: string,
+    role: "UAT/Product" | "Developer" = "UAT/Product",
+  ): readonly ContextArtifact[] {
+    return role === "Developer"
+      ? this.developerContextSource.artifactsFor(task, registry, revision)
+      : Object.freeze([]);
   }
 }
 

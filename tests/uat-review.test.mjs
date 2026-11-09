@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -154,12 +154,13 @@ function fixture(options = {}) {
   const activeTask = options.task ?? task();
   const requiresQa = (activeTask.requiredReviewRoles ?? []).includes("QA");
   const requiresArchitect = (activeTask.requiredReviewRoles ?? []).includes("Architect");
-  const registry = new Map([[activeTask.taskId, activeTask]]);
+  const registry = new Map([activeTask, ...(options.dependencies ?? [])].map((entry) => [entry.taskId, entry]));
+  const activeRevision = options.revision ?? revision;
 
   const entryFromState = requiresArchitect ? "ARCHITECTURE_REVIEW" : requiresQa ? "QA_REVIEW" : "DEV_VALIDATED";
   const defaultHistory = [
-    devValidatedEvent({ taskId: activeTask.taskId }),
-    uatReviewEntryEvent({ taskId: activeTask.taskId, fromState: entryFromState }),
+    devValidatedEvent({ taskId: activeTask.taskId, revisionIdentity: activeRevision }),
+    uatReviewEntryEvent({ taskId: activeTask.taskId, fromState: entryFromState, revisionIdentity: activeRevision }),
   ];
   const history = options.history ?? defaultHistory;
 
@@ -168,7 +169,7 @@ function fixture(options = {}) {
   ]);
   const taskLock = options.taskLock ?? new MemoryTaskLock();
   const branchLifecycle = new FakeBranchAdapter({ fail: options.branchFail ?? false, revision: options.revision ?? revision });
-  const contextSource = new FakeContextSource({ artifacts: options.artifacts ?? [] });
+  const contextSource = options.contextSource ?? new FakeContextSource({ artifacts: options.artifacts ?? [] });
   const evidenceStore = new FileEvidenceStore(join(root, "evidence"), { repositoryRoot });
 
   if (options.recordDevValidationEvidence !== false) {
@@ -443,6 +444,52 @@ test("UAT PASS always advances UAT_REVIEW to MERGE_READY", () => {
   }
 });
 
+function recordDeveloperHandoff(value, { outcome = "PASS", sourceRevision = revision } = {}) {
+  const { taskId } = value.task;
+  value.reviewFramework.submit({
+    taskId,
+    role: "Developer",
+    revisionIdentity: sourceRevision,
+    reviewerId: "dev-agent-1",
+    runId: "earlier-handoff",
+    contextPackage: { ...dummyContext(value.task), role: "Developer", sourceRevision },
+    outcome,
+    details: {
+      implementationSummary: "Earlier Developer handoff.",
+      changedSurfaces: [],
+      acceptanceCriteriaEvidence: [],
+      validationChecks: [],
+      knownLimitationsAssumptionsRisks: [],
+    },
+    findings: [],
+    evidenceRefs: [],
+    ...(outcome === "PASS" ? {} : {
+      nonPass: { reason: "Developer flagged a regression.", remediation: "Fix before independent review." },
+    }),
+    occurredAt: devOccurredAt,
+  });
+}
+
+test("a current Developer PASS is reused for a contract-bearing task without compiling Developer context", () => {
+  const value = fixture({ task: task({ requirements: ["BOOT-020-R1"], affectedContracts: ["control-plane.uat-review"] }) });
+  try {
+    recordDeveloperHandoff(value);
+    const lineage = reviewResultLineageId(value.task.taskId, "Developer");
+    const before = value.evidenceStore.getHistory(lineage);
+    const request = reviewRequest(value);
+    const callsBeforeReview = value.contextSource.calls;
+
+    const result = value.gate.review(request);
+
+    assert.equal(result.lifecycleState, "MERGE_READY");
+    assert.equal(result.revision, revision);
+    assert.equal(value.contextSource.calls - callsBeforeReview, 1, "only the UAT context is recompiled");
+    assert.deepEqual(value.evidenceStore.getHistory(lineage), before);
+  } finally {
+    cleanup(value);
+  }
+});
+
 test("a task reaching UAT_REVIEW directly from DEV_VALIDATED (QA/Architect not required) still receives a bridged Developer handoff", () => {
   const activeTask = task({ requiredReviewRoles: ["Developer", "UAT/Product", "MergeController"] });
   const value = fixture({ task: activeTask });
@@ -652,50 +699,27 @@ test("a revision change after UAT PASS leaves the prior UAT evidence stale for t
   }
 });
 
-test("a current non-PASS Developer handoff for the exact revision is never overwritten by a synthetic bridge", () => {
-  const value = fixture();
-  try {
-    const developerContextPackage = {
-      schemaVersion: "1.0.0",
-      role: "Developer",
-      taskId: value.task.taskId,
-      sourceRevision: revision,
-      task: { taskId: value.task.taskId },
-      artifacts: [],
-      manifest: { included: [], excluded: [] },
-    };
-    value.reviewFramework.submit({
-      taskId: value.task.taskId,
-      role: "Developer",
-      revisionIdentity: revision,
-      reviewerId: "dev-agent-1",
-      runId: "run-0",
-      contextPackage: developerContextPackage,
-      outcome: "FAIL",
-      details: {
-        implementationSummary: "Known regression, not ready for review.",
-        changedSurfaces: [],
-        acceptanceCriteriaEvidence: [],
-        validationChecks: [],
-        knownLimitationsAssumptionsRisks: [],
-      },
-      findings: [],
-      evidenceRefs: [],
-      nonPass: { reason: "Developer flagged a regression.", remediation: "Fix before QA." },
-      occurredAt: devOccurredAt,
-    });
+for (const outcome of ["FAIL", "BLOCKED"]) {
+  test(`a current Developer ${outcome} is rejected before attempting to compile a handoff`, () => {
+    const value = fixture({ task: task({ affectedContracts: ["control-plane.uat-review"] }) });
+    try {
+      recordDeveloperHandoff(value, { outcome });
+      const lineage = reviewResultLineageId(value.task.taskId, "Developer");
+      const before = value.evidenceStore.getHistory(lineage);
 
-    assert.throws(
-      () => value.gate.review(reviewRequest(value)),
-      (error) => error instanceof UatReviewError && error.code === "DEVELOPER_HANDOFF_REJECTED",
-    );
+      assert.throws(
+        () => value.gate.review(reviewRequest(value)),
+        (error) => error instanceof UatReviewError && error.code === "DEVELOPER_HANDOFF_REJECTED",
+      );
 
-    const stillFail = value.evidenceStore.getCurrent(reviewResultLineageId(value.task.taskId, "Developer"));
-    assert.equal(stillFail.payload.outcome, "FAIL");
-  } finally {
-    cleanup(value);
-  }
-});
+      assert.deepEqual(value.evidenceStore.getHistory(lineage), before);
+      assert.equal(value.evidenceStore.getCurrent(reviewResultLineageId(value.task.taskId, "UAT/Product")), null);
+      assert.equal(value.stateStore.get(value.task.taskId).currentState, "UAT_REVIEW");
+    } finally {
+      cleanup(value);
+    }
+  });
+}
 
 test("review() surfaces a task-lock conflict without touching evidence or lifecycle state", () => {
   const conflictingLock = {
@@ -1229,4 +1253,87 @@ test("RepositoryUatContextSource discovers no artifacts, matching the UAT/Produc
   const artifacts = source.artifactsFor(primary, registry, "HEAD");
 
   assert.deepEqual(artifacts, []);
+});
+
+function repositoryBridgeFixture(t, { missingDependencyContract = false } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "ipt-uat-context-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const git = (...args) => execFileSync("git", args, {
+    cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  git("init", "-q", "-b", "main");
+  git("config", "user.name", "IPT Test");
+  git("config", "user.email", "test@example.invalid");
+
+  const activeTask = task({
+    requirements: ["BOOT-020-R1"],
+    affectedContracts: ["control-plane.uat-review"],
+    dependencies: ["BOOT-012"],
+    requiredReviewRoles: ["Developer", "UAT/Product", "MergeController"],
+  });
+  const dependency = task({ taskId: "BOOT-012", affectedContracts: ["control-plane.context-compiler"] });
+  const requirementPath = join(root, "requirements", "outcome.json");
+  const affectedPath = join(root, "contracts", "affected.json");
+  const dependencyPath = join(root, "contracts", "dependency.json");
+  mkdirSync(join(root, "requirements"));
+  mkdirSync(join(root, "contracts"));
+  writeFileSync(requirementPath, JSON.stringify({ requirementId: "BOOT-020-R1", statement: "Committed requirement" }));
+  writeFileSync(affectedPath, JSON.stringify({ moduleId: "control-plane.uat-review" }));
+  if (!missingDependencyContract) {
+    writeFileSync(dependencyPath, JSON.stringify({ moduleId: "control-plane.context-compiler" }));
+  }
+  git("add", ".");
+  git("commit", "-qm", "Seed UAT bridge artifacts");
+  const sourceRevision = git("rev-parse", "HEAD");
+
+  // A working-copy-only contract cannot satisfy a missing committed artifact,
+  // and working-copy edits cannot hide artifacts that exist at sourceRevision.
+  writeFileSync(requirementPath, "{}");
+  writeFileSync(affectedPath, "{}");
+  writeFileSync(dependencyPath, missingDependencyContract
+    ? JSON.stringify({ moduleId: "control-plane.context-compiler" })
+    : "{}");
+
+  const value = fixture({
+    task: activeTask,
+    dependencies: [dependency],
+    revision: sourceRevision,
+    contextSource: new RepositoryUatContextSource(root),
+  });
+  t.after(() => cleanup(value));
+  return { ...value, sourceRevision };
+}
+
+for (const staleHandoff of [false, true]) {
+  test(`repository-backed UAT bridges a ${staleHandoff ? "stale" : "missing"} handoff from the reviewed revision`, (t) => {
+    const value = repositoryBridgeFixture(t);
+    if (staleHandoff) recordDeveloperHandoff(value, { sourceRevision: revision });
+    const devLineage = reviewResultLineageId(value.task.taskId, "Developer");
+    const request = reviewRequest(value);
+
+    assert.deepEqual(request.context.artifacts.map(({ kind }) => kind), ["task"]);
+    assert.deepEqual(request.context.manifest.excluded.map(({ kind }) => kind), ["evidence"]);
+    const result = value.gate.review(request);
+
+    assert.equal(result.lifecycleState, "MERGE_READY");
+    const history = value.evidenceStore.getHistory(devLineage);
+    assert.deepEqual(history.map(({ payload }) => payload.revisionIdentity),
+      staleHandoff ? [revision, value.sourceRevision] : [value.sourceRevision]);
+    assert.equal(history.at(-1).payload.outcome, "PASS");
+    assert.equal(value.evidenceStore.getCurrent(result.evidenceLineageId).payload.revisionIdentity, value.sourceRevision);
+  });
+}
+
+test("a dependency contract missing at the reviewed revision rejects the bridge without writes", (t) => {
+  const value = repositoryBridgeFixture(t, { missingDependencyContract: true });
+  const before = value.stateStore.get(value.task.taskId);
+
+  assert.throws(
+    () => value.gate.review(reviewRequest(value)),
+    (error) => error instanceof UatReviewError && error.code === "CONTEXT_REJECTED"
+      && /CONTRACT_ARTIFACT_MISSING.*control-plane\.context-compiler/.test(error.message),
+  );
+  assert.equal(value.stateStore.get(value.task.taskId), before);
+  assert.equal(value.evidenceStore.getCurrent(reviewResultLineageId(value.task.taskId, "Developer")), null);
+  assert.equal(value.evidenceStore.getCurrent(reviewResultLineageId(value.task.taskId, "UAT/Product")), null);
 });

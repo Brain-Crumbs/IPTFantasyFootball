@@ -105,6 +105,28 @@ test('isolated complete canary uses real selection, Git, command validation, rol
   }
 });
 
+test('isolated canary with its original affected contracts accepts the bound UAT result', async t => {
+  const f = fixture(t, { withAffectedContracts: true });
+  const result = await runCanary(f.root, f.options, f.request);
+  assert.equal(result.status, 'STOPPED');
+  assert.equal(result.stopped.stage, 'merge-readiness');
+  assert.equal(result.finalLifecycleState, 'MERGE_READY');
+  const revision = git(f.root, 'rev-parse', 'HEAD');
+  const definition = JSON.parse(readFileSync(join(f.root, 'tasks/definitions/canary-001.task.json'), 'utf8'));
+  assert.ok(definition.affectedContracts.length > 0);
+
+  const uat = f.sessions.find(packet => packet.role === 'UAT/Product');
+  assert.equal(uat.revisionIdentity, revision);
+  assert.ok(uat.contextPackage.artifacts.every(artifact => ['task', 'evidence'].includes(artifact.kind)));
+  const evidence = new FileEvidenceStore(join(f.root, '.agent/state/evidence'), { repositoryRoot: f.root, readOnly: true });
+  const developerHistory = evidence.getHistory(`${taskId}::role::Developer`);
+  assert.deepEqual(developerHistory.map(({ payload }) => [payload.outcome, payload.revisionIdentity]), [['PASS', revision]]);
+  const uatEvidence = evidence.getCurrent(`${taskId}::role::UAT/Product`);
+  assert.equal(uatEvidence.payload.outcome, 'PASS');
+  assert.equal(uatEvidence.payload.revisionIdentity, revision);
+  assert.equal(f.remote.mergeCalls, 0);
+});
+
 test('pending and failing exact-head CI block controlled merge; later same-key success resumes', async t => {
   const f = fixture(t);
   await ready(f);
