@@ -64,6 +64,11 @@ test('contract-bearing CLI flow uses draft, exact CI, explicit ready/merge, and 
  }
  assert.equal(get(f.root,'.agent/state/lifecycle/DEMO-001.lifecycle.json').currentState,'MERGE_READY');
  const premature=await f.cli('ready',sid);assert.equal(premature.envelope.ok,false);assert.equal(f.remote.pr,null);
+ const bare=git(f.root,'remote','get-url','origin');
+ git(f.root,'config','--add','remote.origin.pushurl',bare);git(f.root,'config','--add','remote.origin.pushurl',`${bare}-unrelated`);
+ const multiple=await f.cli('publish',sid);assert.equal(multiple.envelope.ok,false);assert.match(multiple.envelope.error.message,/one read URL and one push URL/);
+ assert.equal(git(f.root,'ls-remote','origin','refs/heads/feature/demo-001'),'');assert.equal(f.remote.pr,null);
+ git(f.root,'config','--unset-all','remote.origin.pushurl');
  const pub=await f.cli('publish',sid);assert.equal(pub.envelope.ok,true,JSON.stringify(pub.envelope));assert.equal(f.remote.pr.draft,true);
  const ready=await f.cli('ready',sid);assert.equal(ready.envelope.ok,true,JSON.stringify(ready.envelope));assert.equal(f.remote.pr.draft,false);
  f.remote.ci='pending';s=(await f.cli('resume',sid)).envelope.data.session;assert.equal(s.status,'WAITING');assert.equal(f.remote.merges,0);
@@ -115,6 +120,16 @@ test('clarification carries its original issue and permits correction of a rejec
  await f.cli('watch','--once');await pause();const accepted=await f.cli('watch','--once');assert.equal(accepted.envelope.data.receipts.at(-1).status,'ACCEPTED');
  assert.equal(existsSync(join(f.root,'tasks/definitions/demo-001.task.json')),true);
  assert.equal(existsSync(join(f.root,'.agent/state/lifecycle/DEMO-001.lifecycle.json')),false,'intake grants no assignment');
+ // Simulate the registration intent having survived, while both the inbox
+ // file and the post-registration receipt were lost before replay.
+ const intakePath=`.agent/driver/intakes/${packet.intakeId}.json`,intake=get(f.root,intakePath),head=git(f.root,'rev-parse','HEAD'),base=git(f.root,'rev-parse','HEAD^');
+ const original=get(f.root,`.agent/driver/sessions/${intake.sessionId}.json`).request;
+ git(f.root,'restore',`--source=${base}`,'--staged','--worktree','--','tasks/definitions/demo-001.task.json');git(f.root,'update-ref','refs/heads/main',base,head);
+ put(f.root,intakePath,{...intake,diagnostics:['Registration commit pending.']});
+ const receipt=accepted.envelope.data.receipts.at(-1);
+ unlinkSync(join(f.root,`.agent/driver/archive/${receipt.inputHash}.receipt.json`));unlinkSync(join(f.root,'.agent/driver/inbox/responses/reply.json'));
+ const replayed=await f.cli('watch','--once');assert.equal(replayed.envelope.data.receipts.at(-1).status,'REUSED');
+ assert.equal(git(f.root,'rev-parse','HEAD'),head);assert.deepEqual(get(f.root,`.agent/driver/sessions/${intake.sessionId}.json`).request,original);
 });
 
 test('concurrent scans serialize and a lost receipt is reconstructed from the captured input',async()=>{

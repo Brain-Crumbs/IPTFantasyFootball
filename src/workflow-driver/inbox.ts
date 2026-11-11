@@ -125,7 +125,7 @@ export async function scan(root: string, p: DriverProfile, session: DriverSessio
           requireValue(response.sessionId===undefined,"Intake clarification cannot include a session ID.");
           requireValue(response.intakeId === packet.intakeId && typeof response.intakeId === "string" && /^[a-f0-9]{64}$/.test(response.intakeId), "Clarification intake mismatch.");
           const intake = read(safePath(root, `.agent/driver/intakes/${response.intakeId}.json`)) as unknown as IntakeRecord;
-          requireValue(!intake.sessionId && response.task && Number.isSafeInteger(response.issueNumber), "Clarification requires a proposed complete task and issue number; existing registration is immutable.");
+          requireValue(response.task && Number.isSafeInteger(response.issueNumber), "Clarification requires a proposed complete task and issue number.");
           requireValue(intake.issueNumber===null||response.issueNumber===intake.issueNumber,"Clarification cannot replace the operator-selected issue.");
           const mapped=mapMarkdown(intake.source);
           requireValue(!mapped.diagnostics.some(message=>message.startsWith("Duplicate or contradictory")),"Resolve contradictory issue fields in operator-selected Markdown before registration.");
@@ -133,7 +133,13 @@ export async function scan(root: string, p: DriverProfile, session: DriverSessio
             const proposed=(response.task as unknown as Record<string,unknown>)[key];
             requireValue(proposed!==undefined&&hash(value)===hash(proposed),`Clarification cannot change the explicit '${key}' field.`);
           }
-          const accepted = await register(root, p, { ...intake, task: response.task, issueNumber: response.issueNumber! });
+          write(safePath(root,`${p.paths.archive}/${inputHash}.input.json`),{original:bytes},true);
+          let accepted: IntakeRecord;
+          if(intake.sessionId) {
+            requireValue(intake.task&&hash(intake.task)===hash(response.task)&&intake.issueNumber===response.issueNumber,"Existing clarification registration is immutable.");
+            accepted=await prepare(root,p,intake.source);
+            status="REUSED";
+          } else accepted=await register(root,p,{...intake,task:response.task,issueNumber:response.issueNumber!});
           nextAction = `Prepared session ${accepted.sessionId}; explicitly select it with orchestrate run.`;
         } else {
           if(!session)continue;

@@ -48,7 +48,10 @@ function assertPull(pr:GithubPull,p:DriverProfile,s:DriverSession,branch:string,
 function assertRemote(root: string, p: DriverProfile, runtime: DriverRuntime): void {
   const accepted = [`https://github.com/${p.repository}.git`, `https://github.com/${p.repository}`, `git@github.com:${p.repository}.git`];
   requireValue(accepted.includes(git(root,"config","--get","remote.origin.url")), "Origin differs from the configured repository.");
-  if (!runtime.fetchImpl) requireValue(accepted.includes(git(root,"remote","get-url","origin")) && accepted.includes(git(root,"remote","get-url","--push","origin")), "Origin URL rewrite or push URL targets a different repository.");
+  const readUrls=git(root,"remote","get-url","--all","origin").split(/\r?\n/);
+  const pushUrls=git(root,"remote","get-url","--push","--all","origin").split(/\r?\n/);
+  requireValue(readUrls.length===1&&pushUrls.length===1,"Origin must have one read URL and one push URL; no additional publication targets are authorized.");
+  if (!runtime.fetchImpl) requireValue(accepted.includes(readUrls[0]!)&&accepted.includes(pushUrls[0]!),"Origin URL rewrite or push URL targets a different repository.");
 }
 export function roleHandoff(root: string, p: DriverProfile, s: DriverSession, packet: LocalAgentPacket): void {
   const details = packet.role === "QA" ? { acceptanceCriteriaScenarios: ["<actual scenarios>"], regressionNegativeCaseCoverage: ["<actual checks>"] }
@@ -250,7 +253,7 @@ export async function publish(root: string, p: DriverProfile, s: DriverSession, 
     const after=await candidate(head);assertPublished();requireValue(after?.number===pr.number&&after.draft===false,"Remote PR changed during ready conversion; inspect GitHub before resuming.");
     return {number:pr.number,revision:head,ready:true,reused:false};
   }
-  git(root,"push","--no-follow-tags","origin",`${head}:refs/heads/${task.canonicalBranch}`);
+  git(root,"-c","remote.origin.mirror=false","push","--no-follow-tags","--recurse-submodules=no","origin",`${head}:refs/heads/${task.canonicalBranch}`);
   assertPublished();
   const adapter=await createLocalPullRequestLifecycleAdapter(root,{...g,fetchImpl:async(url,init)=>{
     assertEvidence();
