@@ -54,6 +54,16 @@ function assertRemote(root: string, p: DriverProfile, runtime: DriverRuntime, ex
   requireValue(readUrls.length===1&&pushUrls.length===1,"Origin must have one read URL and one push URL; no additional publication targets are authorized.");
   if (!runtime.fetchImpl) requireValue(accepted.includes(readUrls[0]!)&&accepted.includes(pushUrls[0]!),"Origin URL rewrite or push URL targets a different repository.");
   const current={readUrl:readUrls[0]!,pushUrl:pushUrls[0]!};
+  // Git resolves a literal URL again. In particular, pushInsteadOf is
+  // ignored for a named remote with explicit pushurl, but not for the
+  // literal URL we pass to push. Refuse a second rewrite of either pin.
+  const rewritten=git(root,"config","--null","--list").split("\0").some(entry=>{
+    const separator=entry.indexOf("\n");
+    if(separator<0||!/^url\..+\.(?:insteadof|pushinsteadof)$/i.test(entry.slice(0,separator)))return false;
+    const prefix=entry.slice(separator+1);
+    return current.readUrl.startsWith(prefix)||current.pushUrl.startsWith(prefix);
+  });
+  requireValue(!rewritten,"Git URL rewriting can redirect the pinned destination. Remove applicable insteadOf/pushInsteadOf rules before publication.");
   requireValue(!expected||(current.readUrl===expected.readUrl&&current.pushUrl===expected.pushUrl),"Origin changed during publication; recheck the repository before retrying.");
   return current;
 }
@@ -259,7 +269,7 @@ export async function publish(root: string, p: DriverProfile, s: DriverSession, 
     return {number:pr.number,revision:head,ready:true,reused:false};
   }
   assertRemote(root,p,runtime,remote);
-  git(root,"push","--no-follow-tags","--recurse-submodules=no",remote.pushUrl,`${head}:refs/heads/${task.canonicalBranch}`);
+  git(root,"-c","http.followRedirects=false","push","--no-follow-tags","--recurse-submodules=no",remote.pushUrl,`${head}:refs/heads/${task.canonicalBranch}`);
   assertPublished();
   const adapter=await createLocalPullRequestLifecycleAdapter(root,{...g,fetchImpl:async(url,init)=>{
     assertEvidence();

@@ -172,7 +172,9 @@ If the native orchestration token also remains, use `recover-run SESSION
 
 When `MERGE_READY`, `orchestrate publish SESSION` authorizes a non-force push
 of the reviewed SHA and creation/update of the one canonical draft PR. Check
-the remote, issue, branch, base and exact head. `orchestrate ready SESSION`
+the remote, issue, branch, base and exact head. Origin must have one read and
+one push destination, with no Git rule that rewrites either checked URL.
+`orchestrate ready SESSION`
 separately authorizes ready conversion of that existing PR. After the exact
 head checks are green and approval is established, supply the trusted host
 value `IPT_DRIVER_MERGE=owner/repo#NUMBER@FULL_SHA` and resume the same session.

@@ -69,6 +69,11 @@ test('contract-bearing CLI flow uses draft, exact CI, explicit ready/merge, and 
  const multiple=await f.cli('publish',sid);assert.equal(multiple.envelope.ok,false);assert.match(multiple.envelope.error.message,/one read URL and one push URL/);
  assert.equal(git(f.root,'ls-remote','origin','refs/heads/feature/demo-001'),'');assert.equal(f.remote.pr,null);
  git(f.root,'config','--unset-all','remote.origin.pushurl');
+ git(f.root,'config','--add','remote.origin.pushurl',bare);git(f.root,'config','--add',`url.${bare}-unrelated.pushInsteadOf`,bare);
+ assert.equal(git(f.root,'remote','get-url','--push','origin'),bare,'explicit pushurl hides the rewrite from the named remote lookup');
+ const rewritten=await f.cli('publish',sid);assert.equal(rewritten.envelope.ok,false);assert.match(rewritten.envelope.error.message,/rewriting can redirect/);
+ assert.equal(git(f.root,'ls-remote','origin','refs/heads/feature/demo-001'),'');assert.equal(f.remote.pr,null);
+ git(f.root,'config','--unset-all',`url.${bare}-unrelated.pushInsteadOf`);git(f.root,'config','--unset-all','remote.origin.pushurl');
  f.remote.onLookup=()=>{f.remote.onLookup=undefined;git(f.root,'config','--add','remote.origin.pushurl',bare);git(f.root,'config','--add','remote.origin.pushurl',`${bare}-unrelated`);};
  const drifted=await f.cli('publish',sid);assert.equal(drifted.envelope.ok,false);assert.match(drifted.envelope.error.message,/one read URL and one push URL/);
  assert.equal(git(f.root,'ls-remote','origin','refs/heads/feature/demo-001'),'');assert.equal(f.remote.pr,null);
