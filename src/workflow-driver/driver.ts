@@ -45,13 +45,17 @@ function assertPull(pr:GithubPull,p:DriverProfile,s:DriverSession,branch:string,
     typeof pr.title==="string"&&pr.title.startsWith(`${s.taskId}:`)&&typeof pr.body==="string"&&new RegExp(`^Closes #${s.issueNumber}\\s*$`,"m").test(pr.body)&&
     (head===undefined||pr.head.sha===head),"Open PR conflicts with the selected repository, task, issue, branch, base, or exact source.","PR_CONFLICT");
 }
-function assertRemote(root: string, p: DriverProfile, runtime: DriverRuntime): void {
+interface RemoteTarget { readUrl:string; pushUrl:string }
+function assertRemote(root: string, p: DriverProfile, runtime: DriverRuntime, expected?:RemoteTarget): RemoteTarget {
   const accepted = [`https://github.com/${p.repository}.git`, `https://github.com/${p.repository}`, `git@github.com:${p.repository}.git`];
   requireValue(accepted.includes(git(root,"config","--get","remote.origin.url")), "Origin differs from the configured repository.");
   const readUrls=git(root,"remote","get-url","--all","origin").split(/\r?\n/);
   const pushUrls=git(root,"remote","get-url","--push","--all","origin").split(/\r?\n/);
   requireValue(readUrls.length===1&&pushUrls.length===1,"Origin must have one read URL and one push URL; no additional publication targets are authorized.");
   if (!runtime.fetchImpl) requireValue(accepted.includes(readUrls[0]!)&&accepted.includes(pushUrls[0]!),"Origin URL rewrite or push URL targets a different repository.");
+  const current={readUrl:readUrls[0]!,pushUrl:pushUrls[0]!};
+  requireValue(!expected||(current.readUrl===expected.readUrl&&current.pushUrl===expected.pushUrl),"Origin changed during publication; recheck the repository before retrying.");
+  return current;
 }
 export function roleHandoff(root: string, p: DriverProfile, s: DriverSession, packet: LocalAgentPacket): void {
   const details = packet.role === "QA" ? { acceptanceCriteriaScenarios: ["<actual scenarios>"], regressionNegativeCaseCoverage: ["<actual checks>"] }
@@ -79,14 +83,14 @@ export function github(root: string, p: DriverProfile, s:DriverSession, runtime:
       const head = clean(root), number = Number(endpoint.pathname.split("/").at(-2));
       requireValue((runtime.mergeAuthorization ?? process.env.IPT_DRIVER_MERGE) === `${p.repository}#${number}@${head}`, "Set host IPT_DRIVER_MERGE to the exact repository#PR@full-SHA after reviewing readiness.", "MERGE_AUTHORIZATION_REQUIRED");
       const body = JSON.parse(init.body ?? "{}") as { sha?: string }; requireValue(body.sha === head, "Merge transport SHA differs from current authorized HEAD.");
-      assertRemote(root,p,runtime);
+      const remote=assertRemote(root,p,runtime);
       const branch=git(root,"branch","--show-current");
-      requireValue(git(root,"ls-remote","origin",`refs/heads/${branch}`).split(/\s/)[0]===head,"Remote branch changed before merge.");
+      requireValue(git(root,"ls-remote",remote.readUrl,`refs/heads/${branch}`).split(/\s/)[0]===head,"Remote branch changed before merge.");
       const checked=await githubTransport(runtime)(url.replace(/\/merge$/,""),{method:"GET",headers:init.headers}).catch(()=>{throw new DriverError("GITHUB_UNAVAILABLE","Cannot confirm the exact PR before merge.");});
       const pr=await checked.json() as GithubPull;
       requireValue(checked.ok && pr.draft===false,"PR must be ready for review and still target the authorized exact source.");
       assertPull(pr,p,s,branch,head);requireValue(pr.number===number,"PR number changed before merge.");
-      clean(root,head);
+      clean(root,head);assertRemote(root,p,runtime,remote);
     }
     const modified = init.method === "POST" && endpoint.pathname.endsWith("/pulls") ? { ...init, body: JSON.stringify({ ...JSON.parse(init.body ?? "{}"), draft: true }) } : init;
     try {
@@ -222,7 +226,7 @@ export async function publish(root: string, p: DriverProfile, s: DriverSession, 
   const assertEvidence = () => { clean(root, head);requireValue(git(root,"branch","--show-current")===task.canonicalBranch,"Publish only the canonical task branch.");const at = now(), v = diagnostics.explainValidation(s.taskId, at), r = diagnostics.explainReviews(s.taskId, at);
     requireValue(v.clear && r.clear && v.revision === head && r.revision === head && r.state === "MERGE_READY", "Publication requires current deterministic validation and all declared independent review gates.", "STALE_EVIDENCE"); };
   assertEvidence();
-  assertRemote(root,p,runtime);
+  const remote=assertRemote(root,p,runtime);
   const g = github(root, p, s, runtime);
   const token = runtime.token ?? process.env.IPT_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
   requireValue(token,"Configure host IPT_GITHUB_TOKEN before publication.");
@@ -236,7 +240,8 @@ export async function publish(root: string, p: DriverProfile, s: DriverSession, 
   };
   const assertPublished=()=>{
     assertEvidence();
-    requireValue(git(root,"ls-remote","origin",`refs/heads/${task.canonicalBranch}`).split(/\s/)[0]===head,"Remote branch has not published this exact source SHA.","REMOTE_HEAD_MISMATCH");
+    assertRemote(root,p,runtime,remote);
+    requireValue(git(root,"ls-remote",remote.readUrl,`refs/heads/${task.canonicalBranch}`).split(/\s/)[0]===head,"Remote branch has not published this exact source SHA.","REMOTE_HEAD_MISMATCH");
   };
   const existing=await candidate();assertEvidence();
   if (ready) {
@@ -253,7 +258,8 @@ export async function publish(root: string, p: DriverProfile, s: DriverSession, 
     const after=await candidate(head);assertPublished();requireValue(after?.number===pr.number&&after.draft===false,"Remote PR changed during ready conversion; inspect GitHub before resuming.");
     return {number:pr.number,revision:head,ready:true,reused:false};
   }
-  git(root,"-c","remote.origin.mirror=false","push","--no-follow-tags","--recurse-submodules=no","origin",`${head}:refs/heads/${task.canonicalBranch}`);
+  assertRemote(root,p,runtime,remote);
+  git(root,"push","--no-follow-tags","--recurse-submodules=no",remote.pushUrl,`${head}:refs/heads/${task.canonicalBranch}`);
   assertPublished();
   const adapter=await createLocalPullRequestLifecycleAdapter(root,{...g,fetchImpl:async(url,init)=>{
     assertEvidence();

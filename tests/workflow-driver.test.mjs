@@ -69,6 +69,10 @@ test('contract-bearing CLI flow uses draft, exact CI, explicit ready/merge, and 
  const multiple=await f.cli('publish',sid);assert.equal(multiple.envelope.ok,false);assert.match(multiple.envelope.error.message,/one read URL and one push URL/);
  assert.equal(git(f.root,'ls-remote','origin','refs/heads/feature/demo-001'),'');assert.equal(f.remote.pr,null);
  git(f.root,'config','--unset-all','remote.origin.pushurl');
+ f.remote.onLookup=()=>{f.remote.onLookup=undefined;git(f.root,'config','--add','remote.origin.pushurl',bare);git(f.root,'config','--add','remote.origin.pushurl',`${bare}-unrelated`);};
+ const drifted=await f.cli('publish',sid);assert.equal(drifted.envelope.ok,false);assert.match(drifted.envelope.error.message,/one read URL and one push URL/);
+ assert.equal(git(f.root,'ls-remote','origin','refs/heads/feature/demo-001'),'');assert.equal(f.remote.pr,null);
+ git(f.root,'config','--unset-all','remote.origin.pushurl');
  const pub=await f.cli('publish',sid);assert.equal(pub.envelope.ok,true,JSON.stringify(pub.envelope));assert.equal(f.remote.pr.draft,true);
  const ready=await f.cli('ready',sid);assert.equal(ready.envelope.ok,true,JSON.stringify(ready.envelope));assert.equal(f.remote.pr.draft,false);
  f.remote.ci='pending';s=(await f.cli('resume',sid)).envelope.data.session;assert.equal(s.status,'WAITING');assert.equal(f.remote.merges,0);
