@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iptfantasyfootball.dev/schemas/v1/driver-session.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaId",
+    "schemaVersion",
+    "sessionId",
+    "projectRoot",
+    "profileHash",
+    "intakeId",
+    "taskId",
+    "issueNumber",
+    "definitionPath",
+    "definitionHash",
+    "registrationRevision",
+    "request",
+    "status",
+    "pendingPacket",
+    "diagnosticId",
+    "predecessor",
+    "result"
+  ],
+  "properties": {
+    "schemaId": {
+      "const": "ipt.driver-session"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projectRoot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profileHash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "intakeId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "taskId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "issueNumber": {
+      "type": "number"
+    },
+    "definitionPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "definitionHash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "registrationRevision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ownerId",
+        "runId",
+        "occurredAt",
+        "idempotencyKey"
+      ],
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assignmentRunId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assignmentKey": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "status": {
+      "enum": [
+        "PREPARED",
+        "WAITING",
+        "STOPPED",
+        "DONE"
+      ]
+    },
+    "pendingPacket": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnosticId": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "predecessor": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result": {
+      "oneOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

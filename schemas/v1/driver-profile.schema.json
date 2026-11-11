@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iptfantasyfootball.dev/schemas/v1/driver-profile.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaId",
+    "schemaVersion",
+    "repository",
+    "integrationTarget",
+    "requiredCiChecks",
+    "paths",
+    "roleActors",
+    "rolePolicies",
+    "manual"
+  ],
+  "properties": {
+    "schemaId": {
+      "const": "ipt.driver-profile"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "manual": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxAttempts", "retryDelayMs", "roleTimeoutMs"],
+      "properties": {
+        "maxAttempts": {"type":"number"},
+        "retryDelayMs": {"type":"number"},
+        "roleTimeoutMs": {"type":"number"}
+      }
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "integrationTarget": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requiredCiChecks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issues",
+        "responses",
+        "outbound",
+        "archive",
+        "exchange"
+      ],
+      "properties": {
+        "issues": {
+          "type": "string",
+          "minLength": 1
+        },
+        "responses": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outbound": {
+          "type": "string",
+          "minLength": 1
+        },
+        "archive": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exchange": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "roleActors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Developer",
+        "QA",
+        "Architect",
+        "UAT/Product",
+        "MergeController"
+      ],
+      "properties": {
+        "Developer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "QA": {
+          "type": "string",
+          "minLength": 1
+        },
+        "Architect": {
+          "type": "string",
+          "minLength": 1
+        },
+        "UAT/Product": {
+          "type": "string",
+          "minLength": 1
+        },
+        "MergeController": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "rolePolicies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Developer",
+        "QA",
+        "Architect",
+        "UAT/Product",
+        "MergeController"
+      ],
+      "properties": {
+        "Developer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowedTools",
+            "networkAccess"
+          ],
+          "properties": {
+            "allowedTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "deniedTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "networkAccess": {
+              "enum": [
+                "none",
+                "restricted",
+                "full"
+              ]
+            }
+          }
+        },
+        "QA": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowedTools",
+            "networkAccess"
+          ],
+          "properties": {
+            "allowedTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "deniedTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "networkAccess": {
+              "enum": [
+                "none",
+                "restricted",
+                "full"
+              ]
+            }
+          }
+        },
+        "Architect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowedTools",
+            "networkAccess"
+          ],
+          "properties": {
+            "allowedTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "deniedTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "networkAccess": {
+              "enum": [
+                "none",
+                "restricted",
+                "full"
+              ]
+            }
+          }
+        },
+        "UAT/Product": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowedTools",
+            "networkAccess"
+          ],
+          "properties": {
+            "allowedTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "deniedTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "networkAccess": {
+              "enum": [
+                "none",
+                "restricted",
+                "full"
+              ]
+            }
+          }
+        },
+        "MergeController": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowedTools",
+            "networkAccess"
+          ],
+          "properties": {
+            "allowedTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "deniedTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "networkAccess": {
+              "enum": [
+                "none",
+                "restricted",
+                "full"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

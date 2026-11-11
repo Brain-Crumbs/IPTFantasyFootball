@@ -156,7 +156,7 @@ A test command passing is not sufficient when the acceptance criterion is semant
 
 BOOT-014/015/016 make deterministic developer validation/evidence capture operational end-to-end: `agent validate <task-id> <actor-id> <run-id>` runs the required checks, persists revision-bound `ipt.validation-evidence`, and gates `IN_DEVELOPMENT -> DEV_VALIDATED`/`DEV_VALIDATION_FAILED` on it. Use it (or the strongest reproducible equivalent checks when it cannot run in the current tool environment) rather than narrative self-report of "tests passed."
 
-BOOT-017 through BOOT-021 are implemented. Use their library gates for actual independent QA/Architecture/UAT judgments and legal rework; generic review/orchestrate CLI wiring remains reserved pending #78. Fresh role sessions, exact file/revision inspection and acceptance mapping remain required. If a tool limitation prevents a gate from running, record the exact blocker and distinguish external review evidence from native gate acceptance; never fabricate either.
+BOOT-017 through BOOT-021 are implemented. Use their library gates for actual independent QA/Architecture/UAT judgments and legal rework; BOOT-037's [orchestrate driver](docs/WORKFLOW_DRIVER.md) composes these gates for an explicitly selected task; standalone review remains reserved. Fresh role sessions, exact file/revision inspection and acceptance mapping remain required. If a tool limitation prevents a gate from running, record the exact blocker and distinguish external review evidence from native gate acceptance; never fabricate either.
 
 Do not label manual inspection as a future automated validation gate. State exactly what was checked and what evidence exists.
 

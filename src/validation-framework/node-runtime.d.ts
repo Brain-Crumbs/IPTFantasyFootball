@@ -15,6 +15,7 @@ declare module "node:child_process" {
       encoding?: string;
       timeout?: number;
       maxBuffer?: number;
+      env?: Readonly<Record<string,string|undefined>>;
     },
   ): IptSpawnSyncResult;
 }

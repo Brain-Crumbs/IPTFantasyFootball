@@ -3,7 +3,7 @@
 **Task:** BOOT-005 / issue #7, extended by BOOT-008 / issue #10, BOOT-013 / issue #15, BOOT-016 / issue #18, BOOT-029 / issue #31, BOOT-030 / issue #32, BOOT-031 / issue #33, and BOOT-032 / issue #34
 **Parent architecture:** issue #1
 
-The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic read-only next-task selection. BOOT-013 adds the canonical start-only Developer workflow. BOOT-016 adds the canonical developer validation gate. BOOT-029 adds local/manual provider packet export, import, and waiting. BOOT-030 adds read-only local project status and persisted lifecycle input for default next selection. BOOT-031 adds scoped read-only task/transition/validation/review/merge explanations. BOOT-032 adds read-only consistency checks and bounded explicit offline recovery. Independent review, sequential orchestration, and controlled completion exist as library gates; their generic CLI surfaces remain reserved.
+The CLI is the stable, provider-neutral human/agent command surface for the bootstrap control plane. BOOT-005 defines the shell and output conventions. BOOT-008 adds deterministic read-only next-task selection. BOOT-013 adds the canonical start-only Developer workflow. BOOT-016 adds the canonical developer validation gate. BOOT-029 adds local/manual provider packet export, import, and waiting. BOOT-030 adds read-only local project status and persisted lifecycle input for default next selection. BOOT-031 adds scoped read-only task/transition/validation/review/merge explanations. BOOT-032 adds read-only consistency checks and bounded explicit offline recovery. BOOT-037 composes independent review, sequential orchestration and controlled completion in [the manual workflow driver](WORKFLOW_DRIVER.md).
 
 ## Clean-checkout setup
 
@@ -50,12 +50,12 @@ Implemented:
 - `manual run <request-file> <exchange-dir>` — BOOT-029
 - `recovery check` — BOOT-032
 - `recovery apply <request-file>` — BOOT-032
+- `orchestrate help` — BOOT-037 guided setup, intake, inbox, publication and continuation
 
 Reserved commands deliberately fail until their owning task supplies behavior:
 
 - `review` — BOOT-017+
 - `rework` — BOOT-021 (behavior implemented as `ReviewReworkGate`; CLI wiring owned by BOOT-026+)
-- `orchestrate` — BOOT-027/028 (implemented as `SequentialOrchestrationEngine`; generic CLI wiring remains deferred. BOOT-029 supplies manual transport commands and a provider injectable into this library.)
 
 ## Manual-bootstrap authority
 
@@ -205,7 +205,7 @@ Transport `COMPLETED` preserves semantic `PASS | FAIL | BLOCKED`. Imported `CANC
 
 Expected adapter errors use envelope `error.code: "MANUAL_ADAPTER_ERROR"`; the message begins with the specific provider code, such as `INVALID_REQUEST`, `MALFORMED_RESULT`, `CANCELLED`, or `TIMEOUT`. Invalid request/arguments use exit 2; other expected adapter failures use exit 4; unexpected failures use exit 70. The envelope command is `manual` for all three operations. An accepted `COMPLETED + FAIL/BLOCKED`, or importing an external cancellation/error record, can exit 0 because that command successfully transported the requested payload. Running against a cancelled/error record then returns the corresponding nonzero provider failure.
 
-These commands have no workflow authority: export/import/run neither grant assignment nor validate implementation, record review evidence, advance lifecycle, create a PR, or merge. The manual operator enforces requested tool/network permissions and fresh independent role sessions. Generic `orchestrate` stays reserved; an existing authorized library caller can inject `FileManualAgentProvider`.
+These commands have no workflow authority: export/import/run neither grant assignment nor validate implementation, record review evidence, advance lifecycle, create a PR, or merge. The manual operator enforces requested tool/network permissions and fresh independent role sessions. The separate [orchestrate driver](WORKFLOW_DRIVER.md) calls this adapter through its checked inbox, then invokes the owning gates.
 
 ## `recovery` commands
 

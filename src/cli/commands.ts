@@ -1,6 +1,7 @@
 import type { CommandDescriptor } from "./contracts.js";
 
 export const IMPLEMENTED_COMMANDS: readonly CommandDescriptor[] = [
+  { name: "orchestrate", summary: "Set up, prepare issues, exchange manual role results and resume the bounded workflow (BOOT-037).", status: "implemented" },
   { name: "recovery", summary: "Check consistency or apply explicitly confirmed, audited offline recovery (BOOT-032).", status: "implemented" },
   { name: "explain", summary: "Explain task, transition, validation, review, and merge predicates without mutation (BOOT-031).", status: "implemented" },
   {
@@ -49,11 +50,6 @@ export const RESERVED_COMMANDS: readonly CommandDescriptor[] = [
   {
     name: "rework",
     summary: "Drive the review rework and approval invalidation loop (owned by BOOT-021; behavior implemented, CLI wiring owned by BOOT-026+).",
-    status: "reserved",
-  },
-  {
-    name: "orchestrate",
-    summary: "Run the sequential orchestration engine end to end (library and BOOT-029 manual provider implemented; general workflow CLI composition remains reserved).",
     status: "reserved",
   },
 ] as const;

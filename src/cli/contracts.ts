@@ -12,6 +12,7 @@ export const EXIT_CODES = {
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];
 
 export type ErrorCode =
+  | "ORCHESTRATE_ERROR"
   | "USAGE_UNKNOWN_COMMAND"
   | "USAGE_UNKNOWN_OPTION"
   | "USAGE_UNEXPECTED_ARGUMENT"

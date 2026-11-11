@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { LifecycleRecord } from "../lifecycle/index.js";
 import { FileOrchestrationRunStore, type OrchestrationRunJournal, type OrchestrationRunStore } from "./run-store.js";
-import type { AgentProvider, AgentRunnerRole, AgentRunResult, AgentToolPermissionPolicy } from "../agent-provider/index.js";
+import type { AgentProvider, AgentRunnerRole, AgentRunRequest, AgentRunResult, AgentToolPermissionPolicy } from "../agent-provider/index.js";
 import { AgentProviderError, AgentRunner } from "../agent-provider/index.js";
 import type { ArchitectureReviewGate } from "../architecture-review/index.js";
 import { createLocalArchitectureReviewGate } from "../architecture-review/index.js";
@@ -121,6 +121,10 @@ export interface OrchestrationRunResult {
 }
 
 export interface OrchestrationRunRequest {
+  /** A linked successor preserves its original assignment; this is not transfer authority. */
+  readonly assignmentRunId?: string;
+  /** Idempotency key of the original run that owns the preserved assignment. */
+  readonly assignmentKey?: string;
   /** Identity of the developer/owner driving Developer start, the Developer
    * agent run, and Developer validation. QA/Architecture/UAT/MergeController
    * each receive their own distinct actor identity (see `actorIdFor`) so a
@@ -144,7 +148,7 @@ export interface OrchestrationRunRequest {
   readonly timeoutMs?: number;
 }
 
-export type OrchestrationErrorCode = "INVALID_REQUEST" | "IDEMPOTENCY_CONFLICT" | "RECOVERY_REQUIRED" | "RETRY_EXHAUSTED" | "CANCELLED" | "TIMEOUT";
+export type OrchestrationErrorCode = "INVALID_REQUEST" | "IDEMPOTENCY_CONFLICT" | "RECOVERY_REQUIRED" | "RETRY_EXHAUSTED" | "CANCELLED" | "TIMEOUT" | "WAITING_INPUT";
 
 export interface OrchestrationRetryPolicy {
   /** Total provider attempts per stage/key, including the first, across resumes (1..10). */
@@ -184,6 +188,9 @@ export class OrchestrationError extends Error {
 }
 
 export interface OrchestrationDependencies {
+  /** Non-dispatching manual preparation. False means waiting, never a provider attempt.
+   * The host must retain immutable original inputs and return true only for a bound result. */
+  readonly prepareAgentInput?: (request: AgentRunRequest) => boolean;
   /** Read-only authoritative lifecycle view; never written by the orchestrator. */
   readonly lifecycleState: { get(taskId: string): LifecycleRecord | null };
   readonly runStore: OrchestrationRunStore;
@@ -307,6 +314,10 @@ function validateRunRequest(request: OrchestrationRunRequest): void {
   if (typeof request.runId !== "string" || request.runId.trim().length === 0 || request.runId !== request.runId.trim()) {
     throw new OrchestrationError("INVALID_REQUEST", "Orchestration runId must be non-empty and trimmed.");
   }
+  if ((request.assignmentRunId === undefined) !== (request.assignmentKey === undefined) ||
+      [request.assignmentRunId, request.assignmentKey].some(value=>value!==undefined&&(typeof value!=="string"||!value.trim()||value.trim()!==value))) {
+    throw new OrchestrationError("INVALID_REQUEST", "A successor must identify both the original run and its idempotency key.");
+  }
   if (request.signal !== undefined && (request.signal === null ||
       typeof request.signal.aborted !== "boolean" || typeof request.signal.addEventListener !== "function" ||
       typeof request.signal.removeEventListener !== "function")) {
@@ -358,9 +369,10 @@ export class SequentialOrchestrationEngine {
         check();
         const journal = this.dependencies.runStore.get(key) ?? {
           schemaVersion: 1 as const, idempotencyKey: key, ownerId: request.ownerId, runId: request.runId,
+          ...(request.assignmentRunId === undefined ? {} : { assignmentRunId: request.assignmentRunId, assignmentKey:request.assignmentKey! }),
           occurredAt: request.occurredAt, values: {}, attempts: {},
         };
-        if (journal.ownerId !== request.ownerId || journal.runId !== request.runId) {
+        if (journal.ownerId !== request.ownerId || journal.runId !== request.runId || journal.assignmentRunId !== request.assignmentRunId || journal.assignmentKey!==request.assignmentKey) {
           throw new OrchestrationError("IDEMPOTENCY_CONFLICT", "This idempotency key belongs to a different owner/run identity.");
         }
         this.dependencies.runStore.save(journal);
@@ -397,9 +409,21 @@ export class SequentialOrchestrationEngine {
     let start = journal.values.start as DeveloperStartResult | undefined;
     const resuming = start !== undefined;
     if (start === undefined) {
-      start = await this.operation(x, "developer-start", () => this.dependencies.developerStart.start({
-        ownerId: actor("Developer"), runId: stageRunId(request.runId, "developer-start"), occurredAt: request.occurredAt,
-      }));
+      const original = request.assignmentKey === undefined ? null : this.dependencies.runStore.get(request.assignmentKey);
+      const originalAssignment = original?.values.start as DeveloperStartResult | undefined;
+      if (request.assignmentRunId !== undefined && (!originalAssignment || original?.runId!==request.assignmentRunId || originalAssignment.assignment.ownerId !== actor("Developer"))) {
+        throw new OrchestrationError("RECOVERY_REQUIRED", "A successor requires an existing original assignment and matching Developer identity.");
+      }
+      start = await this.operation(x, "developer-start", async () => {
+        const started=await this.dependencies.developerStart.start({
+          ownerId: actor("Developer"), runId: stageRunId(request.assignmentRunId ?? request.runId, "developer-start"), occurredAt: request.occurredAt,
+          ...(originalAssignment === undefined ? {} : { expectedTaskId: originalAssignment.taskId }),
+        });
+        if(originalAssignment && (originalAssignment.assignment.lockId!==started.assignment.lockId || originalAssignment.taskId!==started.taskId)) {
+          throw new OrchestrationError("RECOVERY_REQUIRED", "Successor start does not match the original assignment.");
+        }
+        return started;
+      });
       journal.values.start = start;
       this.dependencies.runStore.save(journal);
     }
@@ -421,14 +445,14 @@ export class SequentialOrchestrationEngine {
         // Reuse BOOT-013's own assignment/branch/context gates, with a bound
         // task guard so a missing assignment can never select unrelated work.
         const refreshed = await this.dependencies.developerStart.start({
-          ownerId: actor("Developer"), runId: stageRunId(request.runId, "developer-start"),
+          ownerId: actor("Developer"), runId: stageRunId(request.assignmentRunId ?? request.runId, "developer-start"),
           occurredAt: request.occurredAt, expectedTaskId: taskId,
         });
         if (refreshed.taskId !== taskId || refreshed.canonicalBranch !== start.canonicalBranch ||
             refreshed.assignment.lockId !== start.assignment.lockId) {
           throw new OrchestrationError("RECOVERY_REQUIRED", "Resumed Developer assignment differs from its persisted task binding.");
         }
-        if (journal.values["developer-agent"] === undefined &&
+        if (this.dependencies.prepareAgentInput === undefined && journal.values["developer-agent"] === undefined &&
             (refreshed.sourceRevision !== start.sourceRevision || computeContextPackageId(refreshed.context) !== computeContextPackageId(start.context))) {
           throw new OrchestrationError("RECOVERY_REQUIRED", "Incomplete Developer run inputs changed; reconcile the interrupted provider before starting a new run identity.");
         }
@@ -436,6 +460,7 @@ export class SequentialOrchestrationEngine {
       }
       const result = await this.runAgent(x, "developer-agent", "Developer", taskId, start.sourceRevision, start.context, actor("Developer"));
       this.addStage(x, "developer-agent", "Developer", result.outcome, summarizeAgentResult("Developer", result), result.evidenceRefs);
+      if (this.dependencies.prepareAgentInput && result.outcome !== "PASS") return this.stoppedResult(taskId, request.runId, stages, state(), "developer-agent", result.nonPass!.reason, result.nonPass!.remediation);
       const validation = await this.operation(x, "dev-validation", () => this.dependencies.developerValidation.validate({
         taskId, actorId: actor("Developer"), runId: stageRunId(request.runId, "dev-validation"), occurredAt: now(),
       }));
@@ -543,6 +568,12 @@ export class SequentialOrchestrationEngine {
       return cached.result;
     }
     const policy = this.dependencies.retryPolicy ?? { maxAttempts: 3, delayMs: 100 };
+    const input: AgentRunRequest = { taskId, role, revisionIdentity: revision, contextPackage, actorId,
+      runId: stageRunId(x.request.runId, stage), signal: x.signal,
+      toolPermissionPolicy: (this.dependencies.toolPermissionPolicyFor ?? defaultToolPermissionPolicy)(role) };
+    if (this.dependencies.prepareAgentInput && !this.dependencies.prepareAgentInput(input)) {
+      throw new OrchestrationError("WAITING_INPUT", "Waiting for the original manual role result; no provider attempt was consumed.");
+    }
     while ((x.journal.attempts[stage] ?? 0) < policy.maxAttempts) {
       x.check();
       x.journal.pendingStage = stage;

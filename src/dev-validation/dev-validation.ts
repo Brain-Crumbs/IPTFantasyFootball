@@ -62,6 +62,9 @@ export class DeveloperValidationError extends Error {
 }
 
 export interface DeveloperValidationRequest {
+  /** Optional host source fence. Invoked before execution and before durable writes. */
+  readonly assertSource?: (revision:string)=>void;
+  readonly commandEnvironment?:Readonly<Record<string,string|undefined>>;
   readonly taskId: string;
   readonly actorId: string;
   readonly runId: string;
@@ -184,7 +187,7 @@ export class DeveloperValidationGate {
 
     let executor: ValidationExecutor;
     try {
-      executor = new ValidationExecutor(validators);
+      executor = new ValidationExecutor(validators,request.commandEnvironment);
     } catch (error: unknown) {
       const detail = error instanceof ValidationFrameworkError
         ? `${error.code}: ${error.message}`
@@ -195,7 +198,9 @@ export class DeveloperValidationGate {
       );
     }
 
+    request.assertSource?.(revision);
     const run = await executor.run();
+    request.assertSource?.(revision);
 
     const checks: DeveloperValidationCheckResult[] = [];
     const failedCheckIds: string[] = [];
@@ -221,6 +226,7 @@ export class DeveloperValidationGate {
         ],
       };
 
+      request.assertSource?.(revision);
       const recorded = this.dependencies.evidenceStore.record(payload);
       if (!recorded.ok) {
         throw new DeveloperValidationError(
@@ -287,6 +293,7 @@ export class DeveloperValidationGate {
       );
     }
 
+    request.assertSource?.(revision);
     this.dependencies.stateStore.save(transitionResult.record, record.currentState);
 
     return Object.freeze({

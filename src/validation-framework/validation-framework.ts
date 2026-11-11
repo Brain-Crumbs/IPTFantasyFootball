@@ -100,7 +100,7 @@ const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 export class ValidationExecutor {
   private readonly specs: readonly ValidatorSpec[];
 
-  constructor(validators: readonly ValidatorSpec[]) {
+  constructor(validators: readonly ValidatorSpec[], private readonly commandEnvironment?:Readonly<Record<string,string|undefined>>) {
     if (validators.length === 0) {
       throw new ValidationFrameworkError(
         "EMPTY_VALIDATOR_SET",
@@ -125,7 +125,7 @@ export class ValidationExecutor {
     const startedAt = new Date();
     const results: ValidatorResult[] = [];
     for (const spec of this.specs) {
-      results.push(await executeValidator(spec));
+      results.push(await executeValidator(spec,this.commandEnvironment));
     }
     const finishedAt = new Date();
     const failed = results.some((result) => result.required && result.status !== "PASS");
@@ -140,17 +140,18 @@ export class ValidationExecutor {
   }
 }
 
-async function executeValidator(spec: ValidatorSpec): Promise<ValidatorResult> {
-  return spec.kind === "command" ? runCommandValidator(spec) : runFunctionValidator(spec);
+async function executeValidator(spec: ValidatorSpec, env?:Readonly<Record<string,string|undefined>>): Promise<ValidatorResult> {
+  return spec.kind === "command" ? runCommandValidator(spec,env) : runFunctionValidator(spec);
 }
 
-function runCommandValidator(spec: CommandValidatorSpec): ValidatorResult {
+function runCommandValidator(spec: CommandValidatorSpec, env?:Readonly<Record<string,string|undefined>>): ValidatorResult {
   const timeoutMs = spec.timeoutMs ?? DEFAULT_VALIDATOR_TIMEOUT_MS;
   const args = spec.args ?? [];
   const executor = `command:${[spec.command, ...args].join(" ")}`;
   const startedAt = new Date();
 
   const outcome = spawnSync(spec.command, args, {
+    ...(env===undefined?{}:{env}),
     ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
     encoding: "utf8",
     timeout: timeoutMs,

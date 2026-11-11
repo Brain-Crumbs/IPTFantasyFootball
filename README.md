@@ -59,7 +59,7 @@ npm run agent -- start <owner-id> <run-id>
 npm run agent -- validate <task-id> <actor-id> <run-id>
 ```
 
-Implemented commands are `help`, `version`, `next`, `status`, `explain task/transition/validation/reviews/merge`, `start`, `validate`, `manual export/import/run`, and `recovery check/apply`. Generic `review`, `rework`, and `orchestrate` CLI commands remain reserved; available library gates and the manual adapter are documented separately.
+Implemented commands are `help`, `version`, `next`, `status`, `explain task/transition/validation/reviews/merge`, `start`, `validate`, `manual export/import/run`, `recovery check/apply`, and `orchestrate`. Top-level `review` and `rework` commands remain reserved; available library gates and the manual adapter are documented separately.
 
 ### `next`
 
@@ -79,7 +79,7 @@ BOOT-032 adds read-only `agent recovery check` and explicit offline `agent recov
 
 ### End-to-end canary
 
-BOOT-033 adds the CANARY-001 marker workload, `scripts/canary.mjs` and `npm run canary:rehearse`. The driver composes the existing native gates with the manual provider; its live path pauses before controlled merge unless the exact PR/head is separately authorized. The isolated rehearsal retains actual local Git/gate/evidence results with fixture GitHub and scripted judgments, which do not establish live acceptance. See [docs/CANARY.md](docs/CANARY.md) for clean-start reproduction, independent role handoffs, draft PR/CI, recovery and the evidence needed for an optional live run. The owner retired remaining live completion as a cutover prerequisite on 2026-11-07; see [the decision record](docs/CANARY_RETIREMENT.md). Automated regression tests remain required. Generic `agent orchestrate` remains reserved.
+BOOT-033 adds the CANARY-001 marker workload, `scripts/canary.mjs` and `npm run canary:rehearse`. The driver composes the existing native gates with the manual provider; its live path pauses before controlled merge unless the exact PR/head is separately authorized. The isolated rehearsal retains actual local Git/gate/evidence results with fixture GitHub and scripted judgments, which do not establish live acceptance. See [docs/CANARY.md](docs/CANARY.md) for clean-start reproduction, independent role handoffs, draft PR/CI, recovery and the evidence needed for an optional live run. The owner retired remaining live completion as a cutover prerequisite on 2026-11-07; see [the decision record](docs/CANARY_RETIREMENT.md). Automated regression tests remain required. For other tasks use the [BOOT-037 manual workflow driver](docs/WORKFLOW_DRIVER.md).
 
 ### Lifecycle, assignment, branch, and context foundations
 

@@ -1,4 +1,7 @@
 import { runRecoveryCommand, renderRecoveryResult } from "./recovery.js";
+import { runOrchestrateCommand } from "./orchestrate.js";
+import { DriverError } from "../workflow-driver/io.js";
+import type { DriverRuntime } from "../workflow-driver/driver.js";
 import { RecoveryError, type RecoveryRequest } from "../recovery-tools/index.js";
 import { renderWorkflowExplanation, type WorkflowDiagnostics } from "../workflow-diagnostics/index.js";
 import { runExplainCommand, ExplainUsageError } from "./explain.js";
@@ -41,6 +44,7 @@ export interface CliRunResult {
 }
 
 export interface CliRunContext {
+  driverRuntime?: DriverRuntime;
   authorizeRecoveryOverride?: (request: RecoveryRequest) => boolean;
   signal?: AbortSignal;
   repositoryRoot?: string;
@@ -87,6 +91,8 @@ function succeed<T>(command: string, json: boolean, data: T, human: string): Cli
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
   const json = argv.includes("--json");
+  const scoped = argv.filter(arg => arg !== "--json");
+  if (scoped[0] === "orchestrate") return { json, command: "orchestrate", rest: scoped.slice(1), parseError: null };
   const positional: string[] = [];
 
   for (const arg of argv) {
@@ -124,10 +130,11 @@ function helpText(): string {
     "IPT Agent Control Plane CLI",
     "",
     "Deterministic, provider-neutral command surface for the repository development control plane.",
-    "BOOT-008 implements next-task selection, BOOT-013 implements developer task start, BOOT-016 implements developer validation, BOOT-029 adds local/manual role handoffs, and BOOT-030 reports read-only project status; general review/orchestration CLI composition remains reserved.",
+    "BOOT-037 adds guided setup, issue preparation, durable manual handoffs, inbox import and workflow continuation. Run agent orchestrate help for the operator journey.",
     "",
     "Usage:",
     "  agent [--json] <command>",
+    "  agent [--json] orchestrate help",
     "  agent [--json] recovery check",
     "  agent [--json] recovery apply <request-file>",
     "  agent [--json] explain task|validation|reviews|merge <task-id>",
@@ -266,6 +273,16 @@ export async function runCli(
       { cliVersion: CLI_VERSION, outputSchemaVersion: OUTPUT_SCHEMA_VERSION },
       `ipt-agent ${CLI_VERSION} (output schema ${OUTPUT_SCHEMA_VERSION})`,
     );
+  }
+
+  if (parsed.command === "orchestrate") {
+    try {
+      const result = await runOrchestrateCommand(parsed.rest, context.repositoryRoot ?? ".", { ...context.driverRuntime, ...(context.signal ? { signal: context.signal } : {}) });
+      return succeed("orchestrate", parsed.json, result.data, result.human);
+    } catch (error) {
+      return fail("orchestrate", parsed.json, error instanceof DriverError && error.code === "INVALID_INPUT" ? EXIT_CODES.USAGE_ERROR : EXIT_CODES.WORKFLOW_BLOCKED,
+        {code:"ORCHESTRATE_ERROR",message:error instanceof Error ? `${error instanceof DriverError ? error.code : "DRIVER_ERROR"}: ${error.message}` : "Workflow driver failed."});
+    }
   }
 
   if (parsed.command === "next") {

@@ -2,14 +2,15 @@
   "schemaId": "ipt.module-contract",
   "schemaVersion": "1.1.0",
   "moduleId": "control-plane.cli-shell",
-  "moduleVersion": "1.4.0",
+  "moduleVersion": "1.5.0",
   "structuralContract": {
     "interfaces": [
       "Human mode: npm run agent -- <command>",
       "Machine mode: npm run --silent agent -- --json <command>",
       "JSON envelope { schemaVersion, ok, command, data, error }",
       "Exit codes 0=SUCCESS, 2=USAGE_ERROR, 3=NOT_IMPLEMENTED, 4=WORKFLOW_BLOCKED, 70=INTERNAL_ERROR",
-      "Implemented commands help, version, next, status, explain task/transition/validation/reviews/merge, start, validate, manual export/import/run, recovery check/apply; command-owned contracts documented in docs/CLI.md"
+      "Implemented commands help, version, next, status, explain task/transition/validation/reviews/merge, start, validate, manual export/import/run, recovery check/apply; command-owned contracts documented in docs/CLI.md",
+      "orchestrate help routes BOOT-037 setup, intake, inbox, resume and publication with the unchanged CLI envelope."
     ]
   },
   "semanticContract": {
@@ -23,7 +24,8 @@
       "read-only-project-status-command",
       "read-only-workflow-explain-commands",
       "read-only-recovery-check-command",
-      "explicit-offline-recovery-apply-command"
+      "explicit-offline-recovery-apply-command",
+      "manual-workflow-driver-command"
     ],
     "behavioralConstraints": [
       "successful commands exit 0",
@@ -76,7 +78,8 @@
     "control-plane.next-task",
     "control-plane.status-reporting",
     "control-plane.workflow-diagnostics",
-    "control-plane.recovery-tools"
+    "control-plane.recovery-tools",
+    "control-plane.workflow-driver"
   ],
   "forbiddenDependencies": [
     "agent-provider/*",
