@@ -16,13 +16,22 @@ Primary API:
 
 - `new DeveloperValidationGate(dependencies)`
 - `DeveloperValidationGate.validate(request: DeveloperValidationRequest): Promise<DeveloperValidationResult>`
-- `DeveloperValidationRequest { taskId, actorId, runId, occurredAt }`
-- `DeveloperValidationResult { taskId, outcome, lifecycleState, revision, startedAt, finishedAt, checks, failedCheckIds, evidenceLocation }`
+- `DeveloperValidationRequest { taskId, actorId, runId, occurredAt, assertSource?, commandEnvironment?, routeFirstReview? }`
+- `DeveloperValidationResult { taskId, outcome, lifecycleState, revision, startedAt, finishedAt, checks, failedCheckIds, evidenceLocation, reviewEntryState? }`
 - `new FileDeveloperValidationStateStore(root)` — local lifecycle persistence adapter
 - `new RepositoryValidatorResolver(repositoryRoot)` — default `npm run build` / `npm test` validator resolution
 - `createLocalDeveloperValidationGate(repositoryRoot, options?)` — local composition root, mirroring BOOT-013's `createLocalDeveloperStartWorkflow`
 
 `agent validate <task-id> <actor-id> <run-id>` is the CLI entry point (`src/cli/core.ts`).
+
+BOOT-037 uses optional host arguments. `assertSource` runs before validator
+execution and before evidence and lifecycle writes. `commandEnvironment`
+sets the child-process environment for command validators. When
+`routeFirstReview` is true and QA is not required, a PASS atomically records
+`DEV_VALIDATED` and enters the first declared Architecture or UAT gate, or
+`MERGE_READY` if no independent review is declared. `reviewEntryState` reports
+the optional second event; it never claims a review judgment. Omitting these
+options preserves the original BOOT-016 API behavior.
 
 ## Composition, not reimplementation
 

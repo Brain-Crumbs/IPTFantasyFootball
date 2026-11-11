@@ -64,6 +64,8 @@ export class DeveloperStartError extends Error {
 }
 
 export interface DeveloperStartRequest {
+  /** Scope a fresh selection or resume before acquiring a lock or touching Git. */
+  readonly authorizedTaskId?: string;
   /** Resume only an existing assignment for this task; never select new work. */
   readonly expectedTaskId?: string;
   readonly ownerId: string;
@@ -138,6 +140,9 @@ export class DeveloperStartWorkflow {
     }
     const states = this.lifecycleSnapshot();
     const task = owned?.task ?? this.selectTask(states);
+    if (request.authorizedTaskId !== undefined && task.taskId !== request.authorizedTaskId) {
+      throw new DeveloperStartError("NO_ELIGIBLE_TASK", `Selected task '${task.taskId}' differs from authorized '${request.authorizedTaskId}'. No assignment was made.`);
+    }
     const initialRecord = this.lifecycleRecord(task.taskId);
     const initialState = initialRecord.currentState;
 
@@ -572,6 +577,9 @@ export async function createLocalDeveloperStartWorkflow(
 }
 
 function validateStartRequest(request: DeveloperStartRequest): void {
+  if (request.authorizedTaskId !== undefined && !/^[A-Z]+-[0-9]{3,}$/.test(request.authorizedTaskId)) {
+    throw new DeveloperStartError("INVALID_REQUEST", "Authorized task must be a schema-valid task identifier.", false);
+  }
   if (request.expectedTaskId !== undefined && (typeof request.expectedTaskId !== "string" || !/^[A-Z]+-[0-9]{3,}$/.test(request.expectedTaskId))) {
     throw new DeveloperStartError("INVALID_REQUEST", "Developer resume expectedTaskId must be a schema-valid task identifier.", false);
   }

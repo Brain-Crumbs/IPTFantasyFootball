@@ -1,0 +1,16 @@
+{
+  "schemaId": "ipt.driver-intake",
+  "schemaVersion": "1.0.0",
+  "intakeId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "projectRoot": "/work/project",
+  "profileHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source": "# Selected issue\n",
+  "issueNumber": null,
+  "issueUrl": null,
+  "task": null,
+  "diagnostics": [
+    "Missing metadata"
+  ],
+  "sessionId": null
+}

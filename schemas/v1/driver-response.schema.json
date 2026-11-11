@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iptfantasyfootball.dev/schemas/v1/driver-response.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaId",
+    "schemaVersion",
+    "projectRoot",
+    "profileHash",
+    "packetId",
+    "action"
+  ],
+  "properties": {
+    "schemaId": {
+      "const": "ipt.driver-response"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "projectRoot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profileHash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packetId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action": {
+      "enum": [
+        "clarify",
+        "recheck",
+        "rework"
+      ]
+    },
+    "intakeId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task": {
+      "type": "object"
+    },
+    "issueNumber": {
+      "type": "number"
+    }
+  }
+}

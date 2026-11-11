@@ -1,0 +1,42 @@
+{
+  "schemaId": "ipt.module-contract",
+  "schemaVersion": "1.1.0",
+  "moduleId": "control-plane.workflow-driver",
+  "moduleVersion": "1.0.0",
+  "structuralContract": {
+    "interfaces": [
+      "agent orchestrate help | init | prepare | select | run | watch | resume | status | next | publish | ready | rework | recover",
+      "Versioned driver profile, intake, session, diagnostic, response and receipt records under .agent/driver",
+      "Unchanged immutable manual packet/result plus a versioned companion handoff"
+    ]
+  },
+  "semanticContract": {
+    "capabilities": ["operator-selected-intake", "durable-manual-inbox", "bound-session-continuation", "explicit-publication"],
+    "behavioralConstraints": [
+      "Complete staged task records must pass the registry and dependency/context checks and be present in a committed source before assignment",
+      "File readiness requires two stable observations; accepted results and receipts are content bound",
+      "Manual waits consume no provider dispatch attempt; semantic results are immutable; successor attempts require legal rework",
+      "GitHub publication is explicit and scope checked; merge requires an exact repository PR and SHA host grant plus native gate acceptance"
+    ],
+    "invariants": [
+      "The driver coordinates and never writes authoritative lifecycle or review evidence directly",
+      "Every role preserves the owning gate's context and distinct actor policy",
+      "Session and transport identities do not substitute for authorization or judgment"
+    ],
+    "examples": ["A dropped response advances the originally pending role only after the manual adapter accepts it", "A lost merge response reconciles through BOOT-025"],
+    "edgeCases": ["Malformed and stale drops retain the original pending packet", "Administrative recovery requires observed hash and quiescence", "Ready conversion cannot create a missing draft"]
+  },
+  "allowedDependencies": [
+    "node:core", "control-plane.task-registry", "control-plane.next-task", "control-plane.context-compiler", "control-plane.dev-start", "control-plane.dev-validation", "control-plane.agent-provider", "control-plane.local-agent-adapter", "control-plane.orchestration-engine", "control-plane.qa-review", "control-plane.architecture-review", "control-plane.uat-review", "control-plane.review-rework", "control-plane.pr-lifecycle", "control-plane.merge-readiness", "control-plane.controlled-merge", "control-plane.status-reporting", "control-plane.workflow-diagnostics", "control-plane.recovery-tools"
+  ],
+  "forbiddenDependencies": ["vendor-agent-sdk", "fantasy-product", "direct-lifecycle-or-evidence-write"],
+  "knownConsumers": [
+    {
+      "consumerId": "control-plane.cli-shell",
+      "expectations": ["The operator can complete the manual workflow through documented commands", "Machine output preserves the existing CLI envelope"],
+      "requiredCapabilities": ["operator-selected-intake", "durable-manual-inbox", "bound-session-continuation", "explicit-publication"],
+      "acceptedRanges": ["Versioned driver records 1.0.0 and unchanged manual packet/result records 1.0.0"],
+      "requiredReachableRanges": ["Prepared, waiting, stopped and DONE with original request identity", "Auditable rejected and reused input receipts"]
+    }
+  ]
+}

@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parent
 SCHEMA_DIR = ROOT / "v1"
 FIXTURE_DIR = ROOT / "fixtures" / "v1"
 FAMILIES = ["task","requirement","lifecycle-state","assignment-lock","validation-evidence","review-result","module-contract","merge-evidence","local-agent-packet","local-agent-result"]
+FAMILIES += ["driver-profile", "driver-session", "driver-intake", "driver-response", "driver-diagnostic", "driver-receipt"]
 failures = []
 
 for family in FAMILIES:

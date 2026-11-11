@@ -1,0 +1,24 @@
+{
+  "schemaId": "ipt.driver-session",
+  "schemaVersion": "1.0.0",
+  "sessionId": "76d7bb69-c2b2-4e71-bd58-2ff87e649e11",
+  "projectRoot": "/work/project",
+  "profileHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "intakeId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "taskId": "DEMO-001",
+  "issueNumber": 1,
+  "definitionPath": "tasks/definitions/demo-001.task.json",
+  "definitionHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "registrationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "request": {
+    "ownerId": "operator::Developer",
+    "runId": "76d7bb69-c2b2-4e71-bd58-2ff87e649e11",
+    "idempotencyKey": "76d7bb69-c2b2-4e71-bd58-2ff87e649e11",
+    "occurredAt": "2026-11-10T21:00:00.000Z"
+  },
+  "status": "PREPARED",
+  "pendingPacket": null,
+  "diagnosticId": null,
+  "predecessor": null,
+  "result": null
+}

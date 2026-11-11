@@ -1,0 +1,11 @@
+{
+  "schemaId": "ipt.driver-receipt",
+  "schemaVersion": "1.0.0",
+  "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "packetId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "status": "ACCEPTED",
+  "occurredAt": "2026-11-10T21:00:00.000Z",
+  "diagnosticId": null,
+  "nextAction": "Continue the same session.",
+  "unexpectedField": true
+}

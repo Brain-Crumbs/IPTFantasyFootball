@@ -7,6 +7,8 @@ import type { OrchestrationStageId } from "./orchestration-engine.js";
 
 /** Checkpoints are replay inputs and audit data, never lifecycle/evidence authority. */
 export interface OrchestrationRunJournal {
+  readonly assignmentRunId?: string;
+  readonly assignmentKey?: string;
   readonly schemaVersion: 1;
   readonly idempotencyKey: string;
   readonly ownerId: string;
@@ -166,7 +168,8 @@ function validateStages(value: unknown, runId: string): void {
 function validateJournal(value: unknown): OrchestrationRunJournal {
   assertJson(value);
   if (!record(value)) invalid("must be an object");
-  onlyKeys(value, ["schemaVersion", "idempotencyKey", "ownerId", "runId", "occurredAt", "values", "attempts", "pendingStage", "lastFailure"], "journal");
+  onlyKeys(value, ["schemaVersion", "idempotencyKey", "ownerId", "runId", "occurredAt", "values", "attempts", "pendingStage", "lastFailure", "assignmentRunId", "assignmentKey"], "journal");
+  if ((value.assignmentRunId !== undefined || value.assignmentKey!==undefined) && (!text(value.assignmentRunId)||!text(value.assignmentKey))) invalid("invalid original assignment binding");
   if (value.schemaVersion !== 1 || !text(value.idempotencyKey) || !text(value.ownerId) || !text(value.runId) || !requestDate(value.occurredAt) ||
       !record(value.values) || !record(value.attempts)) invalid("version, identity, timestamp, values or attempts are malformed");
   if (value.pendingStage !== undefined && !stage(value.pendingStage)) invalid("unknown pending stage");
@@ -183,7 +186,7 @@ function validateJournal(value: unknown): OrchestrationRunJournal {
   }
   onlyKeys(value.values, ["start", "stages", "result", ...Object.keys(AGENT_ROLES)], "checkpoint values");
   const journal = value as unknown as OrchestrationRunJournal;
-  const start = value.values.start === undefined ? undefined : validateStart(value.values.start, journal.runId);
+  const start = value.values.start === undefined ? undefined : validateStart(value.values.start, journal.assignmentRunId ?? journal.runId);
   for (const agentStage of Object.keys(AGENT_ROLES)) {
     if (Object.hasOwn(value.values, agentStage)) validateAgent(value.values[agentStage], agentStage, journal, start);
   }
@@ -217,7 +220,7 @@ export function parseOrchestrationRunJournal(serialized: string): OrchestrationR
 const parse = parseOrchestrationRunJournal;
 function checkUpdate(next: OrchestrationRunJournal, current: OrchestrationRunJournal | null): void {
   if (current === null) return;
-  if (current.ownerId !== next.ownerId || current.runId !== next.runId || current.occurredAt !== next.occurredAt) {
+  if (current.ownerId !== next.ownerId || current.runId !== next.runId || current.occurredAt !== next.occurredAt || current.assignmentRunId !== next.assignmentRunId || current.assignmentKey!==next.assignmentKey) {
     throw new RunStoreError("IDEMPOTENCY_CONFLICT", "An idempotency key's owner, run and initial timestamp are immutable.");
   }
   for (const [agentStage, attempts] of Object.entries(current.attempts)) {

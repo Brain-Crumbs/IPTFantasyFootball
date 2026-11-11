@@ -82,6 +82,12 @@ The manual CLI accepts packet paths/IDs, immutable import acknowledgements inclu
 
 The local composition accepts this adapter wherever an `AgentProvider` is required. Stable engine stage IDs must retain meaning across durable retry/resume; a timeout leaves pending work reusable. A persisted external terminal `ERROR` is non-recoverable, so orchestration cannot consume retries trying to replace it. Operators accept all transport statuses and enforce tool/session policy outside this code.
 
+BOOT-037 may supply an optional `importResult` pre-publication callback. It
+receives the fully validated immutable result before the adapter publishes it.
+The caller can reject a stale checkout and record its source fence. The callback
+cannot change the result bytes or bypass schema/binding checks. Existing callers
+need no changes, and canonical packet/result schemas and IDs are unchanged.
+
 ## Consumer-required reachable ranges
 
 - All five provider roles remain exportable without vendor-specific fields.

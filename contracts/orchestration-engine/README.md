@@ -92,6 +92,17 @@ BOOT-027 runs did not have this journal. Do not infer or manufacture a journal f
 
 After abrupt process death, a file lock can remain intentionally. Stop and independently verify all repository runners, direct gates and external provider sessions. Inspect the original journal/token, then use BOOT-032 `release-run-lock` with original task/key, exact canonical revision/token hash, actor/reason and explicit quiescence; retain the journal and resume the same key/owner/run. Never delete journals, evidence, assignment locks or lifecycle history to make a run look new. There is no automatic age/PID stealing; uncertain writers and malformed records block repair. See [RECOVERY.md](../../docs/RECOVERY.md).
 
+BOOT-037's optional `prepareAgentInput` hook prepares an immutable input without
+dispatching an agent. False returns `WAITING_INPUT` before an attempt is counted;
+the driver retains its original packet and verifies the accepted source fence.
+The driver mode stops a non-PASS Developer judgment before validation. Default
+consumers continue to treat that outcome as traceability only. A successor
+request can name the original `assignmentRunId` and `assignmentKey` after the
+owning rework gate has restored development. Those fields are immutable journal
+bindings and cannot acquire a new assignment. Older journals remain readable;
+older engines must not resume journals carrying the new fields. See the
+[driver contract](../workflow-driver/README.md).
+
 ## Dependencies and invariants
 
 Allowed producers: `control-plane.dev-start`, `dev-validation`, `qa-review`, `architecture-review`, `uat-review`, `review-rework`, `merge-readiness`, `controlled-merge`, `agent-provider`; `task-registry` for declared roles; read-only lifecycle types/state; `context-compiler` types; `review-framework` types and `computeContextPackageId`; Node filesystem/path/crypto and async context for local journal persistence and exclusive locking.

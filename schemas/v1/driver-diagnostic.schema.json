@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iptfantasyfootball.dev/schemas/v1/driver-diagnostic.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaId",
+    "schemaVersion",
+    "packetId",
+    "projectRoot",
+    "profileHash",
+    "sessionId",
+    "intakeId",
+    "revision",
+    "code",
+    "message",
+    "continuation",
+    "responseSchema",
+    "responseTemplate"
+  ],
+  "properties": {
+    "schemaId": {
+      "const": "ipt.driver-diagnostic"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "packetId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projectRoot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profileHash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sessionId": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "intakeId": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revision": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "code": {
+      "type": "string",
+      "minLength": 1
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1
+    },
+    "continuation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "responseSchema": {
+      "type": "object"
+    },
+    "responseTemplate": {
+      "type": "object"
+    },
+    "taskContext": {
+      "oneOf": [{"type":"object"},{"type":"null"}]
+    }
+  }
+}

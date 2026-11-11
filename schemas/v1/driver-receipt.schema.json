@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iptfantasyfootball.dev/schemas/v1/driver-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaId",
+    "schemaVersion",
+    "inputHash",
+    "packetId",
+    "status",
+    "occurredAt",
+    "diagnosticId",
+    "nextAction"
+  ],
+  "properties": {
+    "schemaId": {
+      "const": "ipt.driver-receipt"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "inputHash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packetId": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "enum": [
+        "ACCEPTED",
+        "REUSED",
+        "REJECTED"
+      ]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "diagnosticId": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nextAction": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

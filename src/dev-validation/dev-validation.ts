@@ -62,6 +62,11 @@ export class DeveloperValidationError extends Error {
 }
 
 export interface DeveloperValidationRequest {
+  /** Optional host source fence. Invoked before execution and before durable writes. */
+  readonly assertSource?: (revision:string)=>void;
+  readonly commandEnvironment?:Readonly<Record<string,string|undefined>>;
+  /** BOOT-037: atomically enter the first declared gate after a PASS when QA is absent. */
+  readonly routeFirstReview?: boolean;
   readonly taskId: string;
   readonly actorId: string;
   readonly runId: string;
@@ -111,6 +116,8 @@ export interface DeveloperValidationResult {
   readonly taskId: string;
   readonly outcome: "PASS" | "FAIL";
   readonly lifecycleState: "DEV_VALIDATED" | "DEV_VALIDATION_FAILED";
+  /** Optional next gate entered in the same checked write by driver mode. */
+  readonly reviewEntryState?: "ARCHITECTURE_REVIEW" | "UAT_REVIEW" | "MERGE_READY";
   readonly revision: string;
   readonly startedAt: string;
   readonly finishedAt: string;
@@ -184,7 +191,7 @@ export class DeveloperValidationGate {
 
     let executor: ValidationExecutor;
     try {
-      executor = new ValidationExecutor(validators);
+      executor = new ValidationExecutor(validators,request.commandEnvironment);
     } catch (error: unknown) {
       const detail = error instanceof ValidationFrameworkError
         ? `${error.code}: ${error.message}`
@@ -195,7 +202,9 @@ export class DeveloperValidationGate {
       );
     }
 
+    request.assertSource?.(revision);
     const run = await executor.run();
+    request.assertSource?.(revision);
 
     const checks: DeveloperValidationCheckResult[] = [];
     const failedCheckIds: string[] = [];
@@ -221,6 +230,7 @@ export class DeveloperValidationGate {
         ],
       };
 
+      request.assertSource?.(revision);
       const recorded = this.dependencies.evidenceStore.record(payload);
       if (!recorded.ok) {
         throw new DeveloperValidationError(
@@ -287,12 +297,31 @@ export class DeveloperValidationGate {
       );
     }
 
-    this.dependencies.stateStore.save(transitionResult.record, record.currentState);
+    let working=transitionResult.record;
+    let reviewEntryState:DeveloperValidationResult["reviewEntryState"];
+    if (request.routeFirstReview && outcome==="PASS" && !task.requiredReviewRoles.includes("QA")) {
+      const [next,prerequisite]=task.requiredReviewRoles.includes("Architect") ? ["ARCHITECTURE_REVIEW","ARCHITECTURE_REVIEW_REQUESTED"] as const
+        : task.requiredReviewRoles.includes("UAT/Product") ? ["UAT_REVIEW","UAT_REVIEW_REQUESTED"] as const
+        : ["MERGE_READY","REVIEW_GATES_SATISFIED"] as const;
+      const routed=transitionLifecycle(working,{
+        taskId:task.taskId,expectedState:"DEV_VALIDATED",toState:next,
+        eventId:`dev-validation:${task.taskId}:${request.runId}:DEV_VALIDATED->${next}`,
+        occurredAt:request.occurredAt,reason:`Entered first declared gate after deterministic validation: ${next}.`,evidenceRef,
+        requiredReviewRoles:task.requiredReviewRoles as readonly ReviewRole[],satisfiedPrerequisites:[prerequisite],
+        actorId:request.actorId,runId:request.runId,revisionIdentity:revision,
+      });
+      if(!routed.ok)throw new DeveloperValidationError("LIFECYCLE_REJECTED",routed.rejection.reason,false);
+      working=routed.record;
+      reviewEntryState=next;
+    }
+    request.assertSource?.(revision);
+    this.dependencies.stateStore.save(working, record.currentState);
 
     return Object.freeze({
       taskId: task.taskId,
       outcome,
       lifecycleState: toState,
+      ...(reviewEntryState===undefined?{}:{reviewEntryState}),
       revision,
       startedAt: run.startedAt,
       finishedAt: run.finishedAt,

@@ -1,0 +1,61 @@
+{
+  "schemaId": "ipt.driver-profile",
+  "schemaVersion": "1.0.0",
+  "repository": "example/project",
+  "integrationTarget": "main",
+  "requiredCiChecks": [
+    "Build and test (Node)",
+    "Schema and contract validation (Python)"
+  ],
+  "paths": {
+    "issues": ".agent/driver/inbox/issues",
+    "responses": ".agent/driver/inbox/responses",
+    "outbound": ".agent/driver/outbound",
+    "archive": ".agent/driver/archive",
+    "exchange": ".agent/driver/exchange"
+  },
+  "roleActors": {
+    "Developer": "operator::Developer",
+    "QA": "operator::QA",
+    "Architect": "operator::Architect",
+    "UAT/Product": "operator::UAT/Product",
+    "MergeController": "operator::MergeController"
+  },
+  "rolePolicies": {
+    "Developer": {
+      "allowedTools": [
+        "read_file"
+      ],
+      "networkAccess": "none"
+    },
+    "QA": {
+      "allowedTools": [
+        "read_file"
+      ],
+      "networkAccess": "none"
+    },
+    "Architect": {
+      "allowedTools": [
+        "read_file"
+      ],
+      "networkAccess": "none"
+    },
+    "UAT/Product": {
+      "allowedTools": [
+        "read_file"
+      ],
+      "networkAccess": "none"
+    },
+    "MergeController": {
+      "allowedTools": [
+        "read_file"
+      ],
+      "networkAccess": "none"
+    }
+  },
+  "manual": {
+    "maxAttempts": 3,
+    "retryDelayMs": 100,
+    "roleTimeoutMs": 5000
+  }
+}

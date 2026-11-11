@@ -117,9 +117,13 @@ export class FileManualAgentProvider implements AgentProvider {
     return deepFreeze(packet);
   }
 
-  importResult(packetId: string, payload: unknown): LocalAgentImportResult {
+  importResult(packetId: string, payload: unknown, beforePublish?: (result:LocalAgentResult)=>void): LocalAgentImportResult {
     const packet = this.readPacket(packetId);
     const result = this.#validateResult(payload, packet);
+    // The driver can record its independently checked source/attempt fence
+    // after transport validation and before publication. Existing callers
+    // retain the same immutable result format and behavior.
+    beforePublish?.(result);
     const path = this.resultPath(packetId);
     const reused = this.#publish(path, result);
     if (reused) {
