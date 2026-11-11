@@ -17,6 +17,7 @@ export interface DriverSession {
   request: Omit<OrchestrationRunRequest, "signal">;
   status: "PREPARED" | "WAITING" | "STOPPED" | "DONE";
   pendingPacket: string | null; diagnosticId: string | null;
+  developerPacket?: string|null;
   predecessor: string | null; result: OrchestrationRunResult | null;
 }
 export interface IntakeRecord {

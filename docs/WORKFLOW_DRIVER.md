@@ -65,6 +65,9 @@ Use these exact headings, with `- none` for an intentionally empty list. Do not
 omit required information. `Issue` can be a number or the complete issue URL
 for this repository. Point requirements and contracts at already committed
 project records; the driver does not create arbitrary artifacts from prose.
+This example is for an isolated consumer fixture with no earlier eligible
+task. Check `orchestrate next` on the actual checkout; the retained canary
+definition is untouched and is not approval to run or change the old canary.
 
 ```markdown
 # Deliver the documented output
@@ -108,8 +111,10 @@ proposal before saving it. It cannot make itself eligible or authorize a run.
 
 The driver retains original Markdown and source hash, checks the proposed task
 through the registry, DAG and context compiler, and stages it under `.agent`
-before writing the complete definition. Registration makes a local commit on
-clean `main`; it does not push or assign. Interrupted registration is
+before exposing the complete definition. Registration writes a Git commit
+using an isolated index, then advances the exact clean local `main` ref and
+restores only the committed definition into the checkout. It does not push or
+assign. Interrupted registration is
 reconciled by presenting the identical input again. Do not commit unrelated
 changes or switch the integration branch during registration. Same-input
 preparation reuses the session. Changes to existing issue content, task ID or
@@ -138,7 +143,8 @@ the original request, pending packet, last diagnostic and stage evidence.
    A Developer result still binds to invocation revision; the intake fence and
    validators bind to the actual committed HEAD it produced.
 4. Inspect the receipt and next packet. A malformed/unaccepted response can be
-   corrected against the same packet. A terminal result stays immutable. A
+   corrected against the same packet using the original role schema and
+   template included in the bound repair handoff. A terminal result stays immutable. A
    failed review enters legal rework; import its typed `rework` proposal or run
    `orchestrate rework SESSION`. The linked successor uses a new judgment and
    preserves the original assignment and predecessor evidence.
@@ -177,7 +183,9 @@ ready conversion. GitHub's ready API does not provide a compare-and-swap SHA;
 the driver checks the target before and after, and merge uses GitHub's SHA
 condition. The native controller owns MERGED, lock release, DONE, and
 reconciliation of a lost merge response. An already confirmed merge does not
-issue a second PUT.
+issue a second PUT. Reconciliation is scoped to the exact authorized intent
+recorded before the first attempt; an earlier merged PR on the same branch or
+SHA cannot complete this session.
 
 The completion handoff reports the next eligible candidate. Switch back to
 clean `main`, refresh it as appropriate, and explicitly select the next

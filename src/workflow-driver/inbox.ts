@@ -1,23 +1,48 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { FileManualAgentProvider } from "../local-agent-adapter/index.js";
 import { createLocalReviewReworkGate } from "../review-rework/index.js";
-import { FileDeveloperStartStateStore } from "../dev-start/index.js";
-import { files, git, hash, id, now, object, read, redact, requireValue, safePath, validate, write, clean } from "./io.js";
-import { diagnostic, loadSession, prepare, register, saveSession } from "./intake.js";
+import { FileDeveloperStartStateStore, type DeveloperStartResult } from "../dev-start/index.js";
+import { FileAssignmentLockStore, isAssignmentLockExpired } from "../assignment-lock/index.js";
+import { FileOrchestrationRunStore } from "../orchestration-engine/index.js";
+import { files, git, hash, id, now, object, read, redact, requireValue, safePath, stableId, validate, write, clean } from "./io.js";
+import { diagnostic, loadSession, mapMarkdown, prepare, register, saveSession, sessionPath } from "./intake.js";
 import type { DriverProfile, DriverResponse, DriverSession, IntakeRecord } from "./model.js";
 
-export const successorId = (sessionId:string):string => hash(`${sessionId}:successor`).slice(0,32).replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, "$1-$2-$3-$4-$5");
+export const successorId = (sessionId:string):string => stableId(`${sessionId}:successor`);
+export async function followSuccessors(root:string,p:DriverProfile,session:DriverSession):Promise<DriverSession> {
+  for(let depth=0;depth<10;depth++) {
+    if(!existsSync(sessionPath(root,successorId(session.sessionId))))return session;
+    session=await successor(root,p,session);
+  }
+  requireValue(!existsSync(sessionPath(root,successorId(session.sessionId))),"Linked rework chain exceeds the supported limit; inspect preserved records.");
+  return session;
+}
 export async function successor(root: string, p: DriverProfile, s: DriverSession): Promise<DriverSession> {
   const state = new FileDeveloperStartStateStore(safePath(root, ".agent/state/lifecycle"));
   const nextId = successorId(s.sessionId);
   const path = safePath(root, `.agent/driver/sessions/${nextId}.json`);
   const existing = existsSync(path) ? loadSession(root,p,nextId) : null;
+  requireValue(!existing||(existing.predecessor===s.sessionId&&existing.taskId===s.taskId&&existing.definitionHash===s.definitionHash&&existing.request.ownerId===s.request.ownerId&&
+    existing.request.assignmentRunId===(s.request.assignmentRunId??s.request.runId)&&existing.request.assignmentKey===(s.request.assignmentKey??s.request.idempotencyKey)),"Saved successor has an invalid predecessor binding.");
   const lifecycle=state.get(s.taskId);
   if(existing && lifecycle?.history.some(e=>e.toState==="IN_DEVELOPMENT"&&e.runId===`${existing.request.runId}::resume-rework`))return existing;
   requireValue(lifecycle?.currentState === "REWORK_REQUIRED", "A new judgment needs legal rework. Administrative reset remains a separate quiescent host-authorized operation.");
-  clean(root);
+  const head=clean(root);
+  const journalStore=new FileOrchestrationRunStore(safePath(root,".agent/state/orchestration"));
+  const original=journalStore.get(s.request.assignmentKey??s.request.idempotencyKey!);
+  const current=journalStore.get(s.request.idempotencyKey!);
+  const start=original?.values.start as DeveloperStartResult|undefined;
+  const predecessor=current?.values.start as DeveloperStartResult|undefined;
+  const lock=new FileAssignmentLockStore(safePath(root,".agent/state/assignments")).get(s.taskId);
+  requireValue(start&&predecessor&&original?.runId===(s.request.assignmentRunId??s.request.runId)&&current?.runId===s.request.runId&&
+    start.taskId===s.taskId&&predecessor.taskId===s.taskId&&predecessor.assignment.lockId===start.assignment.lockId&&
+    lock?.status==="ACTIVE"&&lock.ownerId===s.request.ownerId&&lock.lockId===start.assignment.lockId&&lock.runId===start.assignment.runId&&
+    lock.canonicalBranch===start.canonicalBranch&&git(root,"branch","--show-current")===start.canonicalBranch&&!isAssignmentLockExpired(lock,now()),"Rework requires the predecessor's exact original active assignment.","ASSIGNMENT_MISMATCH");
+  const reworkEntry=[...lifecycle.history].reverse().find(event=>event.toState==="REWORK_REQUIRED");
+  requireValue(reworkEntry?.revisionIdentity===head&&reworkEntry.actorId===s.request.ownerId&&
+    (reworkEntry.runId===`${s.request.runId}::review-rework`||(reworkEntry.runId?.startsWith("recovery:")&&reworkEntry.evidenceRef?.startsWith(".agent/state/recovery/"))),"Rework does not belong to the current failed attempt or an authorized recovery.");
   const nextRun = id();
-  const next: DriverSession = existing ?? { ...s, sessionId: nextId, predecessor: s.sessionId, pendingPacket: null, diagnosticId: null, result: null, status: "PREPARED",
+  const next: DriverSession = existing ?? { ...s, sessionId: nextId, predecessor: s.sessionId, pendingPacket: null, developerPacket:null,diagnosticId: null, result: null, status: "PREPARED",
     request: { ownerId: s.request.ownerId, runId: nextRun, idempotencyKey: nextRun, assignmentRunId: s.request.assignmentRunId ?? s.request.runId, assignmentKey:s.request.assignmentKey??s.request.idempotencyKey!,occurredAt: now() } };
   // Intent survives a crash before/after the owning transition. A saved successor
   // cannot execute until resumeDevelopment has actually entered IN_DEVELOPMENT.
@@ -45,7 +70,8 @@ export async function scan(root: string, p: DriverProfile, session: DriverSessio
       const bytes=stable(root,safePath(root,`${p.paths.issues}/${name}`)); if(bytes===null)continue;
       const receipt=safePath(root,`${p.paths.archive}/${hash({issue:bytes,profile:hash(p)})}.issue.json`);
       if(existsSync(receipt))continue;
-      const intake = await prepare(root,p,bytes); const captured={intakeId:intake.intakeId,sessionId:intake.sessionId};
+      const intake = await prepare(root,p,bytes); const captured={intakeId:intake.intakeId,sessionId:intake.diagnostics.length?null:intake.sessionId};
+      if(intake.sessionId&&intake.diagnostics.length)continue;
       write(receipt,captured,true); receipts.push(captured);
     }
     catch (error) { receipts.push({ issueFile: name, diagnosticId: diagnostic(root, p, "INTAKE_ERROR", error instanceof Error ? error.message : "Cannot prepare issue.") }); }
@@ -101,6 +127,12 @@ export async function scan(root: string, p: DriverProfile, session: DriverSessio
           const intake = read(safePath(root, `.agent/driver/intakes/${response.intakeId}.json`)) as unknown as IntakeRecord;
           requireValue(!intake.sessionId && response.task && Number.isSafeInteger(response.issueNumber), "Clarification requires a proposed complete task and issue number; existing registration is immutable.");
           requireValue(intake.issueNumber===null||response.issueNumber===intake.issueNumber,"Clarification cannot replace the operator-selected issue.");
+          const mapped=mapMarkdown(intake.source);
+          requireValue(!mapped.diagnostics.some(message=>message.startsWith("Duplicate or contradictory")),"Resolve contradictory issue fields in operator-selected Markdown before registration.");
+          for(const [key,value] of Object.entries(mapped.known)) {
+            const proposed=(response.task as unknown as Record<string,unknown>)[key];
+            requireValue(proposed!==undefined&&hash(value)===hash(proposed),`Clarification cannot change the explicit '${key}' field.`);
+          }
           const accepted = await register(root, p, { ...intake, task: response.task, issueNumber: response.issueNumber! });
           nextAction = `Prepared session ${accepted.sessionId}; explicitly select it with orchestrate run.`;
         } else {
@@ -117,7 +149,13 @@ export async function scan(root: string, p: DriverProfile, session: DriverSessio
       }
     } catch (error) {
       status = "REJECTED"; nextAction = "Correct the unaccepted response and save it again; retain the original pending packet. Terminal outcomes require legal rework.";
-      diagnosticId = diagnostic(root, p, "REJECTED_INPUT", error instanceof Error ? error.message : "Invalid response.");
+      const detail=error instanceof Error ? error.message : "Invalid response.";
+      const pending=session?.pendingPacket;
+      if(session&&pending&&(packetId===null||packetId===pending)&&!existsSync(safePath(root,`${p.paths.exchange}/${pending}.result.json`))) {
+        let handoff:unknown;
+        try{handoff=read(safePath(root,`${p.paths.outbound}/${pending}.handoff.json`));}catch{/* Retain the pending packet if the companion needs regeneration. */}
+        diagnosticId=diagnostic(root,p,"REJECTED_INPUT",detail,session,null,object(handoff)?handoff:undefined);
+      } else diagnosticId = diagnostic(root, p, "REJECTED_INPUT", detail);
     }
     // Captured original and receipt are append-only. Import-first ordering is safe:
     // if receipt writing crashes, the immutable adapter reports reused next scan.

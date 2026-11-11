@@ -4,10 +4,10 @@ import { AGENT_RUNNER_ROLES } from "../agent-provider/index.js";
 import { LocalRecoveryTools, recoveryHash } from "../recovery-tools/index.js";
 import { loadTaskRegistry, selectNextEligibleTask } from "../task-registry/index.js";
 import { readLocalLifecycleStates } from "../status-reporting/index.js";
-import { clean, DriverError, exclusive, files, git, hash, object, recoverWriter, requireValue, safePath, sleep, validate, write } from "../workflow-driver/io.js";
+import { clean, DriverError, exclusive, files, git, hash, object, recoverWriter, redact, requireValue, safePath, sleep, write } from "../workflow-driver/io.js";
 import { PROFILE, checkedProfile, diagnostic, loadProfile, loadSession, prepare, selectRegistered } from "../workflow-driver/intake.js";
 import { step, publish, type DriverRuntime } from "../workflow-driver/driver.js";
-import { scan, successor } from "../workflow-driver/inbox.js";
+import { followSuccessors, scan, successor } from "../workflow-driver/inbox.js";
 import type { DriverProfile, DriverSession } from "../workflow-driver/model.js";
 
 export const ORCHESTRATE_HELP = `orchestrate init --base main --checks "Build and test (Node),Schema and contract validation (Python)" --actor-prefix operator --developer-tools read_file,write_file,git_commit --review-tools read_file,run_test --enforce-policies externally [--repository owner/repo]
@@ -94,7 +94,7 @@ export async function runOrchestrateCommand(args: readonly string[], repositoryR
       const receipts:unknown[]=[];let first=true;
       do {
         try {await exclusive(root,async()=>{
-          if(session)session=loadSession(root,profile,session.sessionId);
+          if(session)session=await followSuccessors(root,profile,loadSession(root,profile,session.sessionId));
           const before=session?`${session.status}:${session.pendingPacket}:${session.diagnosticId}`:"";
           const scanned=await scan(root,profile,session);session=scanned.session;
           receipts.push(...scanned.receipts);if(receipts.length>50)receipts.splice(0,receipts.length-50);
@@ -122,7 +122,7 @@ export async function runOrchestrateCommand(args: readonly string[], repositoryR
         requireValue(flags.has("--stdin") !== flags.has("--issue-file"),"Choose exactly --stdin or --issue-file.");
         const source=flags.has("--stdin")?readFileSync(0,"utf8"):readFileSync(resolve(root,flags.get("--issue-file")!),"utf8");
         const intake=await prepare(root,profile,source);
-        return {data:intake,human:intake.sessionId?`Prepared session ${intake.sessionId}. Run orchestrate run ${intake.sessionId}. Registration was committed; no task was assigned.`:`Clarification needed. Open the diagnostic handoff in ${profile.paths.outbound}, then drop its response in ${profile.paths.responses} and run orchestrate watch --once.`};
+        return {data:intake,human:intake.sessionId&&!intake.diagnostics.length?`Prepared session ${intake.sessionId}. Run orchestrate run ${intake.sessionId}. Registration was committed; no task was assigned.`:`Preparation is waiting. Open the diagnostic handoff in ${profile.paths.outbound}, then drop its response in ${profile.paths.responses} or present the same input to reconcile interrupted registration.`};
       }
       let session:DriverSession|null=positional[1]?loadSession(root,profile,positional[1]):null;
       if(operation==="publish"||operation==="ready") {requireValue(session,"Supply a session ID.");const result=await publish(root,profile,session,runtime,operation==="ready");return {data:result,human:JSON.stringify(result,null,2)};}
@@ -140,7 +140,7 @@ export async function runOrchestrateCommand(args: readonly string[], repositoryR
       throw new DriverError("INVALID_INPUT","Unsupported operation.");
     });
   } catch(error) {
-    const code=error instanceof DriverError?error.code:"DRIVER_ERROR",message=error instanceof Error?error.message:"Driver failed.";
+    const code=error instanceof DriverError?error.code:"DRIVER_ERROR",message=redact(error instanceof Error?error.message:"Driver failed.",runtime.token);
     let diagnosticId:string|null=null;try{diagnosticId=diagnostic(root,p,code,message);}catch{/* stdout remains usable if disk/config is unavailable. */}
     throw new DriverError(code,`${message}${diagnosticId?` Diagnostic: ${diagnosticId}`:" Diagnostic could not be persisted; restore writable project storage/configuration, then retry."}`);
   }

@@ -20,6 +20,9 @@ import { successorId } from "./inbox.js";
 import type { DriverProfile, DriverSession } from "./model.js";
 
 export interface DriverRuntime { signal?: AbortSignal; fetchImpl?: FetchLike; token?: string; mergeAuthorization?: string; progress?: (message:string)=>void; }
+function githubTransport(runtime:DriverRuntime):FetchLike {
+  return runtime.fetchImpl??((url,init)=>globalThis.fetch(url,{...init,signal:AbortSignal.timeout(30000),redirect:"error"}));
+}
 function validatorEnvironment():Readonly<Record<string,string|undefined>> {
   const allowed=/^(?:PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|HOME|USERPROFILE|TMP|TEMP|TMPDIR|APPDATA|LOCALAPPDATA|LANG|LC_ALL|TZ|PYTHONPATH|PYTHONHOME)$/i;
   return Object.fromEntries(Object.entries(process.env).filter(([key])=>allowed.test(key)));
@@ -32,10 +35,12 @@ function observe(root:string,s:DriverSession,event:string,revision:string):void 
 }
 interface GithubPull {
   number:number; node_id?:string; title:string; body:string; draft:boolean; state:string;
+  merged?:boolean; merged_at?:string|null;
   head:{sha:string;ref:string;repo:{full_name:string}};base:{ref:string;repo:{full_name:string}};
 }
-function assertPull(pr:GithubPull,p:DriverProfile,s:DriverSession,branch:string,head?:string):void {
-  requireValue(pr&&pr.state==="open"&&Number.isSafeInteger(pr.number)&&pr.number>0&&pr.head?.ref===branch&&pr.base?.ref===p.integrationTarget&&
+function assertPull(pr:GithubPull,p:DriverProfile,s:DriverSession,branch:string,head?:string,allowConfirmed=false):void {
+  const acceptedState=pr?.state==="open"||(allowConfirmed&&pr?.state==="closed"&&(pr.merged===true||!!pr.merged_at));
+  requireValue(pr&&acceptedState&&Number.isSafeInteger(pr.number)&&pr.number>0&&pr.head?.ref===branch&&pr.base?.ref===p.integrationTarget&&
     pr.head?.repo?.full_name?.toLowerCase()===p.repository.toLowerCase()&&pr.base?.repo?.full_name?.toLowerCase()===p.repository.toLowerCase()&&
     typeof pr.title==="string"&&pr.title.startsWith(`${s.taskId}:`)&&typeof pr.body==="string"&&new RegExp(`^Closes #${s.issueNumber}\\s*$`,"m").test(pr.body)&&
     (head===undefined||pr.head.sha===head),"Open PR conflicts with the selected repository, task, issue, branch, base, or exact source.","PR_CONFLICT");
@@ -74,7 +79,7 @@ export function github(root: string, p: DriverProfile, s:DriverSession, runtime:
       assertRemote(root,p,runtime);
       const branch=git(root,"branch","--show-current");
       requireValue(git(root,"ls-remote","origin",`refs/heads/${branch}`).split(/\s/)[0]===head,"Remote branch changed before merge.");
-      const checked=await (runtime.fetchImpl??globalThis.fetch)(url.replace(/\/merge$/,""),{method:"GET",headers:init.headers});
+      const checked=await githubTransport(runtime)(url.replace(/\/merge$/,""),{method:"GET",headers:init.headers}).catch(()=>{throw new DriverError("GITHUB_UNAVAILABLE","Cannot confirm the exact PR before merge.");});
       const pr=await checked.json() as GithubPull;
       requireValue(checked.ok && pr.draft===false,"PR must be ready for review and still target the authorized exact source.");
       assertPull(pr,p,s,branch,head);requireValue(pr.number===number,"PR number changed before merge.");
@@ -82,7 +87,7 @@ export function github(root: string, p: DriverProfile, s:DriverSession, runtime:
     }
     const modified = init.method === "POST" && endpoint.pathname.endsWith("/pulls") ? { ...init, body: JSON.stringify({ ...JSON.parse(init.body ?? "{}"), draft: true }) } : init;
     try {
-      const response = await (runtime.fetchImpl ?? globalThis.fetch)(url, modified);
+      const response = await githubTransport(runtime)(url, modified);
       // Redact before any adapter can persist an upstream message in its journal.
       return { ok: response.ok, status: response.status, json: async () => {
         const value: unknown = await response.json(); return JSON.parse(JSON.stringify(value).split(token).join("[redacted]")) as unknown;
@@ -116,8 +121,36 @@ export async function step(root: string, p: DriverProfile, s: DriverSession, run
       clean(root,v.head);return v;
     };
     const g = github(root, p, s, runtime);
+    const intentPath=safePath(root,`.agent/driver/merge-intents/${s.sessionId}.json`);
+    type MergeIntent={sessionId:string;repository:string;issueNumber:number;branch:string;number:number;head:string};
+    let intent:MergeIntent|null=null;
+    if(existsSync(intentPath)) {
+      const saved=read(intentPath) as MergeIntent;
+      requireValue(saved.sessionId===s.sessionId&&saved.repository===p.repository&&saved.issueNumber===s.issueNumber&&saved.branch===task.canonicalBranch&&
+        Number.isSafeInteger(saved.number)&&saved.number>0&&/^[a-f0-9]{40,64}$/.test(saved.head),"Invalid exact merge authorization record.");
+      intent=saved;
+    }
+    const mergeTransport:FetchLike=async(url,init)=>{
+      requireValue(intent,"Merge calls require the recorded exact authorized attempt.");
+      const authorized=intent,endpoint=new URL(url);
+      const match=/\/pulls\/(\d+)(?:\/merge)?$/.exec(endpoint.pathname);
+      if(match)requireValue(Number(match[1])===authorized.number,"Remote merge call selected an unauthorized PR.");
+      if(init.method==="PUT")requireValue((JSON.parse(init.body??"{}") as {sha?:string}).sha===authorized.head,"Remote merge call selected an unauthorized source.");
+      // For historical discovery, query the one PR for which this session
+      // actually recorded a grant. Another merged PR on the same SHA is not
+      // evidence for this attempt. Open-PR readiness still sees all candidates.
+      const history=init.method==="GET"&&endpoint.pathname.endsWith("/pulls")&&endpoint.searchParams.get("state")==="all";
+      const response=await g.fetchImpl(history?`${endpoint.origin}${endpoint.pathname}/${authorized.number}`:url,init);
+      if(!response.ok||init.method!=="GET"||(!match&&!history))return response;
+      return {ok:response.ok,status:response.status,json:async()=>{
+        const pr=await response.json() as GithubPull;
+        assertPull(pr,p,s,authorized.branch,authorized.head,true);
+        requireValue(pr.number===authorized.number,"GitHub returned a different PR.");
+        return history?[pr]:pr;
+      }};
+    };
     const [start, validation, qa, architecture, uat, rework, readiness, merge] = await Promise.all([
-      createLocalDeveloperStartWorkflow(root), createLocalDeveloperValidationGate(root), createLocalQaReviewGate(root), createLocalArchitectureReviewGate(root), createLocalUatReviewGate(root), createLocalReviewReworkGate(root), createLocalMergeReadinessPolicyEngine(root, g), createLocalControlledMergeController(root, g) ]);
+      createLocalDeveloperStartWorkflow(root), createLocalDeveloperValidationGate(root), createLocalQaReviewGate(root), createLocalArchitectureReviewGate(root), createLocalUatReviewGate(root), createLocalReviewReworkGate(root), createLocalMergeReadinessPolicyEngine(root, g), createLocalControlledMergeController(root, {...g,fetchImpl:mergeTransport}) ]);
     const prepareAgentInput = (input: AgentRunRequest): boolean => {
       if (input.role !== "Developer") clean(root, input.revisionIdentity);
       else git(root,"merge-base","--is-ancestor",input.revisionIdentity,clean(root));
@@ -125,6 +158,7 @@ export async function step(root: string, p: DriverProfile, s: DriverSession, run
       const packet = exchange.exportPacket(input);
       roleHandoff(root, p, s, packet);
       if (s.pendingPacket!==packet.packetId) s.diagnosticId=null;
+      if(packet.role==="Developer")s.developerPacket=packet.packetId;
       s.pendingPacket = packet.packetId; s.status = "WAITING"; saveSession(root, s);
       observe(root,s,"manual-handoff",clean(root));
       if(!existsSync(exchange.resultPath(packet.packetId)))return false;
@@ -137,15 +171,23 @@ export async function step(root: string, p: DriverProfile, s: DriverSession, run
     const reviewGate = <T extends { prepareContext: (input: {taskId:string}) => unknown; review: (input: never) => unknown }>(gate: T): T => ({ ...gate,
       prepareContext: (input: {taskId:string}) => guarded(() => gate.prepareContext(input)), review: (input: never) => guarded(() => gate.review(input)) }) as T;
     const engine = new SequentialOrchestrationEngine({ taskRegistry: registry, lifecycleState: state, runStore: journalStore, developerStart: { start: input => start.start({...input, authorizedTaskId:s.taskId}) },
-      developerValidation: { validate: input => { const before=clean(root);requireValue(s.pendingPacket&&accepted(s.pendingPacket).role==="Developer","Developer validation requires the original accepted response and its source fence.");return validation.validate({...input,commandEnvironment:validatorEnvironment(),assertSource:revision=>{
+      developerValidation: { validate: input => { const before=clean(root);requireValue(s.developerPacket&&accepted(s.developerPacket).role==="Developer","Developer validation requires the original accepted response and its source fence.");return validation.validate({...input,routeFirstReview:true,commandEnvironment:validatorEnvironment(),assertSource:revision=>{
         requireValue(revision===before&&git(root,"branch","--show-current")===task.canonicalBranch,"Validation must stay on the exact canonical source.");clean(root,before);
       }}); } },
       qaReview: reviewGate(qa), architectureReview: reviewGate(architecture), uatReview: reviewGate(uat), reviewRework: rework,
       mergeReadiness: { evaluate: async input => { clean(root); return readiness.evaluate(input); } },
       controlledMerge: { merge: async input => {
-        if (bound?.pendingStage !== "controlled-merge" && !["DONE", "MERGED"].includes(state.get(s.taskId)?.currentState ?? "")) {
+        if (!intent) {
           const head = clean(root), ready = await readiness.evaluate({ taskId: s.taskId });
-          requireValue((runtime.mergeAuthorization ?? process.env.IPT_DRIVER_MERGE) === `${p.repository}#${ready.pullRequestNumber}@${head}`, "Exact repository/PR/head host authorization is required before controlled merge.", "MERGE_AUTHORIZATION_REQUIRED");
+          requireValue(ready.ready&&ready.pullRequestNumber&&ready.revision===head&&(runtime.mergeAuthorization ?? process.env.IPT_DRIVER_MERGE) === `${p.repository}#${ready.pullRequestNumber}@${head}`, "Exact repository/PR/head host authorization and ready CI are required before controlled merge.", "MERGE_AUTHORIZATION_REQUIRED");
+          const token=runtime.token??process.env.IPT_GITHUB_TOKEN??process.env.GITHUB_TOKEN;
+          requireValue(token,"Host GitHub credentials are required.");
+          const response=await g.fetchImpl(`https://api.github.com/repos/${p.repository}/pulls/${ready.pullRequestNumber}`,{method:"GET",headers:{Authorization:`Bearer ${token}`}});
+          const pr=await response.json() as GithubPull;
+          requireValue(response.ok&&pr.draft===false&&pr.number===ready.pullRequestNumber,"Only the exact ready-for-review PR can receive a merge intent.");
+          assertPull(pr,p,s,task.canonicalBranch,head);clean(root,head);
+          intent={sessionId:s.sessionId,repository:p.repository,issueNumber:s.issueNumber,branch:task.canonicalBranch,number:pr.number,head};
+          write(intentPath,intent,true);
         }
         return merge.merge(input);
       } }, agentRunner: new AgentRunner({ provider: exchange }), prepareAgentInput,
@@ -162,6 +204,7 @@ export async function step(root: string, p: DriverProfile, s: DriverSession, run
     observe(root,s,"after",git(root,"rev-parse","HEAD"));
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "WAITING_INPUT") return s;
+    if(s.pendingPacket&&existsSync(safePath(root,`${p.paths.exchange}/${s.pendingPacket}.result.json`)))s.pendingPacket=null;
     const code = error instanceof Error && "code" in error ? String(error.code) : "DRIVER_ERROR";
     diagnostic(root, p, code, redact(error instanceof Error ? error.message : "Driver operation failed; inspect preserved records.",runtime.token), s);
   }
@@ -201,7 +244,7 @@ export async function publish(root: string, p: DriverProfile, s: DriverSession, 
     requireValue(checked.ok&&pr.number===existing.number&&pr.node_id,"Unable to verify the exact PR node for ready conversion.");
     assertPull(pr,p,s,task.canonicalBranch,head);assertPublished();
     if(pr.draft===false)return {number:pr.number,revision:head,ready:true,reused:true};
-    const f = runtime.fetchImpl ?? globalThis.fetch;
+    const f = githubTransport(runtime);
     const response = await f("https://api.github.com/graphql", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ query: "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}", variables: { id: pr.node_id } }) });
     const body = await response.json() as {errors?:unknown}; requireValue(response.ok && !body.errors, "Ready conversion failed; inspect GitHub and retry. No merge was attempted.");
     const after=await candidate(head);assertPublished();requireValue(after?.number===pr.number&&after.draft===false,"Remote PR changed during ready conversion; inspect GitHub before resuming.");

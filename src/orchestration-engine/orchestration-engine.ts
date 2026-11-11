@@ -466,7 +466,7 @@ export class SequentialOrchestrationEngine {
       }));
       this.addStage(x, "dev-validation", null, validation.outcome,
         validation.outcome === "PASS" ? `Developer validation PASS at ${validation.revision}.` : `Developer validation failed: ${validation.failedCheckIds.join(", ")}.`,
-        validation.checks.map(c => `${c.evidenceLineageId}@${c.evidenceSequence}`), validation.lifecycleState);
+        validation.checks.map(c => `${c.evidenceLineageId}@${c.evidenceSequence}`), validation.reviewEntryState??validation.lifecycleState);
     }
     if (state() === "DEV_VALIDATION_FAILED") return this.stoppedResult(taskId, request.runId, stages, state(), "dev-validation",
       "Developer validation failed; recorded deterministic evidence remains authoritative.",

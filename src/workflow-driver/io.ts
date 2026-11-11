@@ -11,6 +11,7 @@ export class DriverError extends Error {
 export const hash = (value: unknown): string => createHash("sha256").update(typeof value === "string" ? value : canonicalJson(value)).digest("hex");
 export const now = (): string => new Date().toISOString();
 export const id = (): string => randomUUID();
+export const stableId = (value:unknown):string => hash(value).slice(0,32).replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, "$1-$2-$3-$4-$5");
 export function redact(value:string,extra?:string):string {
   for(const credential of [extra,process.env.IPT_GITHUB_TOKEN,process.env.GITHUB_TOKEN])if(credential)value=value.split(credential).join("[redacted]");
   return value;
@@ -18,7 +19,10 @@ export function redact(value:string,extra?:string):string {
 export const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 export function requireValue(v: unknown, message: string, code = "INVALID_INPUT"): asserts v { if (!v) throw new DriverError(code, message); }
 export function git(root: string, ...args: string[]): string {
-  try { return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(); }
+  return gitInEnvironment(root,process.env,...args);
+}
+export function gitInEnvironment(root:string,env:Readonly<Record<string,string|undefined>>,...args:string[]):string {
+  try { return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],env:{...env,GIT_TERMINAL_PROMPT:"0"},timeout:45000 }).trim(); }
   catch { throw new DriverError("GIT_FAILED", `Git operation '${args[0]}' failed. Check repository access and configured remote; credentials are not included in diagnostics.`); }
 }
 export function clean(root: string, expected?: string): string {

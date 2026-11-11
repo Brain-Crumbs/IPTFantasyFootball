@@ -4,5 +4,7 @@ declare module "node:child_process" {
     encoding?: string;
     stdio?: "pipe" | "ignore" | readonly ("pipe" | "ignore" | "inherit")[];
     maxBuffer?: number;
+    env?: Readonly<Record<string,string|undefined>>;
+    timeout?: number;
   }): string;
 }

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { loadTaskRegistry, loadTaskRegistryFromPaths, validateDependencyDag, type TaskRecord } from "../task-registry/index.js";
 import { DEFAULT_REQUIRED_CI_CHECKS } from "../merge-readiness/index.js";
 import type { DriverProfile, DriverSession, IntakeRecord } from "./model.js";
-import { clean, files, git, hash, id, now, read, redact, requireValue, safePath, schema, validate, write, writeText } from "./io.js";
+import { clean, files, git, gitInEnvironment, hash, id, now, object, read, redact, requireValue, safePath, schema, stableId, validate, write, writeText } from "./io.js";
 
 export const PROFILE = ".agent/driver/profile.json";
 export function loadProfile(root: string): DriverProfile {
@@ -18,8 +18,10 @@ export function checkedProfile(root:string,profile:unknown):DriverProfile {
   requireValue(DEFAULT_REQUIRED_CI_CHECKS.every(name => p.requiredCiChecks.includes(name)), "Profile must preserve the repository's required CI checks.");
   requireValue([p.manual.maxAttempts,p.manual.retryDelayMs,p.manual.roleTimeoutMs].every(Number.isSafeInteger)&&p.manual.maxAttempts>=1&&p.manual.maxAttempts<=10&&p.manual.retryDelayMs>=0&&p.manual.retryDelayMs<=60000&&p.manual.roleTimeoutMs>=1&&p.manual.roleTimeoutMs<=2147483647,"Manual retry/timeout settings must be bounded integers.");
   const paths = Object.values(p.paths).map(path => {
-    requireValue(/^\.agent\/driver\/(?:inbox\/|files\/)?[A-Za-z0-9 _-]+$/.test(path)&&!/(?:^|\/)(?:sessions|staged|intakes|observations|accepted|selections|reports|repair-attempts|writer-recovery)$/i.test(path),"Exchange paths must be dedicated ignored directories under .agent/driver; use forward slashes.");
-    return safePath(root,path);
+    requireValue(/^\.agent\/driver\/(?:inbox\/|files\/)?[A-Za-z0-9 _-]+$/.test(path)&&!/(?:^|\/)(?:sessions|staged|intakes|observations|accepted|selections|reports|repair-attempts|merge-intents|writer-recovery)$/i.test(path),"Exchange paths must be dedicated ignored directories under .agent/driver; use forward slashes.");
+    requireValue(path===path.trimEnd()&&!/(?:^|\/)(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(path),"Exchange directories cannot use device names or trailing spaces.");
+    const resolved=safePath(root,path);
+    return process.platform==="win32"?resolved.toLowerCase():resolved;
   });
   requireValue(paths.every((path, i) => paths.every((other, j) => i === j || (!path.startsWith(`${other}/`) && !path.startsWith(`${other}\\`) && path !== other))), "Input, archive, output and canonical exchange directories must remain separate.");
   return p;
@@ -57,7 +59,7 @@ export async function selectRegistered(root: string, p: DriverProfile, taskId: s
   saveSession(root,s);write(binding,{sessionId},true);return s;
 }
 
-export function diagnostic(root: string, p: DriverProfile | null, code: string, message: string, session: DriverSession | null = null, intake: IntakeRecord | null = null): string {
+export function diagnostic(root: string, p: DriverProfile | null, code: string, message: string, session: DriverSession | null = null, intake: IntakeRecord | null = null, originalHandoff?:Record<string,unknown>): string {
   message=redact(message).slice(0,8192);
   const revision = (() => { try { return git(root, "rev-parse", "HEAD"); } catch { return null; } })();
   const taskContext=session?{taskId:session.taskId,issueNumber:session.issueNumber,runId:session.request.runId,pendingPacket:session.pendingPacket,definitionHash:session.definitionHash,
@@ -65,22 +67,24 @@ export function diagnostic(root: string, p: DriverProfile | null, code: string, 
   const binding = { projectRoot: root, profileHash: p ? hash(p) : "unconfigured", sessionId: session?.sessionId ?? null, intakeId: intake?.intakeId ?? null, revision, code, message,taskContext };
   const packetId = hash(binding);
   const rework=session?.result?.finalLifecycleState==="REWORK_REQUIRED";
-  const continuation = intake ? "Return a proposed full task plus issueNumber using action clarify. Do not invent missing requirements. Registration remains schema/DAG checked."
+  const continuation = originalHandoff ? "Return a corrected raw role result for the ORIGINAL pending packet. Keep its binding; fill only the judgment/error fields using the original handoff. Do not reply with a driver recheck or change the task."
+    : intake ? "Return a proposed full task plus issueNumber using action clarify. Keep every explicit original field; do not invent missing requirements. Registration remains schema/DAG checked."
     : rework ? "Propose legal rework to start a linked Developer attempt. The predecessor remains immutable."
     : "Fix the stated external prerequisite, then return action recheck or run orchestrate resume. A new judgment needs action rework and legal gates; administrative recovery needs a quiescent host-authorized operator.";
   const responseTemplate = { schemaId: "ipt.driver-response", schemaVersion: "1.0.0", projectRoot: root, profileHash: binding.profileHash, packetId,
     action: intake ? "clarify" : rework ? "rework" : "recheck", ...(intake ? { intakeId: intake.intakeId, task: "<propose a complete ipt.task record>", issueNumber: intake.issueNumber??"<operator-selected GitHub issue number>" } : session ? { sessionId: session.sessionId } : {}) };
-  const packet = { schemaId: "ipt.driver-diagnostic", schemaVersion: "1.0.0", packetId, ...binding, continuation, responseSchema: schema(root, "driver-response"), responseTemplate };
+  const packet = { schemaId: "ipt.driver-diagnostic", schemaVersion: "1.0.0", packetId, ...binding, continuation,
+    responseSchema: originalHandoff?.responseSchema??schema(root, "driver-response"), responseTemplate:originalHandoff?.responseTemplate??responseTemplate };
   validate(root,"driver-diagnostic",packet);
   const output = safePath(root, `${p?.paths.outbound ?? ".agent/driver/outbound"}/${packetId}.diagnostic.json`);
   write(output, packet, true);
-  writeText(safePath(root, `${output}.md`), `# Workflow ${intake ? "clarification" : "repair"} handoff\n\nUse a fresh session. Work only in ${root}. This packet grants no gate, recovery or merge authority. If tools/checkout are unavailable, explain the blocker.\n\n${message}\n\n${continuation}\n\nSave exactly one JSON response in ${p?.paths.responses ?? ".agent/driver/inbox/responses"}. No commands in a response are executed.\n\n\x60\x60\x60json\n${JSON.stringify({ ...packet, ...(intake ? { originalIssue: intake.source, proposedTaskSchema: schema(root, "task") } : {}) }, null, 2)}\n\x60\x60\x60\n`, true);
+  writeText(safePath(root, `${output}.md`), `# Workflow ${intake ? "clarification" : "repair"} handoff\n\nUse a fresh session. Work only in ${root}. This packet grants no gate, recovery or merge authority. If tools/checkout are unavailable, explain the blocker.\n\n${message}\n\n${continuation}\n\nSave exactly one JSON response in ${p?.paths.responses ?? ".agent/driver/inbox/responses"}. No commands in a response are executed.\n\n\x60\x60\x60json\n${JSON.stringify({ ...packet, ...(intake ? { originalIssue: intake.source, proposedTaskSchema: schema(root, "task") } : {}), ...(originalHandoff?{originalHandoff}:{}) }, null, 2)}\n\x60\x60\x60\n`, true);
   if (session) { session.diagnosticId = packetId; session.status = "WAITING"; saveSession(root, session); }
   return packetId;
 }
 
 /** Documented headings have explicit empty lists ('- none'); missing never means empty. */
-export function mapMarkdown(source: string): { task: TaskRecord | null; issueNumber: number | null; issueUrl:string|null; diagnostics: string[] } {
+export function mapMarkdown(source: string): { task: TaskRecord | null; known:Partial<TaskRecord>; issueNumber: number | null; issueUrl:string|null; diagnostics: string[] } {
   const diagnostics: string[] = [];
   const unique=(pattern:RegExp,name:string):string|undefined=>{const matches=[...source.matchAll(pattern)];if(matches.length>1)diagnostics.push(`Duplicate or contradictory '${name}'.`);return matches.length===1?matches[0]![1]?.trim():undefined;};
   const field = (name: string): string | undefined => unique(new RegExp(`^\\*{0,2}${name}:\\*{0,2}[ \\t]*\x60?([^\r\n\x60]+)`, "gim"),name);
@@ -99,7 +103,8 @@ export function mapMarkdown(source: string): { task: TaskRecord | null; issueNum
   const issueUrl=issue&&/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/[0-9]+$/.test(issue)?issue:null;
   const number = issueUrl?Number(issueUrl.split("/").at(-1)):issue&&/^#?[0-9]+$/.test(issue)?Number(issue.replace(/^#/,"")):NaN;
   if (!Number.isSafeInteger(number) || number < 1) diagnostics.push("Missing positive Issue number or GitHub issue URL.");
-  return { task: diagnostics.length ? null : task as unknown as TaskRecord, issueNumber: Number.isSafeInteger(number) && number > 0 ? number : null, issueUrl, diagnostics };
+  const known=Object.fromEntries(Object.entries(task).filter(([,value])=>value!==undefined)) as Partial<TaskRecord>;
+  return { task: diagnostics.length ? null : known as TaskRecord, known, issueNumber: Number.isSafeInteger(number) && number > 0 ? number : null, issueUrl, diagnostics };
 }
 
 export async function prepare(root: string, p: DriverProfile, source: string): Promise<IntakeRecord> {
@@ -112,7 +117,7 @@ export async function prepare(root: string, p: DriverProfile, source: string): P
     const saved = read(path); validate(root, "driver-intake", saved); intake = saved as unknown as IntakeRecord;
     if (intake.sessionId) return intake.diagnostics.length?finishRegistration(root,p,intake,loadSession(root,p,intake.sessionId)):intake;
   } else {
-    const mapped = mapMarkdown(source);
+    const {known:_known,...mapped} = mapMarkdown(source);
     requireValue(!mapped.issueUrl||mapped.issueUrl.startsWith(`https://github.com/${p.repository}/issues/`),"Issue URL belongs to another repository.","REPOSITORY_MISMATCH");
     intake = { schemaId: "ipt.driver-intake", schemaVersion: "1.0.0", intakeId, projectRoot: root, profileHash: hash(p), sourceHash: hash(source), source, ...mapped, sessionId: null };
     write(path, intake, true);
@@ -129,7 +134,6 @@ export async function register(root: string, p: DriverProfile, intake: IntakeRec
   requireValue(intake.projectRoot === root && intake.profileHash === hash(p) && intake.task && Number.isSafeInteger(intake.issueNumber) && intake.issueNumber! > 0, "Clarification binding or issue metadata is incomplete.");
   const task = intake.task;
   requireValue(/^[A-Z]+-[0-9]{3,}$/.test(task.taskId), "Invalid task identifier.");
-  requireValue(task.requiredReviewRoles.includes("Developer") && task.requiredReviewRoles.includes("MergeController"), "The supported driver requires Developer and MergeController roles.");
   git(root, "check-ref-format", "--branch", task.canonicalBranch);
   requireValue(task.canonicalBranch !== p.integrationTarget, "Canonical branch cannot be the integration target.");
   const stage = safePath(root, `.agent/driver/staged/${intake.intakeId}/${hash(task)}/${task.taskId}.task.json`);
@@ -157,8 +161,10 @@ export async function register(root: string, p: DriverProfile, intake: IntakeRec
   const definitionPath = `tasks/definitions/${task.taskId.toLowerCase()}.task.json`;
   // Write-ahead registration intent: interruption leaves the complete staged record
   // and an explicit dirty-source wait, never an assigned partially registered task.
-  const sessionId = id(), runId = id();
-  const session: DriverSession = { schemaId: "ipt.driver-session", schemaVersion: "1.0.0", sessionId, projectRoot: root, profileHash: hash(p), intakeId: intake.intakeId, taskId: task.taskId, issueNumber: intake.issueNumber!, definitionPath, definitionHash: hash(task), registrationRevision: revision,
+  const sessionId = stableId({intakeId:intake.intakeId,kind:"session"}), runId = stableId({sessionId,kind:"run"});
+  const prior=existsSync(sessionPath(root,sessionId))?loadSession(root,p,sessionId):null;
+  requireValue(!prior||(prior.definitionHash===hash(task)&&prior.issueNumber===intake.issueNumber&&prior.request.runId===runId),"Intake is already bound to a different immutable registration intent.");
+  const session: DriverSession = prior ?? { schemaId: "ipt.driver-session", schemaVersion: "1.0.0", sessionId, projectRoot: root, profileHash: hash(p), intakeId: intake.intakeId, taskId: task.taskId, issueNumber: intake.issueNumber!, definitionPath, definitionHash: hash(task), registrationRevision: revision,
     request: { ownerId: p.roleActors.Developer, runId, idempotencyKey: runId, occurredAt: now() }, status: "PREPARED", pendingPacket: null, diagnosticId: null, predecessor: null, result: null };
   saveSession(root, session);
   intake.sessionId = sessionId; intake.diagnostics = ["Registration commit pending."];
@@ -170,16 +176,37 @@ function finishRegistration(root: string, p: DriverProfile, intake: IntakeRecord
   requireValue(intake.task && hash(intake.task) === session.definitionHash, "Registration intent no longer matches the staged definition.");
   requireValue(git(root, "branch", "--show-current") === p.integrationTarget, "Return to the integration branch to resume the interrupted registration.");
   const target = safePath(root, session.definitionPath);
-  const changed = git(root,"status","--porcelain").split(/\r?\n/).filter(Boolean);
-  requireValue(changed.every(line => line.slice(3) === session.definitionPath), "Unrelated edits prevent resuming registration; preserve them separately.");
-  let alreadyCommitted = false;
-  try { alreadyCommitted = hash(JSON.parse(git(root,"show",`HEAD:${session.definitionPath}`))) === session.definitionHash; } catch { /* Not committed yet. */ }
-  if (!alreadyCommitted) {
-    requireValue(git(root,"rev-parse","HEAD") === session.registrationRevision, "Base changed during registration; inspect the staged definition before continuing.");
-    write(target, intake.task, true);
-    git(root, "add", "--", session.definitionPath);
-    git(root, "commit", "--only", "-m", `Register operator-selected ${session.taskId} from issue #${session.issueNumber}`, "--", session.definitionPath);
+  const planPath=safePath(root,`.agent/driver/staged/${intake.intakeId}/registration.json`);
+  let plan: {base:string;commit:string};
+  if(existsSync(planPath)) {
+    const saved=read(planPath);
+    requireValue(object(saved)&&typeof saved.base==="string"&&typeof saved.commit==="string"&&/^[a-f0-9]{40,64}$/.test(saved.base)&&/^[a-f0-9]{40,64}$/.test(saved.commit),"Invalid registration plan.");
+    plan={base:saved.base,commit:saved.commit};
+  } else {
+    const base=clean(root,session.registrationRevision);
+    const input=safePath(root,`.agent/driver/staged/${intake.intakeId}/${session.definitionHash}/${session.taskId}.task.json`);
+    const env={...process.env,GIT_INDEX_FILE:safePath(root,`.agent/driver/staged/${intake.intakeId}/${id()}.index`)};
+    const blob=git(root,"hash-object","-w","--",input);
+    gitInEnvironment(root,env,"read-tree",base);
+    gitInEnvironment(root,env,"update-index","--add","--cacheinfo",`100644,${blob},${session.definitionPath}`);
+    const tree=gitInEnvironment(root,env,"write-tree");
+    const commit=git(root,"commit-tree",tree,"-p",base,"-m",`Register operator-selected ${session.taskId} from issue #${session.issueNumber}`);
+    plan={base,commit};write(planPath,plan,true);
   }
+  requireValue(git(root,"rev-parse",`${plan.commit}^`)===plan.base&&git(root,"diff-tree","--no-commit-id","--name-only","-r",plan.commit)===session.definitionPath&&
+    hash(JSON.parse(git(root,"show",`${plan.commit}:${session.definitionPath}`)))===session.definitionHash,"Staged registration no longer represents the exact authorized definition.");
+  const head=git(root,"rev-parse","HEAD");
+  requireValue(head===plan.base||head===plan.commit,"Base changed during registration; inspect the staged definition before continuing.");
+  if(head===plan.base) {
+    clean(root,plan.base);
+    git(root,"update-ref","-m",`Register ${session.taskId}`,`refs/heads/${p.integrationTarget}`,plan.commit,plan.base);
+  }
+  // The definition first becomes visible to registry readers after the commit
+  // exists on main. Restore only that one path; never reset a worktree/index.
+  const changed=git(root,"status","--porcelain").split(/\r?\n/).filter(Boolean);
+  requireValue(changed.every(line=>line.slice(3)===session.definitionPath)&&(!existsSync(target)||hash(read(target))===session.definitionHash),"Unrelated edits prevent finishing registration; preserve them separately.");
+  requireValue(git(root,"rev-parse","HEAD")===plan.commit,"Integration head changed while finishing registration.");
+  git(root,"restore",`--source=${plan.commit}`,"--staged","--worktree","--",session.definitionPath);
   session.registrationRevision = clean(root); saveSession(root, session);
   intake.diagnostics = []; write(safePath(root, `.agent/driver/intakes/${intake.intakeId}.json`), intake);
   return intake;

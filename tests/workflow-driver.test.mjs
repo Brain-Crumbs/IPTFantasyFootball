@@ -45,7 +45,10 @@ test('partial, malformed, conflicting and wrong-binding drops preserve pending w
  const f=fixture();await f.init();const sid=await prepared(f);let s=(await f.cli('run',sid)).envelope.data.session;const p=packet(f,s);
  put(f.root,'.agent/driver/inbox/responses/slow.json','{"schemaId":');s=await scan(f,sid);assert.equal(s.pendingPacket,p.packetId);
  const bad=response(p);bad.runId='wrong';put(f.root,'.agent/driver/inbox/responses/slow.json',bad);s=await scan(f,sid);assert.equal(s.pendingPacket,p.packetId);
- put(f.root,'marker.txt','delivered\n');git(f.root,'add','marker.txt');git(f.root,'commit','-m','Deliver marker');put(f.root,'.agent/driver/inbox/responses/slow.json',response(p));s=await scan(f,sid);assert.equal(packet(f,s).role,'QA');
+ const repair=get(f.root,`.agent/driver/outbound/${s.diagnosticId}.diagnostic.json`);
+ assert.equal(repair.sessionId,sid);assert.equal(repair.responseTemplate.packetId,p.packetId);assert.equal(repair.responseTemplate.runId,p.runId);
+ put(f.root,'marker.txt','delivered\n');git(f.root,'add','marker.txt');git(f.root,'commit','-m','Deliver marker');
+ put(f.root,'.agent/driver/inbox/responses/slow.json',{...repair.responseTemplate,result:response(p).result});s=await scan(f,sid);assert.equal(packet(f,s).role,'QA');
  const receipts=readdirSync(join(f.root,'.agent/driver/archive')).filter(x=>x.endsWith('.receipt.json')).map(x=>get(f.root,`.agent/driver/archive/${x}`));assert.equal(receipts.filter(x=>x.status==='REJECTED').length,2);assert.equal(receipts.filter(x=>x.status==='ACCEPTED').length,1);
 });
 
@@ -66,6 +69,10 @@ test('contract-bearing CLI flow uses draft, exact CI, explicit ready/merge, and 
  f.remote.ci='pending';s=(await f.cli('resume',sid)).envelope.data.session;assert.equal(s.status,'WAITING');assert.equal(f.remote.merges,0);
  f.remote.ci='failure';s=(await f.cli('resume',sid)).envelope.data.session;assert.equal(s.status,'WAITING');assert.equal(f.remote.merges,0);
  f.remote.ci='success';s=(await f.cli('resume',sid)).envelope.data.session;assert.equal(s.status,'WAITING');assert.equal(f.remote.merges,0);
+ assert.equal(existsSync(join(f.root,`.agent/driver/merge-intents/${sid}.json`)),false,'withheld authority cannot create an exact merge intent');
+ const open={...f.remote.pr};Object.assign(f.remote.pr,{state:'closed',merged:true,merged_at:new Date().toISOString(),merge_commit_sha:git(f.root,'rev-parse','main')});
+ s=(await f.cli('resume',sid)).envelope.data.session;assert.equal(s.status,'WAITING');assert.equal(get(f.root,'.agent/state/lifecycle/DEMO-001.lifecycle.json').currentState,'MERGE_READY');
+ f.remote.pr=open;
  f.runtime.mergeAuthorization=`fixture-owner/fixture-repo#1@${git(f.root,'rev-parse','HEAD')}`;f.remote.loseMergeResponse=true;
  s=(await f.cli('resume',sid)).envelope.data.session;assert.equal(f.remote.merges,1,JSON.stringify(s));
  s=(await f.cli('resume',sid)).envelope.data.session;assert.equal(s.status,'DONE',JSON.stringify(s));assert.equal(f.remote.merges,1);
@@ -76,6 +83,22 @@ test('contract-bearing CLI flow uses draft, exact CI, explicit ready/merge, and 
  put(f.root,'.agent/driver/inbox/responses/next.json',response(developer));b=await scan(f,second);assert.equal(packet(f,b).role,'UAT/Product');
 });
 
+test('clarification cannot discard explicit dependencies and Windows profile directories cannot alias',async()=>{
+ const f=fixture();
+ if(process.platform==='win32') {
+  const aliased=await f.cli('init','--repository','fixture-owner/fixture-repo','--base','main','--checks','Build and test (Node),Schema and contract validation (Python)','--actor-prefix','operator','--developer-tools','read_file,write_file','--review-tools','read_file','--enforce-policies','externally','--issues-dir','.agent/driver/files/Shared','--responses-dir','.agent/driver/files/shared');
+  assert.equal(aliased.envelope.ok,false);assert.equal(existsSync(join(f.root,'.agent/driver/profile.json')),false);
+ }
+ await f.init();
+ const source=markdown('DEMO-001',['MISSING-001']).replace(/## Objective\n[^\n]+\n\n/,'');
+ put(f.root,'.agent/driver/inbox/issues/selected.md',source);await f.cli('watch','--once');await pause();await f.cli('watch','--once');
+ const outbound=join(f.root,'.agent/driver/outbound');
+ const diagnostic=readdirSync(outbound).filter(x=>x.endsWith('.diagnostic.json')).map(x=>get(outbound,x)).find(x=>x.code==='INTAKE_CLARIFICATION');
+ put(f.root,'.agent/driver/inbox/responses/invalid-scope.json',{...diagnostic.responseTemplate,task:mapMarkdown(markdown()).task,issueNumber:101});
+ await f.cli('watch','--once');await pause();const observed=await f.cli('watch','--once');
+ assert.equal(observed.envelope.data.receipts.at(-1).status,'REJECTED');assert.equal(existsSync(join(f.root,'tasks/definitions/demo-001.task.json')),false);
+});
+
 test('clarification carries its original issue and permits correction of a rejected task proposal',async()=>{
  const f=fixture();await f.init();
  put(f.root,'.agent/driver/inbox/issues/incomplete.md','# Selected task\nIssue: #101\n## Objective\nDeliver the marker.\n');
@@ -84,10 +107,11 @@ test('clarification carries its original issue and permits correction of a rejec
  const name=readdirSync(outbound).find(x=>x.endsWith('.diagnostic.json'));
  const packet=get(outbound,name);assert.equal(packet.code,'INTAKE_CLARIFICATION');
  assert.match(readFileSync(join(outbound,`${name}.md`),'utf8'),/originalIssue/);
- const bad={...packet.responseTemplate,task:{...mapMarkdown(markdown()).task,dependencies:['MISSING-001']},issueNumber:101};
+ const proposal={...mapMarkdown(markdown()).task,title:'Selected task',objective:'Deliver the marker.'};
+ const bad={...packet.responseTemplate,task:{...proposal,dependencies:['MISSING-001']},issueNumber:101};
  put(f.root,'.agent/driver/inbox/responses/reply.json',bad);await f.cli('watch','--once');await pause();const rejected=await f.cli('watch','--once');assert.equal(rejected.envelope.data.receipts.at(-1).status,'REJECTED');
  assert.equal(existsSync(join(f.root,'tasks/definitions/demo-001.task.json')),false);
- const good={...bad,task:mapMarkdown(markdown()).task};put(f.root,'.agent/driver/inbox/responses/reply.json',good);
+ const good={...bad,task:proposal};put(f.root,'.agent/driver/inbox/responses/reply.json',good);
  await f.cli('watch','--once');await pause();const accepted=await f.cli('watch','--once');assert.equal(accepted.envelope.data.receipts.at(-1).status,'ACCEPTED');
  assert.equal(existsSync(join(f.root,'tasks/definitions/demo-001.task.json')),true);
  assert.equal(existsSync(join(f.root,'.agent/state/lifecycle/DEMO-001.lifecycle.json')),false,'intake grants no assignment');
