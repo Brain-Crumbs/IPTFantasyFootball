@@ -1,10 +1,12 @@
 # Workflow diagnostics and explainability
 
+> Historical Fantasy Football workflow record. For current installed operations see the [Vibez cutover guide](VIBEZ_CUTOVER.md).
+
 > **Bootstrap archive.** Use the [installed Vibez guide](VIBEZ_CUTOVER.md) for current operations. The examples below apply to the [original embedded revision](https://github.com/Brain-Crumbs/IPTFantasyFootball/tree/ff9e467a870d26850330563a27359de44f151ea7) and its isolated fixtures.
 
 **Task:** [BOOT-031 / issue #33](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/33)
 **Architecture:** [master issue #1](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1)
-**Module:** [control-plane.workflow-diagnostics](../contracts/workflow-diagnostics/README.md)
+**Module:** [control-plane.workflow-diagnostics](https://github.com/Brain-Crumbs/IPTFantasyFootball/blob/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2/contracts/workflow-diagnostics/README.md)
 
 ## Run it
 
@@ -43,7 +45,7 @@ The input is one complete `TransitionRequest` JSON object, with these required f
 - `eventId`, `occurredAt` (RFC 3339), `reason`, `evidenceRef`
 - `requiredReviewRoles`, matching the registered task's declared role set
 
-Optional fields are `satisfiedPrerequisites`, `actorId`, `runId`, and `revisionIdentity`. Unknown fields, unknown state/role/prerequisite names, wrong shapes, or a role-set mismatch are rejected. Paths resolve from the CLI's repository root. See [the lifecycle contract](../contracts/lifecycle-state-machine/README.md) and exported `TransitionRequest` in `src/lifecycle/state-machine.ts` for authoritative semantics.
+Optional fields are `satisfiedPrerequisites`, `actorId`, `runId`, and `revisionIdentity`. Unknown fields, unknown state/role/prerequisite names, wrong shapes, or a role-set mismatch are rejected. Paths resolve from the CLI's repository root. See [the lifecycle contract](https://github.com/Brain-Crumbs/IPTFantasyFootball/blob/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2/contracts/lifecycle-state-machine/README.md) and exported `TransitionRequest` in `src/lifecycle/state-machine.ts` for authoritative semantics.
 
 For illustration only, a registered `BOOT-100` in `PLANNED` with the following exact declared roles could be previewed with:
 

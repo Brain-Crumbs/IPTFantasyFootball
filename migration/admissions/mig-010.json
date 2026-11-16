@@ -35,5 +35,12 @@
     "verificationSha256": "3d479c105ff671107a3dc57690708b0456494949fb442e3b6f004a196450e432",
     "preCleanupHistoryManifestSha256": "dd767dc0f35723a59bcc5b650be24cf0706edf3dc1941c115a2c91795b0aa852",
     "acceptance": "The original bound rc.2 store records native DONE, with no active assignment. Its 141 runtime files match both protected backup and offline restore before cleanup. The dependency remains native."
+  },
+  "archiveNavigationScope": {
+    "paths": [
+      "evidence/README.md",
+      "tasks/README.md"
+    ],
+    "reason": "Issue #82 explicitly requires retained evidence links and README/archive navigation. These documentation-only edits repair links and point operators to current admission. The already bound task definition, task/evidence records and review identities remain unchanged."
   }
 }

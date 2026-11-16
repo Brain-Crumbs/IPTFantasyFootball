@@ -32,7 +32,7 @@ guide](https://github.com/Brain-Crumbs/Vibez/blob/v0.1.0-rc.2/docs/WORKFLOW_DRIV
 using `npm run agent -- orchestrate …` for profile setup, selection,
 handoffs, publication, ready conversion and controlled completion. Start on
 the canonical task branch with a local main reference and a clean commit.
-Use `select`, `run` and `resume` with individually submitted role responses.
+Use `select`, `run` and `resume` with individually submitted role responses. Diagnostics may name an engine contract under `contracts/`. Follow that reference in the [pinned Vibez source](https://github.com/Brain-Crumbs/Vibez/tree/v0.1.0-rc.2/contracts) or read the installed contract through the public assets API.
 Keep the issue inbox empty. `prepare` and `watch` are disabled because they
 can admit an issue outside the reviewed-registration process. The consumer admits MIG-010 through [issue #82](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/82). Preserve the MIG-009 definition and use the original bound store so its recorded DONE satisfies the native prerequisite. Later work requires its own reviewed registration, receipt and matching host admission scope. The package's
 standalone binaries are upstream tools; this project's entry point is

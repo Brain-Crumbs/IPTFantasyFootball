@@ -4,7 +4,7 @@ The exact-head policy in `vibez.config.json` requires four checks on the GitHub 
 
 | Check | What it verifies |
 | --- | --- |
-| Build and test (Node) | Installs the lockfile, checks tracked source ownership, task registry, admission and bundled contracts, and runs the consumer tests. |
+| Build and test (Node) | Installs the lockfile, checks tracked source ownership, task registry, staged migration provenance, admission and bundled contracts, and runs the consumer tests. |
 | Schema and contract validation (Python) | Validates the authored project and historical records with the published Vibez schemas loaded from the public assets API. |
 | Installed consumer (Ubuntu) | Installs from the exact pin on Ubuntu 24.04 with Node 22 and exercises the supported consumer entry point. |
 | Installed consumer (Windows) | Installs from the exact pin on Windows Server 2025 with Node 24 and exercises local NTFS attestation and the same entry point. |

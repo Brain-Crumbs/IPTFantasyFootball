@@ -1,5 +1,7 @@
 # Task registry loader
 
+> Historical Fantasy Football workflow record. For current installed operations see the [Vibez cutover guide](VIBEZ_CUTOVER.md).
+
 **Task:** BOOT-006 / issue #8  
 **Parent architecture:** issue #1
 

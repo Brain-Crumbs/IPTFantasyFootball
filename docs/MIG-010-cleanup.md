@@ -17,7 +17,7 @@ The accepted [MIG-008 checkpoint](https://github.com/Brain-Crumbs/Vibez/blob/659
 | AC-05 | Original stopped-writer archive and runtime checksums, supported historical readers, and rollback and restore checks on cleanup PR #87. |
 | AC-06 | [Current ownership](../README.md), [CI guard](CI.md), source reconciliation above and the migration epic evidence below. |
 
-Rollback starts by draining the installed host and verifying the live and archived histories under the [cutover procedure](VIBEZ_CUTOVER.md#stop-preserve-and-restore). In a clean separate checkout, rehearse reverting the cleanup implementation commit and reinstall the exact lockfile. Compare the restored tracked tree with the registration tree. Keep archived legacy readers with their own snapshots, and leave the newer Vibez history with its pinned reader. Reverting tracked source does not roll back runtime state or authorize a legacy writer.
+Rollback starts by draining the installed host and verifying the live and archived histories under the [cutover procedure](VIBEZ_CUTOVER.md#stop-preserve-and-restore). In a clean separate checkout, rehearse reverting the cleanup implementation and rework commits in reverse order and reinstall the exact lockfile. Compare the restored tracked tree with the registration tree. Keep archived legacy readers with their own snapshots, and leave the newer Vibez history with its pinned reader. Reverting tracked source does not roll back runtime state or authorize a legacy writer.
 
 ## Fantasy Football #74 evidence map
 

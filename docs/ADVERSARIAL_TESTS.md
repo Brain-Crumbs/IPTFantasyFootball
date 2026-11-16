@@ -1,5 +1,7 @@
 # Adversarial workflow verification
 
+> Historical Fantasy Football workflow record. For current installed operations see the [Vibez cutover guide](VIBEZ_CUTOVER.md).
+
 **Task:** [BOOT-034 / issue #36](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/36)
 **Architecture:** [master issue #1](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1)
 **Branch:** `bootstrap/boot-034-adversarial-tests`; integration target: `main`.
@@ -38,7 +40,7 @@ schema checks rather than inventing a native assignment or editing lifecycle sta
 ## Scenario and invariant map
 
 Each `ADV-*` identifier is part of a test name in
-[adversarial-workflow.test.mjs](../tests/adversarial-workflow.test.mjs).
+[adversarial-workflow.test.mjs](https://github.com/Brain-Crumbs/IPTFantasyFootball/blob/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2/tests/adversarial-workflow.test.mjs).
 Failed attempts are checked against saved lifecycle/evidence/assignment bytes,
 actual Git refs and/or recorded provider calls as appropriate. Tests assert specific
 rejection diagnostics, not just that an exception happened. Audit-only recovery
@@ -74,7 +76,7 @@ establish independent live approval for this PR.
 
 ## Mutation proof
 
-[adversarial-mutations.mjs](../scripts/adversarial-mutations.mjs) creates disposable
+[adversarial-mutations.mjs](https://github.com/Brain-Crumbs/IPTFantasyFootball/blob/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2/scripts/adversarial-mutations.mjs) creates disposable
 copies of the compiled runtime and test inputs. For each mutation it first requires
 the selected unmodified test to pass, then weakens exactly one guard and requires
 that same test to fail with an assertion:
