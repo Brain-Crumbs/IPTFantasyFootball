@@ -34,7 +34,10 @@ handoffs, publication, ready conversion and controlled completion. Start on
 the canonical task branch with a local main reference and a clean commit.
 Use `select`, `run` and `resume` with individually submitted role responses.
 Keep the issue inbox empty. `prepare` and `watch` are disabled because they
-can admit an issue outside the reviewed-registration process. The package's
+can admit an issue outside the reviewed-registration process. The consumer is
+scoped to MIG-009 and issue #81. A later authorized feature needs its own
+reviewed registration, receipt and matching host admission scope before it
+can count toward the observation gate. The package's
 standalone binaries are upstream tools; this project's entry point is
 `npm run agent`. The retired CANARY-001 definition is available in
 `tasks/archive/` and its original Git revision. Keep credentials in the trusted host.

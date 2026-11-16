@@ -88,6 +88,7 @@ test('configured installed operator uses only the admitted registry and separate
     '--review-tools', 'read_file,run_test', '--enforce-policies', 'externally']);
   assert.equal(init.status, 0, JSON.stringify(init));
   assert.ok(existsSync(join(checkout, '.agent/vibez/operations/driver/profile.json')));
+  assert.equal(cli(['orchestrate', 'select', 'MIG-009', '--issue-number', '78']).error.code, 'ADMISSION_ISSUE_MISMATCH');
   const select = cli(['orchestrate', 'select', 'MIG-009', '--issue-number', '81']);
   assert.equal(select.status, 0, JSON.stringify(select));
   assert.equal(select.data.status, 'PREPARED');

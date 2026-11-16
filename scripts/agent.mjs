@@ -17,11 +17,22 @@ const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const args = process.argv.slice(2);
 const localNtfs = args.includes('--local-ntfs');
 if (localNtfs) args.splice(args.indexOf('--local-ntfs'), 1);
-const [command, operation] = args.filter(argument => argument !== '--json');
+const [command, operation, ...operands] = args.filter(argument => argument !== '--json');
 const controller = new AbortController();
 const interrupt = () => controller.abort();
 process.on('SIGINT', interrupt);
 process.on('SIGTERM', interrupt);
+
+function blocked(code, message) {
+  const json = args.includes('--json');
+  return {
+    exitCode: 4,
+    stdout: json ? JSON.stringify({
+      schemaVersion: '1.0.0', ok: false, command, data: null, error: { code, message },
+    }) + '\n' : '',
+    stderr: json ? '' : message + '\n',
+  };
+}
 
 async function requireEmptyIntake(paths) {
   for (const path of [paths.intake, paths.operations + '/driver/intakes']) {
@@ -43,15 +54,11 @@ async function run() {
   }
   await verifyConsumerAdmission(projectRoot);
   if (command === 'orchestrate' && ['prepare', 'watch'].includes(operation)) {
-    const message = 'New tasks require reviewed admission. Use orchestrate select, run or resume for admitted tasks.';
-    return {
-      exitCode: 4,
-      stdout: args.includes('--json') ? JSON.stringify({
-        schemaVersion: '1.0.0', ok: false, command, data: null,
-        error: { code: 'REVIEWED_ADMISSION_REQUIRED', message },
-      }) + '\n' : '',
-      stderr: args.includes('--json') ? '' : message + '\n',
-    };
+    return blocked('REVIEWED_ADMISSION_REQUIRED', 'New tasks require reviewed admission. Use orchestrate select, run or resume for admitted tasks.');
+  }
+  if (command === 'orchestrate' && operation === 'select'
+    && operands.join(' ') !== 'MIG-009 --issue-number 81') {
+    return blocked('ADMISSION_ISSUE_MISMATCH', 'Select the reviewed task with orchestrate select MIG-009 --issue-number 81.');
   }
   const token = process.env.IPT_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
   const mergeAuthorization = process.env.IPT_DRIVER_MERGE;
@@ -78,8 +85,15 @@ async function run() {
       publication: new GitHubPullRequestOperations({
         ...github,
         fetchImpl: (url, init) => {
-          if (init.method !== 'POST' || !url.endsWith('/pulls')) return fetchImpl(url, init);
-          return fetchImpl(url, { ...init, body: JSON.stringify({ ...JSON.parse(init.body), draft: true }) });
+          if (!['POST', 'PATCH'].includes(init.method)) return fetchImpl(url, init);
+          const payload = JSON.parse(init.body);
+          const closingLines = payload.body?.match(/^Closes #\d+\s*$/gm)?.map(line => line.trim());
+          if (closingLines?.length !== 1 || closingLines[0] !== 'Closes #81') {
+            throw new Error('Publication must close the admitted Fantasy Football issue #81.');
+          }
+          payload.body += '\n\nCoordinates Fantasy Football #1 and #74, and Brain-Crumbs/Vibez#1.\n';
+          if (init.method === 'POST') payload.draft = true;
+          return fetchImpl(url, { ...init, body: JSON.stringify(payload) });
         },
       }),
       pullRequests: new GitHubMergeReadinessPullRequestOperations(github),
@@ -88,6 +102,7 @@ async function run() {
     },
     authorizePublication: request => Boolean(token)
       && request.repository === repository
+      && request.taskId === 'MIG-009'
       && command === 'orchestrate'
       && ['publish', 'ready'].includes(operation),
     authorizeMerge: request => Boolean(token)
