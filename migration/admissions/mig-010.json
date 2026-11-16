@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "taskId": "MIG-010",
+  "repository": "Brain-Crumbs/IPTFantasyFootball",
+  "issue": "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/82",
+  "issueBodySha256": "8f1616b6f132d0c02cffddb19067d137f00de8882aa192434f528e764dbeac80",
+  "sourceUpdatedAt": "2026-11-16T18:06:58Z",
+  "integrationBase": "c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2",
+  "canonicalBranch": "migration/mig-010-remove-embedded-workflow",
+  "dependencyProjection": {
+    "external": [],
+    "native": [
+      "MIG-009"
+    ]
+  },
+  "definition": {
+    "path": "tasks/admitted/mig-010.task.json",
+    "sha256": "abe325c28058f1e51d25f1623773d93d7dd8f997bae95ffad0b4e03bda94deec"
+  },
+  "requirement": {
+    "path": "requirements/migration/mig-010.requirement.json",
+    "sha256": "dd3fb20019ca08bf8a600657ad6672d6427ae0230257e9555b1bd45faaa7d137"
+  },
+  "prerequisite": {
+    "taskId": "MIG-009",
+    "pullRequest": "https://github.com/Brain-Crumbs/IPTFantasyFootball/pull/86",
+    "reviewedHead": "2dca73eeb50c9379320694cc392b7c8074822798",
+    "merge": "c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2",
+    "ci": "https://github.com/Brain-Crumbs/IPTFantasyFootball/actions/runs/43817113040",
+    "reviews": "https://github.com/Brain-Crumbs/IPTFantasyFootball/pull/86#issuecomment-6910499776",
+    "evidence": "MIG-009::merge@1",
+    "state": "DONE",
+    "release": "https://github.com/Brain-Crumbs/Vibez/releases/tag/v0.1.0-rc.2",
+    "snapshotSha256": "c1c04eeeab92eec94ca5f6807959c38870249a455f13f78bf9f02d89be9ada4b",
+    "verificationSha256": "3d479c105ff671107a3dc57690708b0456494949fb442e3b6f004a196450e432",
+    "preCleanupHistoryManifestSha256": "dd767dc0f35723a59bcc5b650be24cf0706edf3dc1941c115a2c91795b0aa852",
+    "acceptance": "The original bound rc.2 store records native DONE, with no active assignment. Its 141 runtime files match both protected backup and offline restore before cleanup. The dependency remains native."
+  }
+}

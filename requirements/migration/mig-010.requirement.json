@@ -5,7 +5,7 @@
   "taskId": "MIG-010",
   "statement": "End duplicate workflow maintenance in Fantasy Football without losing project data, audit history or the ability to use Vibez.",
   "acceptanceCriteria": [
-    "AC-01: MIG-009 parity, observation criteria, independent reviews and rollback evidence are accepted before removal starts.",
+    "AC-01: MIG-009 installed-consumer parity, independent reviews and rollback evidence are accepted before removal starts. There is no minimum elapsed-time observation period and no requirement to complete a separate ordinary feature or real-use example before cleanup or migration completion.",
     "AC-02: The final removal manifest accounts for every deleted path and retains all project-owned and historical material.",
     "AC-03: No authoritative duplicate workflow implementation remains; consumer imports/commands resolve only through the pinned supported Vibez surface.",
     "AC-04: Fresh clone/install and full supported consumer journey work without the deleted source; required CI remains enabled.",
@@ -14,6 +14,6 @@
   ],
   "sourceRefs": [
     "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/82",
-    "sha256:cb80366d5dd925e825de1e7f5207927e4896a5ca3146b36f26f69796e99c217a"
+    "sha256:8f1616b6f132d0c02cffddb19067d137f00de8882aa192434f528e764dbeac80"
   ]
 }

@@ -34,10 +34,7 @@ handoffs, publication, ready conversion and controlled completion. Start on
 the canonical task branch with a local main reference and a clean commit.
 Use `select`, `run` and `resume` with individually submitted role responses.
 Keep the issue inbox empty. `prepare` and `watch` are disabled because they
-can admit an issue outside the reviewed-registration process. The consumer is
-scoped to MIG-009 and issue #81. A later authorized feature needs its own
-reviewed registration, receipt and matching host admission scope before it
-can count toward the observation gate. The package's
+can admit an issue outside the reviewed-registration process. The consumer admits MIG-010 through [issue #82](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/82). Preserve the MIG-009 definition and use the original bound store so its recorded DONE satisfies the native prerequisite. Later work requires its own reviewed registration, receipt and matching host admission scope. The package's
 standalone binaries are upstream tools; this project's entry point is
 `npm run agent`. The retired CANARY-001 definition is available in
 `tasks/archive/` and its original Git revision. Keep credentials in the trusted host.
@@ -73,8 +70,7 @@ once all required checks pass. Preserve the original config and host on resume.
    collect revision-bound validation and review evidence there.
 3. Enable writes only in the configured clone. Its seven writable roots are
    disjoint below `.agent/vibez/`. Preserve the Git identity marker and
-   all task bindings with a snapshot. Keep prior checkouts available as
-   read-only archives during observation.
+   all task bindings with a snapshot. Keep prior checkouts available as read-only archives.
 4. On rollback, stop and drain the installed host first. Snapshot and
    verify the **latest** history, including the package/config identity, task
    bindings and any new reviews and journals. Test the older reader against
@@ -98,9 +94,10 @@ admitted and historical task definitions, requirements, `contracts/project/`,
 the installed-host adapter and consumer tests, ignored runtime data and
 archive links. Assess any later paths individually against the inventory.
 
-The observation window starts at actual cutover. It ends after both seven
-calendar days and one accepted ordinary feature through the installed engine,
-with clean exact-head CI, independent reviews, a witnessed rollback rehearsal
-and matching history hashes. Record the cutover time and evidence URLs in the
-adoption PR. If supported storage, writer status or prior-reader compatibility
-cannot be verified, leave cutover or cleanup blocked at that boundary.
+[Issue #82's November 16 revision](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/82)
+supersedes the elapsed-time and separate feature conditions recorded in the
+adoption PR. Before removal, verify acceptance of MIG-009, the revised
+admission and the final source delta. Stop writers and verify protected
+backups and restored history hashes. The cleanup revision still requires
+fresh independent QA, Architecture and UAT, exact-head CI, an installed
+consumer walkthrough and a stopped-writer rollback rehearsal.

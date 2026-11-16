@@ -52,14 +52,14 @@ test('the consumer and its admission receipt pin the published release', () => {
 });
 
 test('native publication can adopt the existing draft without closing another issue', () => {
-  const authored = 'Closes #81\n\nMaintainer notes.';
-  const generated = '## Vibez report\n\nCloses #81';
+  const authored = 'Closes #82\n\nMaintainer notes.';
+  const generated = '## Vibez report\n\nCloses #82';
   const body = authored + '\n\n' + generated;
   const updated = prepareAdmittedPublication({ body }, 'PATCH');
   assert.ok(updated.body.startsWith(body));
   assert.deepEqual(prepareAdmittedPublication(updated, 'PATCH'), updated);
   assert.equal(prepareAdmittedPublication({ body: authored }, 'POST').draft, true);
-  assert.throws(() => prepareAdmittedPublication({ body: body + '\n\nCloses #82' }, 'PATCH'), /issue #81/);
+  assert.throws(() => prepareAdmittedPublication({ body: body + '\n\nCloses #81' }, 'PATCH'), /issue #82/);
 });
 
 test('configured installed operator uses only the admitted registry and separate runtime', t => {
@@ -97,17 +97,21 @@ test('configured installed operator uses only the admitted registry and separate
     assert.equal(result.ok, true);
   }
   assert.equal(cli(['next']).data.taskId, 'MIG-009');
+  assert.equal(cli(['explain', 'task', 'MIG-010']).ok, true);
   assert.equal(existsSync(join(checkout, '.agent')), false, 'read-only commands wrote state');
   assert.equal(existsSync(join(checkout, '.git/vibez-project.json')), false, 'read-only commands claimed the store');
   const init = cli(['orchestrate', 'init', '--actor-prefix', 'fixture', '--developer-tools', 'read_file,write_file,git_commit',
     '--review-tools', 'read_file,run_test', '--enforce-policies', 'externally']);
   assert.equal(init.status, 0, JSON.stringify(init));
   assert.ok(existsSync(join(checkout, '.agent/vibez/operations/driver/profile.json')));
-  assert.equal(cli(['orchestrate', 'select', 'MIG-009', '--issue-number', '78']).error.code, 'ADMISSION_ISSUE_MISMATCH');
-  const select = cli(['orchestrate', 'select', 'MIG-009', '--issue-number', '81']);
+  assert.equal(cli(['orchestrate', 'select', 'MIG-009', '--issue-number', '81']).error.code, 'ADMISSION_ISSUE_MISMATCH');
+  const select = cli(['orchestrate', 'select', 'MIG-010', '--issue-number', '82']);
   assert.equal(select.status, 0, JSON.stringify(select));
   assert.equal(select.data.status, 'PREPARED');
   assert.equal(cli(['orchestrate', 'prepare']).error.code, 'REVIEWED_ADMISSION_REQUIRED');
+  const blocked = cli(['orchestrate', 'run', select.data.sessionId]);
+  assert.notEqual(blocked.data?.status, 'WAITING_FOR_DEVELOPER');
+  assert.equal(existsSync(join(checkout, '.agent/vibez/state/lifecycle/MIG-010.lifecycle.json')), false);
   const issueInbox = join(checkout, '.agent/vibez/inbox/issues');
   mkdirSync(issueInbox, { recursive: true });
   writeFileSync(join(issueInbox, 'unexpected.md'), 'Unreviewed intake');
