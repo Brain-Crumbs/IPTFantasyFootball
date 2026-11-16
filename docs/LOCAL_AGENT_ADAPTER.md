@@ -1,10 +1,12 @@
 # Local/manual agent adapter operator guide
 
+> Historical Fantasy Football workflow record. For current installed operations see the [Vibez cutover guide](VIBEZ_CUTOVER.md).
+
 > **Bootstrap archive.** Use the [installed Vibez guide](VIBEZ_CUTOVER.md) for current operations. The examples below apply to the [original embedded revision](https://github.com/Brain-Crumbs/IPTFantasyFootball/tree/ff9e467a870d26850330563a27359de44f151ea7) and its isolated fixtures.
 
 **Task:** [BOOT-029 / issue #31](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/31)
 **Parent:** [Bootstrap issue #1](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1)
-**Module:** [control-plane.local-agent-adapter](../contracts/local-agent-adapter/README.md)
+**Module:** [control-plane.local-agent-adapter](https://github.com/Brain-Crumbs/IPTFantasyFootball/blob/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2/contracts/local-agent-adapter/README.md)
 
 ## What this does
 
@@ -146,7 +148,7 @@ python3 schemas/validate_repository_contracts.py
 
 ## Packet and result contract
 
-Schema files are [local-agent-packet.schema.json](../schemas/v1/local-agent-packet.schema.json) and [local-agent-result.schema.json](../schemas/v1/local-agent-result.schema.json), both record version `1.0.0`. Runtime validation also enforces cross-field equality, hashes, and result semantics that cannot be established by a shape-only schema check.
+Schema files are [local-agent-packet.schema.json](https://github.com/Brain-Crumbs/IPTFantasyFootball/blob/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2/schemas/v1/local-agent-packet.schema.json) and [local-agent-result.schema.json](https://github.com/Brain-Crumbs/IPTFantasyFootball/blob/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2/schemas/v1/local-agent-result.schema.json), both record version `1.0.0`. Runtime validation also enforces cross-field equality, hashes, and result semantics that cannot be established by a shape-only schema check.
 
 The packet contains the exact complete `contextPackage` (task view, artifact contents, and included/excluded manifest), exact `toolPermissionPolicy`, human-readable `instructions`, and `resultBinding`. Copy every field in `resultBinding` unchanged into the envelope:
 
@@ -238,7 +240,7 @@ Confirm each discovered packet belongs to the active engine run before executing
 - Explicitly imported `CANCELLED` and `ERROR` envelopes are immutable terminal responses. Both are non-recoverable; `ERROR` requires `recoverable: false`. A same-identity retry reads the same terminal result and does not launch or authorize another external execution. Resolve the underlying problem and follow the owning workflow's decision for a genuinely new run; do not overwrite/delete the accepted result or change IDs to evade a failed gate.
 - Identical packet exports/imports are idempotent. Changed context/tool policy under the same logical packet identity is `INVALID_REQUEST`; mismatched binding, malformed imported data, tampered persisted content, and conflicting imports are `MALFORMED_RESULT`. Correct an unaccepted response file against the original packet. Never “repair” an accepted response in place.
 - Filesystem failures surface as `PROVIDER_ERROR`; inspect permissions and the actual path before retrying. Symlinked/non-regular exchange files and malformed records are blockers. Keep diagnostic records; no general repair, lock stealing, or state reconstruction is supplied.
-- BOOT-028 owns durable orchestration retry budgets, execution locks, journals, and same-key resume. Retain key/owner/run and exchange files; `manual run` itself has no orchestration journal or automatic retry policy. Follow the [orchestration recovery procedure](../contracts/orchestration-engine/README.md) for an interrupted engine, including verifying all runners stopped before touching a stale lock.
+- BOOT-028 owns durable orchestration retry budgets, execution locks, journals, and same-key resume. Retain key/owner/run and exchange files; `manual run` itself has no orchestration journal or automatic retry policy. Follow the [orchestration recovery procedure](https://github.com/Brain-Crumbs/IPTFantasyFootball/blob/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2/contracts/orchestration-engine/README.md) for an interrupted engine, including verifying all runners stopped before touching a stale lock.
 
 Export/import/run success proves transport behavior only. It never establishes independent QA/Architecture/UAT approval, an authoritative evidence record, a live canary merge, or Bootstrap v1 cutover.
 

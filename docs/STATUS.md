@@ -1,10 +1,12 @@
 # Project status and next-work reporting
 
+> Historical Fantasy Football workflow record. For current installed operations see the [Vibez cutover guide](VIBEZ_CUTOVER.md).
+
 > **Bootstrap archive.** Use the [installed Vibez guide](VIBEZ_CUTOVER.md) for current operations. The examples below apply to the [original embedded revision](https://github.com/Brain-Crumbs/IPTFantasyFootball/tree/ff9e467a870d26850330563a27359de44f151ea7) and its isolated fixtures.
 
 **Task:** [BOOT-030 / issue #32](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/32)  
 **Architecture:** [master issue #1](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1)  
-**Module:** [control-plane.status-reporting](../contracts/status-reporting/README.md)
+**Module:** [control-plane.status-reporting](https://github.com/Brain-Crumbs/IPTFantasyFootball/blob/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2/contracts/status-reporting/README.md)
 
 ## Run it
 

@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { prepareAdmittedPublication, verifyConsumerAdmission } from './consumer-admission.mjs';
+import { activeMigration, prepareAdmittedPublication, verifyConsumerAdmission } from './consumer-admission.mjs';
 import { createProjectServices, describeCapabilities, npmValidatorCommands } from '@brain-crumbs/vibez';
 import { runCli } from '@brain-crumbs/vibez/cli';
 import {
@@ -18,6 +18,8 @@ const args = process.argv.slice(2);
 const localNtfs = args.includes('--local-ntfs');
 if (localNtfs) args.splice(args.indexOf('--local-ntfs'), 1);
 const [command, operation, ...operands] = args.filter(argument => argument !== '--json');
+const admittedSelection = `${activeMigration.taskId} --issue-number ${activeMigration.issueNumber}`;
+const sessionOperations = new Set(['run', 'resume', 'rework', 'recover', 'recover-run', 'publish', 'ready']);
 const controller = new AbortController();
 const interrupt = () => controller.abort();
 process.on('SIGINT', interrupt);
@@ -57,8 +59,8 @@ async function run() {
     return blocked('REVIEWED_ADMISSION_REQUIRED', 'New tasks require reviewed admission. Use orchestrate select, run or resume for admitted tasks.');
   }
   if (command === 'orchestrate' && operation === 'select'
-    && operands.join(' ') !== 'MIG-009 --issue-number 81') {
-    return blocked('ADMISSION_ISSUE_MISMATCH', 'Select the reviewed task with orchestrate select MIG-009 --issue-number 81.');
+    && operands.join(' ') !== admittedSelection) {
+    return blocked('ADMISSION_ISSUE_MISMATCH', `Select the reviewed task with orchestrate select ${admittedSelection}.`);
   }
   const token = process.env.IPT_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
   const mergeAuthorization = process.env.IPT_DRIVER_MERGE;
@@ -96,7 +98,7 @@ async function run() {
     },
     authorizePublication: request => Boolean(token)
       && request.repository === repository
-      && request.taskId === 'MIG-009'
+      && request.taskId === activeMigration.taskId
       && command === 'orchestrate'
       && ['publish', 'ready'].includes(operation),
     authorizeMerge: request => Boolean(token)
@@ -104,8 +106,15 @@ async function run() {
       && mergeAuthorization === `${repository}#${request.number}@${request.expectedHeadSha}`,
     authorizeRecovery: request => recoveryActors.includes(request.actorId),
   });
-  if (command === 'orchestrate' && ['run', 'resume'].includes(operation)) {
-    await requireEmptyIntake(services.config.document.paths);
+  if (command === 'orchestrate' && sessionOperations.has(operation) && operands[0]) {
+    const status = await services.cli(['--json', 'orchestrate', 'status', operands[0]], controller.signal);
+    const session = JSON.parse(status.stdout).data;
+    if (session?.taskId !== activeMigration.taskId || session?.issueNumber !== activeMigration.issueNumber) {
+      return blocked('ADMISSION_SESSION_MISMATCH', 'Only the active reviewed migration session can write.');
+    }
+    if (['run', 'resume'].includes(operation)) {
+      await requireEmptyIntake(services.config.document.paths);
+    }
   }
   return services.cli(args, controller.signal, {
     progress: message => process.stderr.write(`${message}\n`),

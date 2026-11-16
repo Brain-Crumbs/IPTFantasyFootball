@@ -1,6 +1,8 @@
 # evidence/
 
-Documentation home for `control-plane.evidence-store` (BOOT-015 / issue #17), the deterministic validation and review evidence persistence boundary defined in [contracts/evidence-store/README.md](../contracts/evidence-store/README.md) and [contracts/evidence-store/module-contract.json](../contracts/evidence-store/module-contract.json).
+> Historical Fantasy Football workflow record. For current installed operations see the [Vibez cutover guide](../docs/VIBEZ_CUTOVER.md).
+
+Documentation home for `control-plane.evidence-store` (BOOT-015 / issue #17), the deterministic validation and review evidence persistence boundary defined in [contracts/evidence-store/README.md](https://github.com/Brain-Crumbs/IPTFantasyFootball/blob/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2/contracts/evidence-store/README.md) and [contracts/evidence-store/module-contract.json](https://github.com/Brain-Crumbs/IPTFantasyFootball/blob/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2/contracts/evidence-store/module-contract.json).
 
 BOOT-015 binds evidence to task ID, run/role, exact commit/revision identity, schema version, and timestamps; validates every record against `schemas/v1/validation-evidence.schema.json` or `schemas/v1/review-result.schema.json` before acceptance; and never overwrites a prior record. It does not execute validators or reviews and does not decide merge readiness — those remain owned by BOOT-016 and the later review tasks.
 

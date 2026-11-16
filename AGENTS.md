@@ -9,9 +9,7 @@ This repository is building a deterministic, provider-neutral development contro
 ## 1. Mandatory start procedure
 
 Use the pinned installed Vibez workflow in an eligible checkout under the
-[cutover guide](docs/VIBEZ_CUTOVER.md). The embedded engine and its historical
-task registry are retained for isolated regression checks and compatible
-archive inspection. Follow the manual issue assignment, admission and
+[cutover guide](docs/VIBEZ_CUTOVER.md). The development engine is maintained in Vibez. The previous embedded engine is available through its pinned historical checkout for compatible archive inspection. Follow the manual issue assignment, admission and
 independent review rules below.
 
 **Migration authority (MIG-001):** #37 is closed, but the accepted main change was only canary-prerequisite retirement; #1 has not declared native cutover. Explicitly assigned MIG/AUT work may use the existing native primitives under the same manual authorization regime. Follow [migration/README.md](migration/README.md) for the authority audit, staged manifests, external admission gates and pinned engine, and [migration/SEED.md](migration/SEED.md) for the one-time empty-Vibez exception. Staged records never authorize execution. #37/#1 still own the remaining cutover acceptance.
@@ -162,7 +160,7 @@ A test command passing is not sufficient when the acceptance criterion is semant
 
 BOOT-014/015/016 make deterministic developer validation/evidence capture operational end-to-end: `agent validate <task-id> <actor-id> <run-id>` runs the required checks, persists revision-bound `ipt.validation-evidence`, and gates `IN_DEVELOPMENT -> DEV_VALIDATED`/`DEV_VALIDATION_FAILED` on it. Use it (or the strongest reproducible equivalent checks when it cannot run in the current tool environment) rather than narrative self-report of "tests passed."
 
-BOOT-017 through BOOT-021 are implemented. Use their library gates for actual independent QA/Architecture/UAT judgments and legal rework; BOOT-037's [orchestrate driver](docs/WORKFLOW_DRIVER.md) composes these gates for an explicitly selected task; standalone review remains reserved. Fresh role sessions, exact file/revision inspection and acceptance mapping remain required. If a tool limitation prevents a gate from running, record the exact blocker and distinguish external review evidence from native gate acceptance; never fabricate either.
+BOOT-017 through BOOT-021 are implemented. Use their library gates for actual independent QA/Architecture/UAT judgments and legal rework; Vibez's [orchestrate driver](docs/VIBEZ_CUTOVER.md) composes these gates for an explicitly selected task; standalone review remains reserved. Fresh role sessions, exact file/revision inspection and acceptance mapping remain required. If a tool limitation prevents a gate from running, record the exact blocker and distinguish external review evidence from native gate acceptance; never fabricate either.
 
 Do not label manual inspection as a future automated validation gate. State exactly what was checked and what evidence exists.
 
