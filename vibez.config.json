@@ -1,0 +1,64 @@
+{
+  "schemaId": "vibez.project-config",
+  "schemaVersion": "1.0.0",
+  "project": {
+    "id": "ipt-fantasy-football",
+    "repository": "Brain-Crumbs/IPTFantasyFootball"
+  },
+  "worktree": {
+    "id": "primary"
+  },
+  "paths": {
+    "tasks": "tasks/admitted",
+    "requirements": "requirements",
+    "contracts": "contracts/project",
+    "contextPolicy": "tasks/context-policy.json",
+    "state": ".agent/vibez/state",
+    "evidence": ".agent/vibez/evidence",
+    "exchange": ".agent/vibez/exchange",
+    "intake": ".agent/vibez/inbox/issues",
+    "responses": ".agent/vibez/inbox/responses",
+    "outbox": ".agent/vibez/outbox",
+    "operations": ".agent/vibez/operations"
+  },
+  "validators": [
+    {
+      "id": "node-build",
+      "executorId": "node-build",
+      "required": true
+    },
+    {
+      "id": "node-test",
+      "executorId": "node-test",
+      "required": true
+    }
+  ],
+  "policy": {
+    "integrationTarget": "main",
+    "remote": "origin",
+    "requiredChecks": [
+      "Build and test (Node)",
+      "Schema and contract validation (Python)",
+      "Installed consumer (Ubuntu)",
+      "Installed consumer (Windows)"
+    ],
+    "reviewRoles": [
+      "QA",
+      "Architect",
+      "UAT/Product"
+    ],
+    "publication": "host-authorized",
+    "merge": "exact-pr-head-host-authorized"
+  },
+  "providers": {
+    "execution": "local-manual",
+    "credentials": []
+  },
+  "budgets": {
+    "maxAttempts": 3,
+    "retryDelayMs": 100,
+    "providerTimeoutMs": 3600000,
+    "operationTimeoutMs": 14400000,
+    "maxReworkCycles": 2
+  }
+}

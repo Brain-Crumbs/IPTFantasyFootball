@@ -53,6 +53,9 @@ function configCheck(options, requireRoles) {
 async function preflight(root, options, requireRoles) {
   configCheck(options, requireRoles);
   const actualRoot = realpathSync(root);
+  if (existsSync(join(actualRoot, 'vibez.config.json'))) {
+    throw new CanaryError('CANARY_ARCHIVED', 'Use the original stopped bootstrap checkout to inspect canary history.');
+  }
   if (realpathSync(git(actualRoot, 'rev-parse', '--show-toplevel')) !== actualRoot) throw new CanaryError('CANARY_WRONG_ROOT', 'Run from the repository root.');
   cleanRevision(actualRoot);
   const branch = git(actualRoot, 'branch', '--show-current');

@@ -17,16 +17,13 @@ function spawnCli(args) {
 }
 
 function spawnDocumentedJsonCli(args) {
-  // `agent` intentionally runs preagent/tsc. Rebuilding the shared dist here
-  // races other node:test workers importing it (including child processes).
-  // Keep the real documented lifecycle command, but give its build a private
-  // workspace; never suppress preagent merely to hide this concurrency bug.
+  // Exercise the installed npm command without rebuilding the source engine.
   const source = fileURLToPath(new URL("..", import.meta.url));
   const root = mkdtempSync(join(tmpdir(), "ipt-cli-npm-smoke-"));
   const sharedArtifacts = ["dist/cli/cli.js", "dist/orchestration-engine/run-store.js"];
   const before = sharedArtifacts.map(path => statSync(join(source, path)).mtimeMs);
   try {
-    for (const path of ["src", "node_modules", "package.json", "tsconfig.json"]) {
+    for (const path of ["scripts/agent.mjs", "node_modules", "package.json"]) {
       cpSync(join(source, path), join(root, path), { recursive: true });
     }
     const result = spawnSync(npmCommand, [...npmPrefix, "run", "--silent", "agent", "--", "--json", ...args], {
