@@ -231,6 +231,7 @@
       "tests/git-branch-lifecycle.test.mjs",
       "tests/helpers/canary-fixture.mjs",
       "tests/helpers/driver-fixture.mjs",
+      "tests/helpers/release-reservation.mjs",
       "tests/lifecycle-state-machine.test.mjs",
       "tests/local-agent-adapter.test.mjs",
       "tests/manual-cli.test.mjs",

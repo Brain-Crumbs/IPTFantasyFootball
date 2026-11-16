@@ -159,6 +159,9 @@ test("a function validator that throws is reported as ERROR", async () => {
 
 test("a function validator that runs past its declared timeout is preempted and does not block later validators", { timeout: 15_000 }, async () => {
   const slowValidator = Promise.withResolvers();
+  // The executor's deadline timer is unreferenced. Keep a fallback completion
+  // alive until the assertion so a missed deadline fails the test.
+  const fallback = setTimeout(() => slowValidator.resolve({ status: "PASS" }), 5_000);
   const executor = new ValidationExecutor([
     functionValidator({
       validatorId: "slow-async",
@@ -177,6 +180,7 @@ test("a function validator that runs past its declared timeout is preempted and 
     assert.equal(result.results[1].status, "PASS");
   } finally {
     // Run the next validator before allowing the timed-out one to settle.
+    clearTimeout(fallback);
     slowValidator.resolve({ status: "PASS" });
   }
 });
