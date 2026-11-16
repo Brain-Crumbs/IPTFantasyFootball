@@ -1,14 +1,9 @@
-# Task definitions
+# Historical bootstrap task discovery
 
-BOOT-006 designates this directory as the canonical repository location for machine-readable task records.
+BOOT-006 used this directory for `*.task.json` discovery. The Fantasy Football
+consumer now selects its reviewed registry from [`tasks/admitted/`](../admitted).
+The retired [CANARY-001 definition](../archive/canary-001.task.json) is
+preserved in the archive. Original canary history remains with the pinned
+bootstrap checkout and reader described in the [cutover guide](../../docs/VIBEZ_CUTOVER.md).
 
-- Supported format: JSON.
-- Discovered filename suffix: `.task.json`.
-- Authoritative schema: `../../schemas/v1/task.schema.json`.
-- Files are loaded deterministically and keyed by stable `taskId`.
-- Non-matching files such as this README are ignored.
-- Nested directories are not traversed by the BOOT-006 loader.
-
-During the manual bootstrap phase, GitHub issues remain authoritative for task selection/status. Adding a file here does not by itself assign, start, complete, or prioritize a task.
-
-MIG-001 stages future migration work under `migration/tasks/`, outside this discovery boundary. Follow the [reviewed admission gate](../../migration/README.md) before publishing any of it here. The default registry and CANARY-001 history remain unchanged.
+Use [reviewed admission](../../migration/README.md) for new work.
