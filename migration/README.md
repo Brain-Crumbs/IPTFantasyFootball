@@ -1,12 +1,11 @@
 # Vibez migration execution and admission
 
-For the installed Fantasy Football consumer, see the [MIG-009 cutover guide](../docs/VIBEZ_CUTOVER.md).
-The separately reviewed `tasks/admitted/` registry and [MIG-009 receipt](admissions/mig-009.json)
-are the configured context for the installed operator. The bootstrap registry
+For the installed Fantasy Football consumer, see the [cutover guide](../docs/VIBEZ_CUTOVER.md) and the [MIG-010 cleanup and evidence map](../docs/MIG-010-cleanup.md).
+The installed operator uses the reviewed `tasks/admitted/` registry and the [MIG-009](admissions/mig-009.json) and [MIG-010](admissions/mig-010.json) receipts. The former definition remains part of the native dependency graph. The bootstrap registry
 has no live canary definition. The original definition is preserved in
 `tasks/archive/`; retain its stopped run and original checkout.
 
-This is the MIG-001 operating record for [FF #80](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/80), coordinated with [FF #74](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/74) and [Vibez #1](https://github.com/Brain-Crumbs/Vibez/issues/1). It prepares work; it neither declares Bootstrap v1 nor admits the entire roadmap.
+The rest of this document preserves the MIG-001 operating record for [FF #80](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/80), coordinated with [FF #74](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/74) and [Vibez #1](https://github.com/Brain-Crumbs/Vibez/issues/1). It prepares work; it neither declares Bootstrap v1 nor admits the entire roadmap.
 
 ## Authority at the inspected base
 
@@ -35,7 +34,7 @@ MIG-001's own assignment is the owner's 2026-11-08 instruction to implement exac
 - Native dependencies in each staged task contain only same-repository IDs. Cross-repository edges are retained explicitly in the plan. The combined planning DAG is checked without synthesizing task states.
 - Allowed paths and affected contracts are conservative preparation based on the issue's expected surfaces. Before admission, the destination maintainer checks them against the then-current inventory/contracts; new surfaces require a reviewed manifest revision, not silent expansion. MIG-010 still permits deletion only of paths accepted in its removal inventory.
 
-The read-only check is:
+The following commands describe the historical embedded check. Run them only at the [pre-cleanup adoption revision](https://github.com/Brain-Crumbs/IPTFantasyFootball/tree/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2). For current consumer validation use the [CI guide](../docs/CI.md).
 
 ```sh
 npm ci
@@ -60,7 +59,7 @@ The destination maintainer owns admission through a reviewed PR before start. Un
 5. In a stopped, dedicated target checkout, prepare one complete admission change: accepted task definition, exact-revision requirements/contracts, validators, configuration and receipt. Keep unresolved work staged. Preserve native dependencies. Only a **documented pre-native seed prerequisite**, which has never had native lifecycle state, may be represented by the audited historical gate instead; retain the original edge in the plan and record the admitted definition's reviewed dependency projection in the receipt. This is never a way to bypass a failed or unfinished native run.
 6. Run schema/reference/graph checks on the entire candidate registry and native selection without writes. A missing or cyclic native dependency fails. Missing external acceptance blocks publication into the active registry even though the unmodified selector cannot inspect external receipts. Only the reviewed complete registration commit makes the intended definition visible on the exact revision used for context.
 7. At execution, assert the authorized task is the selector's candidate **before** calling start; scope the registry deliberately to the admitted task and its real native prerequisites if necessary. Never pass the entire staged plan to start. A mismatch blocks rather than selecting the canary or another task. The existing `expectedTaskId` start option is a strict **resume-only** guard, not a fresh-task selector.
-8. Use original owner/run/assignment identities on resume. All roles, validation, PR/CI and merge rules remain required. Authorize external actions only within the owner's grant. At the current user's requested handoff, stop at a ready PR; do not merge or manufacture completion.
+8. Use original owner/run/assignment identities on resume. All roles, validation, PR/CI and merge rules remain required. Authorize external actions only within the owner's grant. The scoped assignment determines whether to stop at a ready PR or proceed through controlled completion. Exact-head approval and CI remain required.
 
 No acceptance receipts are asserted in this initial plan. MIG-002 remains blocked until MIG-001's implementation/reviews/CI are accepted on FF main. MIG-006 also waits for #78; AUT-004 waits for the actual MIG-010 cleanup.
 

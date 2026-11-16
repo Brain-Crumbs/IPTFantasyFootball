@@ -1,92 +1,14 @@
-# Continuous Integration
+# Consumer validation and CI
 
-**Task:** BOOT-023 / issue #25
-**Parent architecture:** issue #1
-**Workflow file:** [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
+The exact-head policy in `vibez.config.json` requires four checks on the GitHub pull request. The existing names are retained across the removal so the same installed readiness controller can validate both revisions.
 
-BOOT-023 adds GitHub Actions checks that independently rerun this repository's own deterministic validation on every pull request and every push to `main`, so a local agent's claim that "tests pass" or "schemas validate" cannot substitute for actual CI evidence. CI never trusts a checked-in "passed" flag, evidence record, or narrative claim; it reruns the same deterministic commands a developer runs locally, against the exact commit under review.
+| Check | What it verifies |
+| --- | --- |
+| Build and test (Node) | Installs the lockfile, checks tracked source ownership, task registry, admission and bundled contracts, and runs the consumer tests. |
+| Schema and contract validation (Python) | Validates the authored project and historical records with the published Vibez schemas loaded from the public assets API. |
+| Installed consumer (Ubuntu) | Installs from the exact pin on Ubuntu 24.04 with Node 22 and exercises the supported consumer entry point. |
+| Installed consumer (Windows) | Installs from the exact pin on Windows Server 2025 with Node 24 and exercises local NTFS attestation and the same entry point. |
 
-This workflow is CI policy enforcement only. It does not compute merge readiness, evaluate branch protection, or perform AI semantic review — those remain owned by BOOT-024/BOOT-025 onward (see [BOOTSTRAP.md](../BOOTSTRAP.md)).
+Run `npm ci --engine-strict`, `npm run build` and `npm test` locally. With Python 3.11 and `jsonschema>=4.23,<5` installed, run `python scripts/validate-consumer-records.py`. The check names are also the required statuses for the controlled merge. Provisioning and protection settings remain GitHub administration.
 
-## Triggers
-
-- `pull_request` targeting `main` — every PR revision reruns CI against its exact head commit.
-- `push` to `main` — the post-merge commit is also verified independently of the PR's last recorded run.
-- `workflow_dispatch` — manual rerun.
-
-A newer push to the same ref cancels an in-flight run for that ref (`concurrency` with `cancel-in-progress: true`), so a merge-readiness reader always sees the status of the exact current head rather than a stale queued run for an earlier commit.
-
-## Jobs and required status checks
-
-Both jobs run on every trigger and are independent of each other (neither depends on the other's outcome). A repository administrator configuring branch protection should mark both as required status checks, using these exact GitHub check contexts:
-
-| Job (workflow file id) | Check context (`<workflow name> / <job name>`) | What it proves |
-| --- | --- | --- |
-| `build-and-test` | `CI / Build and test (Node)` | The TypeScript build (`tsc`) succeeds and the full Node test suite (`node --test`) passes. |
-| `schema-validation` | `CI / Schema and contract validation (Python)` | Every schema family accepts its own valid fixtures and rejects its own invalid fixtures, **and** every real authored `contracts/**/module-contract.json` and `tasks/definitions/*.task.json` record in the repository validates against its schema. |
-
-Configuring branch protection itself (marking these checks "required" in the GitHub repository settings/API) is out of scope for BOOT-023 — see [Out of scope](#out-of-scope-follow-up) below.
-
-## What each job runs
-
-### `build-and-test`
-
-1. `actions/checkout@v4` with `ref: ${{ github.event.pull_request.head.sha || github.sha }}` and `fetch-depth: 0` (full history, not the default shallow single-ref clone). Both non-default settings were added after real findings against this workflow's own first CI run on this PR:
-   - `fetch-depth: 0` — required because `tests/architecture-review.test.mjs`/`tests/qa-review.test.mjs` run `git merge-base` against `main`/`origin/main` in the real checked-out repository (they use `process.cwd()`, not an isolated fixture repo); under the default shallow checkout neither ref is resolvable and both test files fail with `Cannot resolve a merge base between 'main' (or 'origin/main') and revision 'HEAD'.` Reproduced locally with a real `git clone --depth 1` before being fixed.
-   - `ref: ...head.sha` — a Codex review finding: `actions/checkout`'s default ref for a `pull_request` event checks out the synthetic merge commit rather than the PR's actual head commit. Explicitly checking out the head SHA binds this job's result to the exact revision a reviewer and a future merge-readiness reader both mean by "this PR" (`github.sha` is used unchanged for `push`/`workflow_dispatch`, where there is no PR head). See "PR head vs. merge-commit checkout" below for why this changed even though the check *was* already discoverable by PR head SHA either way.
-2. `actions/setup-node@v4` — Node.js `20` (matches this repository's `package.json` `engines.node: ">=20"`)
-3. `npm ci` — installs exactly the versions pinned in `package-lock.json` (newly committed by BOOT-023; the repository had no lockfile before), failing rather than silently drifting if `package.json` and the lockfile disagree
-4. `npm run build` — `tsc -p tsconfig.json`
-5. `npm test` — `node --test` against every file in `package.json`'s `test` script, including the new `tests/ci-workflow.test.mjs`
-
-### `schema-validation`
-
-1. `actions/checkout@v4` with `ref: ${{ github.event.pull_request.head.sha || github.sha }}` (see `build-and-test` above — same head-SHA checkout, so both jobs' results are bound to the same exact revision; this job does not need `fetch-depth: 0`)
-2. `actions/setup-python@v5` — Python `3.11`
-3. `pip install -r schemas/requirements.txt`
-4. `python schemas/validate_fixtures.py` — BOOT-003's existing schema-fixture validator (unchanged by BOOT-023)
-5. `python schemas/validate_repository_contracts.py` — new BOOT-023 repository-invariant check: walks every real `contracts/**/module-contract.json` and `tasks/definitions/*.task.json` file and validates each against its `schemas/v1/*.schema.json` document, rather than only proving the schemas accept/reject their own hand-written fixtures. It fails loudly (rather than silently passing on zero matches) if no `module-contract.json` file is found at all, since that would indicate a stale glob rather than a genuinely empty repository.
-
-## Running the same checks locally
-
-A contributor can reproduce both jobs exactly, without pushing to GitHub, using the toolchain versions above:
-
-```sh
-# build-and-test
-npm ci
-npm run build
-npm test
-
-# schema-validation
-pip install -r schemas/requirements.txt
-python schemas/validate_fixtures.py
-python schemas/validate_repository_contracts.py
-```
-
-There is no separate "CI-only" command and no separate "local-only" command: CI runs exactly these commands and nothing else, so a clean local run of both blocks is deterministic parity with CI for the same commit.
-
-## PR head vs. merge-commit checkout
-
-For a `pull_request` event, `actions/checkout`'s default `ref` is `refs/pull/<n>/merge` — a synthetic commit GitHub computes by merging the PR head into the current base — not the PR's actual head commit; `github.sha` for that event names the same merge commit. Both jobs instead pin `ref: ${{ github.event.pull_request.head.sha || github.sha }}`, so the exact commit tested is the PR's real head (a plain `github.sha` still applies for `push`/`workflow_dispatch`, where there is no PR/merge commit).
-
-This repository's `pull_request_read`/Checks-API tooling already resolves check runs by querying the PR's head SHA directly, and GitHub associates a `pull_request`-triggered workflow's check runs with that head SHA for the PR's Checks tab and required-status-check gating regardless of which ref was actually checked out inside the job — so a merge-readiness reader was never at risk of failing to *find* these checks (verified directly against this PR before this change: `get_check_runs` against the PR already returned this job's status keyed to the real head SHA, not the merge commit, under the pre-fix workflow). The reason to pin the head SHA anyway is what code is *tested*, not check discoverability: this repository's own revision-bound-evidence invariant (`CONSTITUTION.md` §10; BOOT-022's `REMOTE_HEAD_MISMATCH` check) treats "the exact PR head" as authoritative over any GitHub-computed preview of a hypothetical merge, so CI should test that same exact commit rather than a synthetic stand-in for it.
-
-## Determinism and toolchain pinning
-
-- No workflow step downloads or trusts a repository-authored "results" file; every check re-executes the underlying command against the checked-out commit.
-- Actions are pinned to the exact major version this repository has validated against (`actions/checkout@v4`, `actions/setup-node@v4`, `actions/setup-python@v5`) rather than `@main`/`@latest`, so a third-party action release cannot silently change CI behavior between runs. Toolchain versions (`node-version: "20"`, `python-version: "3.11"`) are pinned the same way, matching `package.json`'s `engines.node` and `schemas/requirements.txt`.
-- Both jobs run on GitHub-hosted `ubuntu-latest` runners with no external network dependency beyond `npm install`/`pip install` from their respective public registries; no workflow step requires repository secrets.
-
-## Out of scope follow-up
-
-Per issue #25, BOOT-023 deliberately does not:
-
-- configure branch protection / required-status-check enforcement in the GitHub repository settings — that requires elevated GitHub API/admin access this task does not assume is available, and is a policy decision rather than a workflow-authoring one; a repository administrator applies the check contexts documented above by hand until a later task automates it;
-- compute merge readiness or gate merging (BOOT-024/BOOT-025);
-- run AI semantic (QA/Architecture/UAT) review inside CI — that pipeline remains the `control-plane.qa-review`/`architecture-review`/`uat-review` gates (BOOT-018/019/020), invoked outside CI during the current manual bootstrap regime.
-
-## Known consumers
-
-- **future-merge-readiness-policy-engine (BOOT-024/BOOT-025)** — reads the `build-and-test` and `schema-validation` check results/contexts documented above as one input to computing merge readiness for the exact PR head, per the [`contracts/pr-lifecycle/README.md`](../contracts/pr-lifecycle/README.md) "known consumers" note that named this workflow as `future-ci-enforcement-workflow`.
-
-See [`contracts/ci-enforcement/README.md`](../contracts/ci-enforcement/README.md) for the full module-contract bundle.
+The embedded engine's regression checks and archived records can be inspected in the [last adoption revision](https://github.com/Brain-Crumbs/IPTFantasyFootball/tree/c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2). Reusable engine regression and release tests now live in [Vibez](https://github.com/Brain-Crumbs/Vibez).

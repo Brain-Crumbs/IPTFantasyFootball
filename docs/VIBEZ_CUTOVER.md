@@ -21,7 +21,7 @@ project after verifying the checkout and its runtime roots.
 npm run --silent agent -- --json version
 npm run --silent agent -- --json status
 npm run --silent agent -- --json next
-npm run --silent agent -- --json explain task MIG-009
+npm run --silent agent -- --json explain task MIG-010
 npm run --silent agent -- --json recovery check
 ```
 
@@ -84,10 +84,9 @@ once all required checks pass. Preserve the original config and host on resume.
 ## Cleanup handoff
 
 See the [tracked-file cleanup manifest](MIG-010-cleanup-manifest.json) for
-the disposition of every file in the adoption candidate. MIG-010 should
-verify it against the final adoption commit and the
+the disposition of every file in the accepted adoption tree. See the [cleanup evidence](MIG-010-cleanup.md) and the
 [accepted source mapping](https://github.com/Brain-Crumbs/Vibez/blob/v0.1.0-rc.1/migration/MIG-008_CHECKPOINT.md)
-before applying any deletion. The candidates are embedded engine modules
+for the accepted upstream mapping. The candidates are embedded engine modules
 under `src/`, engine schemas and contract copies, engine-only regression
 tests/scripts, and their build and CI wiring. Preserve project config,
 admitted and historical task definitions, requirements, `contracts/project/`,

@@ -2,7 +2,7 @@
   "sourceBase": "ff9e467a870d26850330563a27359de44f151ea7",
   "sourceCheckpoint": "https://github.com/Brain-Crumbs/Vibez/blob/6590679e4a58c82c6b95014bf8d3dbec2e918f90/migration/MIG-008_CHECKPOINT.md",
   "prerequisite": "https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/81",
-  "instructions": "Candidate paths require reviewed MIG-010 admission and accepted MIG-009 parity and rollback evidence. Preserve every unlisted later path until it is explicitly classified. Revisions must retain the installed-host and consumer checks.",
+  "instructions": "The paths below classify the accepted MIG-009 adoption commit. MIG-010 removes the enumerated candidates, updates the replaced consumer wiring, and preserves the project and historical material.",
   "runtimeData": "Keep all ignored state and prior checkout histories. They are outside this tracked-file inventory.",
   "paths": {
     "removalCandidates": [
@@ -342,5 +342,13 @@
       "tests/installed-consumer.test.mjs",
       "vibez.config.json"
     ]
-  }
+  },
+  "adoptionCommit": "c7fa639539d2f92a36a59a1bb2fd4630d7fbd7d2",
+  "addedForCleanup": [
+    "docs/MIG-010-cleanup.md",
+    "migration/admissions/mig-010.json",
+    "scripts/check-consumer.mjs",
+    "scripts/validate-consumer-records.py",
+    "tasks/admitted/mig-010.task.json"
+  ]
 }
