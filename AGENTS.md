@@ -8,6 +8,12 @@ This repository is building a deterministic, provider-neutral development contro
 
 ## 1. Mandatory start procedure
 
+Use the pinned installed Vibez workflow in an eligible checkout under the
+[cutover guide](docs/VIBEZ_CUTOVER.md). The embedded engine and its historical
+task registry are retained for isolated regression checks and compatible
+archive inspection. Follow the manual issue assignment, admission and
+independent review rules below.
+
 **Migration authority (MIG-001):** #37 is closed, but the accepted main change was only canary-prerequisite retirement; #1 has not declared native cutover. Explicitly assigned MIG/AUT work may use the existing native primitives under the same manual authorization regime. Follow [migration/README.md](migration/README.md) for the authority audit, staged manifests, external admission gates and pinned engine, and [migration/SEED.md](migration/SEED.md) for the one-time empty-Vibez exception. Staged records never authorize execution. #37/#1 still own the remaining cutover acceptance.
 
 **Live canary prerequisite retired:** The owner's 2026-11-07 decision in master issue #1 and issues #35-37 removes live CANARY-001 completion as a prerequisite for BOOT-035/v1 cutover. Follow [docs/CANARY_RETIREMENT.md](docs/CANARY_RETIREMENT.md). Preserve its real runtime state; do not fabricate PASS/DONE or automatically resume the exercise. Automated canary/adversarial tests and ordinary task review/CI/merge gates remain required. This decision does not itself declare cutover.

@@ -47,16 +47,13 @@ The bootstrap contains no fantasy-football product code. Product systems—inclu
 
 ## Agent CLI
 
-See [docs/CLI.md](docs/CLI.md) for clean-checkout setup, command contracts, JSON output, exit codes, and start/retry semantics.
+See the [Vibez cutover guide](docs/VIBEZ_CUTOVER.md) for the installed workflow, supported storage and rollback. The detailed CLI notes below cover the embedded bootstrap archive and its fixtures.
 
 ```sh
-npm install
-npm test
+npm ci --engine-strict
 npm run agent -- help
 npm run agent -- next
 npm run agent -- status
-npm run agent -- start <owner-id> <run-id>
-npm run agent -- validate <task-id> <actor-id> <run-id>
 ```
 
 Implemented commands are `help`, `version`, `next`, `status`, `explain task/transition/validation/reviews/merge`, `start`, `validate`, `manual export/import/run`, `recovery check/apply`, and `orchestrate`. Top-level `review` and `rework` commands remain reserved; available library gates and the manual adapter are documented separately.

@@ -29,7 +29,7 @@ function authorized(f) {
 
 test('real repository includes the exact tiny canary marker and schema-valid task definition', () => {
   assert.equal(readFileSync(join(sourceRoot, 'bootstrap/canary-proof.txt'), 'utf8'), marker);
-  const task = JSON.parse(readFileSync(join(sourceRoot, 'tasks/definitions/canary-001.task.json'), 'utf8'));
+  const task = JSON.parse(readFileSync(join(sourceRoot, 'tasks/archive/canary-001.task.json'), 'utf8'));
   assert.equal(task.taskId, taskId);
   assert.equal(task.canonicalBranch, canonicalBranch);
   assert.deepEqual(task.dependencies, []);

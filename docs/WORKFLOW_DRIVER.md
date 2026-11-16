@@ -1,5 +1,7 @@
 # Manual workflow driver (BOOT-037)
 
+> **Bootstrap archive.** Use the [installed Vibez guide](VIBEZ_CUTOVER.md) for current operations. The examples below apply to the [original embedded revision](https://github.com/Brain-Crumbs/IPTFantasyFootball/tree/ff9e467a870d26850330563a27359de44f151ea7) and its isolated fixtures.
+
 Use the driver to prepare and run one operator-selected task at a time. It uses
 the existing task registry, lifecycle, validation, independent review, PR/CI and
 controlled merge gates. It does not launch AI sessions or declare Bootstrap v1

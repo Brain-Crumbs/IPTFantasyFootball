@@ -1,5 +1,11 @@
 # Vibez migration execution and admission
 
+For the installed Fantasy Football consumer, see the [MIG-009 cutover guide](../docs/VIBEZ_CUTOVER.md).
+The separately reviewed `tasks/admitted/` registry and [MIG-009 receipt](admissions/mig-009.json)
+are the configured context for the installed operator. The bootstrap registry
+has no live canary definition. The original definition is preserved in
+`tasks/archive/`; retain its stopped run and original checkout.
+
 This is the MIG-001 operating record for [FF #80](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/80), coordinated with [FF #74](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/74) and [Vibez #1](https://github.com/Brain-Crumbs/Vibez/issues/1). It prepares work; it neither declares Bootstrap v1 nor admits the entire roadmap.
 
 ## Authority at the inspected base

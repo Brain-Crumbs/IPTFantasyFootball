@@ -1,5 +1,7 @@
 # Recovery and administrative repair
 
+> **Bootstrap archive.** Use the [installed Vibez guide](VIBEZ_CUTOVER.md) for current operations. The examples below apply to the [original embedded revision](https://github.com/Brain-Crumbs/IPTFantasyFootball/tree/ff9e467a870d26850330563a27359de44f151ea7) and its isolated fixtures.
+
 **Task:** [BOOT-032 / issue #34](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/34)
 **Architecture:** [issue #1](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1)
 **Contract:** [control-plane.recovery-tools](../contracts/recovery-tools/README.md)

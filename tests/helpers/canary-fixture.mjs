@@ -41,7 +41,7 @@ export function createCanaryFixture({ parentDirectory, reviewFailure, dirtyDevel
   withAffectedContracts = false } = {}) {
   const root = mkdtempSync(join(parentDirectory ?? tmpdir(), 'ipt-canary-'));
   cpSync(join(sourceRoot, 'schemas'), join(root, 'schemas'), { recursive: true });
-  const definition = JSON.parse(readFileSync(join(sourceRoot, 'tasks/definitions/canary-001.task.json'), 'utf8'));
+  const definition = JSON.parse(readFileSync(join(sourceRoot, 'tasks/archive/canary-001.task.json'), 'utf8'));
   if (withAffectedContracts) {
     for (const moduleId of definition.affectedContracts) {
       const path = `contracts/${moduleId.slice('control-plane.'.length)}/module-contract.json`;

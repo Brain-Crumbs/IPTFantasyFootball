@@ -1,5 +1,7 @@
 # End-to-end canary operator guide
 
+> **Bootstrap archive.** Use the [installed Vibez guide](VIBEZ_CUTOVER.md) for current operations. The examples below apply to the [original embedded revision](https://github.com/Brain-Crumbs/IPTFantasyFootball/tree/ff9e467a870d26850330563a27359de44f151ea7) and its isolated fixtures.
+
 **Live completion is optional, not a cutover prerequisite.** On 2026-11-07 the owner retired the remaining live CANARY-001 completion/reconciliation requirement. See [the decision record](CANARY_RETIREMENT.md) and issues [#1](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/1), [#35](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/35) and [#37](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/37). The runbook below is retained for explicitly assigned optional exercises and historical interpretation. Automated regression tests remain required; the stopped live run is not marked PASS or DONE.
 
 **Task:** [BOOT-033 / issue #35](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/35)

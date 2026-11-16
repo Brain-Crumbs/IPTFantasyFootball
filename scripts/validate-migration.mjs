@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Read-only MIG-001 registration audit. This is not a task publisher or driver.
 import assert from 'node:assert/strict';
+import { verifyConsumerAdmission } from './consumer-admission.mjs';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
@@ -92,6 +93,7 @@ export async function validateMigration(root) {
   }
   resolveDependencyDag(registry);
   resolveDependencyDag(graph);
+  await verifyConsumerAdmission(root);
   return { sourceEngine: plan.sourceEngine, tasks: report };
 }
 

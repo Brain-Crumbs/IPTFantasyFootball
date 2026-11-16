@@ -157,26 +157,32 @@ test("a function validator that throws is reported as ERROR", async () => {
   assert.match(result.results[0].diagnostics, /boom/);
 });
 
-test("a function validator that runs past its declared timeout is preempted and does not block later validators", async () => {
+test("a function validator that runs past its declared timeout is preempted and does not block later validators", { timeout: 15_000 }, async () => {
+  const slowValidator = Promise.withResolvers();
+  // The executor's deadline timer is unreferenced. Keep a fallback completion
+  // alive until the assertion so a missed deadline fails the test.
+  const fallback = setTimeout(() => slowValidator.resolve({ status: "PASS" }), 5_000);
   const executor = new ValidationExecutor([
     functionValidator({
       validatorId: "slow-async",
       timeoutMs: 150,
-      execute: () => new Promise((resolve) => setTimeout(() => resolve({ status: "PASS" }), 600)),
+      execute: () => slowValidator.promise,
     }),
     commandValidator({ validatorId: "after", command: "node", args: ["-e", "process.exit(0)"] }),
   ]);
 
-  const started = Date.now();
-  const result = await executor.run();
-  const elapsedMs = Date.now() - started;
-
-  assert.equal(result.outcome, "FAIL");
-  assert.equal(result.results.length, 2);
-  assert.equal(result.results[0].status, "ERROR");
-  assert.match(result.results[0].diagnostics, /timed out/i);
-  assert.equal(result.results[1].status, "PASS");
-  assert.ok(elapsedMs < 500, `expected run() to return well before the validator's own 600ms delay, took ${elapsedMs}ms`);
+  try {
+    const result = await executor.run();
+    assert.equal(result.outcome, "FAIL");
+    assert.equal(result.results.length, 2);
+    assert.equal(result.results[0].status, "ERROR");
+    assert.match(result.results[0].diagnostics, /timed out/i);
+    assert.equal(result.results[1].status, "PASS");
+  } finally {
+    // Run the next validator before allowing the timed-out one to settle.
+    clearTimeout(fallback);
+    slowValidator.resolve({ status: "PASS" });
+  }
 });
 
 test("command diagnostics retain the numeric exit code even when output is present", async () => {

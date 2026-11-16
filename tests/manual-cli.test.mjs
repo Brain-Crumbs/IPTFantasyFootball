@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -119,13 +119,14 @@ test("CLI waiting runner timeout preserves its packet for a later result", async
 
 test("real CLI SIGINT drains a waiting adapter and returns one JSON cancellation envelope", async (t) => {
   const f = fixture(t);
-  const args = ["dist/cli/cli.js", "--json", "manual", "run", f.requestPath, f.exchange];
+  cpSync(join(repositoryRoot, "schemas"), join(f.root, "schemas"), { recursive: true });
+  const args = [join(repositoryRoot, "dist/cli/cli.js"), "--json", "manual", "run", f.requestPath, f.exchange];
   // Windows child.kill(SIGINT) force-terminates instead of delivering a console
   // event. Drive the real process signal handler over IPC on that platform.
   const windows = process.platform === "win32";
-  const launch = windows ? ["--input-type=module", "-e", `process.argv = [process.execPath, ...${JSON.stringify(args)}]; process.once('message', () => { process.disconnect(); process.emit('SIGINT'); }); await import('./dist/cli/cli.js');`] : args;
+  const launch = windows ? ["--input-type=module", "-e", `process.argv = [process.execPath, ...${JSON.stringify(args)}]; process.once('message', () => { process.disconnect(); process.emit('SIGINT'); }); await import('node:url').then(({ pathToFileURL }) => import(pathToFileURL(process.argv[1]).href));`] : args;
   const child = spawn(process.execPath, launch, {
-    cwd: repositoryRoot, stdio: windows ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
+    cwd: f.root, stdio: windows ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
   });
   t.after(() => { if (child.exitCode === null) child.kill("SIGKILL"); });
   let stdout = "";
