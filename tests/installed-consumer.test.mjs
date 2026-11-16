@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { describeCapabilities } from '@brain-crumbs/vibez';
 import { readContract } from '@brain-crumbs/vibez/assets';
+import { prepareAdmittedPublication } from '../scripts/consumer-admission.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const pin = 'https://github.com/Brain-Crumbs/Vibez/releases/download/v0.1.0-rc.1/brain-crumbs-vibez-0.1.0-rc.1.tgz';
@@ -45,6 +46,17 @@ test('the consumer and its admission receipt pin the published release', () => {
     assert.equal(document.moduleVersion, contractVersions[id]);
     assert.match(sha256, /^[a-f0-9]{64}$/);
   }
+});
+
+test('native publication can adopt the existing draft without closing another issue', () => {
+  const authored = 'Closes #81\n\nMaintainer notes.';
+  const generated = '## Vibez report\n\nCloses #81';
+  const body = authored + '\n\n' + generated;
+  const updated = prepareAdmittedPublication({ body }, 'PATCH');
+  assert.ok(updated.body.startsWith(body));
+  assert.deepEqual(prepareAdmittedPublication(updated, 'PATCH'), updated);
+  assert.equal(prepareAdmittedPublication({ body: authored }, 'POST').draft, true);
+  assert.throws(() => prepareAdmittedPublication({ body: body + '\n\nCloses #82' }, 'PATCH'), /issue #81/);
 });
 
 test('configured installed operator uses only the admitted registry and separate runtime', t => {

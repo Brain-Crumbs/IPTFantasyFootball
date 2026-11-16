@@ -29,3 +29,15 @@ export async function verifyConsumerAdmission(root) {
   assert.deepEqual((await json(taskPath)).dependencies, []);
   assert.equal((await json(requirementPath)).sourceRefs[1], `sha256:${receipt.issueBodySha256}`);
 }
+
+
+export function prepareAdmittedPublication(payload, method) {
+  const closingLines = payload.body?.match(/^Closes #\d+\s*$/gm)?.map(line => line.trim());
+  assert.ok(closingLines?.length && closingLines.every(line => line === 'Closes #81'),
+    'Publication must close the admitted Fantasy Football issue #81.');
+  const coordination = 'Coordinates Fantasy Football #1 and #74, and Brain-Crumbs/Vibez#1.';
+  const body = payload.body.split(/\r?\n/).includes(coordination)
+    ? payload.body
+    : payload.body.trimEnd() + '\n\n' + coordination + '\n';
+  return { ...payload, body, ...(method === 'POST' ? { draft: true } : {}) };
+}

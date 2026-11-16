@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { verifyConsumerAdmission } from './consumer-admission.mjs';
+import { prepareAdmittedPublication, verifyConsumerAdmission } from './consumer-admission.mjs';
 import { createProjectServices, describeCapabilities, npmValidatorCommands } from '@brain-crumbs/vibez';
 import { runCli } from '@brain-crumbs/vibez/cli';
 import {
@@ -86,13 +86,7 @@ async function run() {
         ...github,
         fetchImpl: (url, init) => {
           if (!['POST', 'PATCH'].includes(init.method)) return fetchImpl(url, init);
-          const payload = JSON.parse(init.body);
-          const closingLines = payload.body?.match(/^Closes #\d+\s*$/gm)?.map(line => line.trim());
-          if (closingLines?.length !== 1 || closingLines[0] !== 'Closes #81') {
-            throw new Error('Publication must close the admitted Fantasy Football issue #81.');
-          }
-          payload.body += '\n\nCoordinates Fantasy Football #1 and #74, and Brain-Crumbs/Vibez#1.\n';
-          if (init.method === 'POST') payload.draft = true;
+          const payload = prepareAdmittedPublication(JSON.parse(init.body), init.method);
           return fetchImpl(url, { ...init, body: JSON.stringify(payload) });
         },
       }),
