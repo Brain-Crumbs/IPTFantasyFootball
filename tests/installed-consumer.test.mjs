@@ -11,9 +11,9 @@ import { readContract } from '@brain-crumbs/vibez/assets';
 import { prepareAdmittedPublication } from '../scripts/consumer-admission.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const pin = 'https://github.com/Brain-Crumbs/Vibez/releases/download/v0.1.0-rc.1/brain-crumbs-vibez-0.1.0-rc.1.tgz';
-const integrity = 'sha512-+ILl/hLZ+57upOvVAlkxAGZbI2LUW5my8ok37jVUF4cXF+uU/CK6YssJlfBNo/ZfLDCa2dlKFqUvTJAvciTqzA==';
-const version = '0.1.0-rc.1';
+const pin = 'https://github.com/Brain-Crumbs/Vibez/releases/download/v0.1.0-rc.2/brain-crumbs-vibez-0.1.0-rc.2.tgz';
+const integrity = 'sha512-cBwNrtKdMmUzzHjFCa7rpzNmMO6gms28LgfuBHECAeelni+O7XUpPcXnsQ/tt0tdZ4erXBTp/NjXgmtuHorI8w==';
+const version = '0.1.0-rc.2';
 
 test('the consumer and its admission receipt pin the published release', () => {
   const read = relative => readFileSync(join(root, relative));
@@ -36,6 +36,9 @@ test('the consumer and its admission receipt pin the published release', () => {
   const task = JSON.parse(read(receipt.definition.path));
   assert.deepEqual(task.dependencies, []);
   assert.deepEqual(receipt.dependencyProjection.external, ['MIG-008']);
+  assert.equal(receipt.correctedCandidate.asset, pin);
+  assert.equal(receipt.correctedCandidate.tarballIntegrity, integrity);
+  assert.equal(receipt.correctedCandidate.version, version);
   const contractVersions = {
     'control-plane.orchestration-engine': '2.2.0',
     'control-plane.recovery-tools': '1.1.0',

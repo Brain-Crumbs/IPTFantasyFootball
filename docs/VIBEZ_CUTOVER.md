@@ -1,12 +1,12 @@
 # Fantasy Football Vibez cutover
 
 [MIG-009](https://github.com/Brain-Crumbs/IPTFantasyFootball/issues/81) adopts
-the [immutable 0.1.0-rc.1 candidate](https://github.com/Brain-Crumbs/Vibez/releases/tag/v0.1.0-rc.1).
-Its SHA-256 is `b8c39520724f771a26923f129cd8d93df04e9da2709533d6dd39d482a87c5b9f`.
+the [immutable 0.1.0-rc.2 candidate](https://github.com/Brain-Crumbs/Vibez/releases/tag/v0.1.0-rc.2).
+Its SHA-256 is `2c67cc07c866f54eb6768f94dac3f1fdd1be7781e1fd58062fcd3fb4a2ef26bc`.
 The source checkpoint and rollback baseline is Fantasy Football
 `ff9e467a870d26850330563a27359de44f151ea7`. The exact asset URL and SHA-512
 integrity are locked in `package-lock.json`. Follow the [release verification
-guide](https://github.com/Brain-Crumbs/Vibez/blob/v0.1.0-rc.1/docs/INSTALL.md)
+guide](https://github.com/Brain-Crumbs/Vibez/blob/v0.1.0-rc.2/docs/INSTALL.md)
 to compare a fresh download with the immutable receipt.
 
 ## Operator walkthrough
@@ -28,7 +28,7 @@ npm run --silent agent -- --json recovery check
 `vibez.config.json` identifies this GitHub repository and selects the
 admitted task registry, committed requirements, project contracts, npm build/test
 validators and required CI checks. Continue through the [manual driver
-guide](https://github.com/Brain-Crumbs/Vibez/blob/v0.1.0-rc.1/docs/WORKFLOW_DRIVER.md)
+guide](https://github.com/Brain-Crumbs/Vibez/blob/v0.1.0-rc.2/docs/WORKFLOW_DRIVER.md)
 using `npm run agent -- orchestrate …` for profile setup, selection,
 handoffs, publication, ready conversion and controlled completion. Start on
 the canonical task branch with a local main reference and a clean commit.
@@ -54,7 +54,7 @@ once all required checks pass. Preserve the original config and host on resume.
    `.agent/state`, `.agent/driver` and custom exchange or evidence root.
    Catalogue and checksum the bytes of a protected backup and its offline
    staged restore. Use Vibez's read-only
-   [compatibility and backup tools](https://github.com/Brain-Crumbs/Vibez/blob/v0.1.0-rc.1/docs/COMPATIBILITY.md)
+   [compatibility and backup tools](https://github.com/Brain-Crumbs/Vibez/blob/v0.1.0-rc.2/docs/COMPATIBILITY.md)
    against the original checkout. Record the coverage of any custom exchange
    directory separately. Keep the retired canary and other unfinished runs
    stopped, available to the original reader at their original identity.
@@ -64,6 +64,13 @@ once all required checks pass. Preserve the original config and host on resume.
    zero means the inspection ran. The embedded Fantasy Football 0.1.0 reader
    does not accept Vibez driver history; keep its store and the Vibez store
    separate and retain both pinned readers.
+
+   The first installed attempt used rc.1. The [configured-validator history fix](https://github.com/Brain-Crumbs/Vibez/issues/24)
+   supersedes that artifact. Keep the stopped rc.1 checkout, original
+   profile, task bindings and latest verified backup available together.
+   Read-only rc.2 diagnostics can inspect the original checkout. Start the
+   corrected attempt in a separate physical clone with a fresh store and
+   collect revision-bound validation and review evidence there.
 3. Enable writes only in the configured clone. Its seven writable roots are
    disjoint below `.agent/vibez/`. Preserve the Git identity marker and
    all task bindings with a snapshot. Keep prior checkouts available as

@@ -21,6 +21,6 @@
     "typescript": "5.8.3"
   },
   "dependencies": {
-    "@brain-crumbs/vibez": "https://github.com/Brain-Crumbs/Vibez/releases/download/v0.1.0-rc.1/brain-crumbs-vibez-0.1.0-rc.1.tgz"
+    "@brain-crumbs/vibez": "https://github.com/Brain-Crumbs/Vibez/releases/download/v0.1.0-rc.2/brain-crumbs-vibez-0.1.0-rc.2.tgz"
   }
 }

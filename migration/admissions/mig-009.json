@@ -38,5 +38,20 @@
     "provenanceSha256": "53990693db7282852567bfb8c5c8871119ba2d047d9b1c1e37f9aa46c4ebd427",
     "tarballSha256": "b8c39520724f771a26923f129cd8d93df04e9da2709533d6dd39d482a87c5b9f",
     "acceptance": "Immutable release and exact-head CI/reviews match the accepted delivery. The accepted source checkpoint equals the destination integration base."
+  },
+  "correctedCandidate": {
+    "taskId": "FIX-001",
+    "issue": "https://github.com/Brain-Crumbs/Vibez/issues/24",
+    "pullRequest": "https://github.com/Brain-Crumbs/Vibez/pull/25",
+    "reviewedHead": "cd23ed4a4c1861a1c331abf0f28cd4b122ce7fa0",
+    "version": "0.1.0-rc.2",
+    "release": "https://github.com/Brain-Crumbs/Vibez/releases/tag/v0.1.0-rc.2",
+    "ci": "https://github.com/Brain-Crumbs/Vibez/actions/runs/43815168418",
+    "provenance": "https://github.com/Brain-Crumbs/Vibez/releases/download/v0.1.0-rc.2/release.json",
+    "provenanceSha256": "60180fa49fb9a16cd84c7d31d26fab68c3297f0662dbb9e26c4af6be23e75dec",
+    "asset": "https://github.com/Brain-Crumbs/Vibez/releases/download/v0.1.0-rc.2/brain-crumbs-vibez-0.1.0-rc.2.tgz",
+    "tarballSha256": "2c67cc07c866f54eb6768f94dac3f1fdd1be7781e1fd58062fcd3fb4a2ef26bc",
+    "tarballIntegrity": "sha512-cBwNrtKdMmUzzHjFCa7rpzNmMO6gms28LgfuBHECAeelni+O7XUpPcXnsQ/tt0tdZ4erXBTp/NjXgmtuHorI8w==",
+    "acceptance": "Corrects configured validator evidence for history audit and upgrade preview. Original rc.1 admission and stopped history remain preserved."
   }
 }

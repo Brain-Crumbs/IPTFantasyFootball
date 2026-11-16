@@ -48,7 +48,7 @@ async function requireEmptyIntake(paths) {
 }
 
 async function run() {
-  describeCapabilities({ apiVersion: '1.0.0', packageVersion: '0.1.0-rc.1' });
+  describeCapabilities({ apiVersion: '1.0.0', packageVersion: '0.1.0-rc.2' });
   if (!command || ['help', '--help', '-h', 'version', '--version', '-v'].includes(command)) {
     return runCli(args);
   }
