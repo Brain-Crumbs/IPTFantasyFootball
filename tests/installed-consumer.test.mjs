@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +35,16 @@ test('the consumer and its admission receipt pin the published release', () => {
   const task = JSON.parse(read(receipt.definition.path));
   assert.deepEqual(task.dependencies, []);
   assert.deepEqual(receipt.dependencyProjection.external, ['MIG-008']);
-  for (const id of task.affectedContracts) assert.ok(readContract(id, '1.0.0'));
+  const contractVersions = {
+    'control-plane.orchestration-engine': '2.2.0',
+    'control-plane.recovery-tools': '1.1.0',
+  };
+  for (const id of task.affectedContracts) {
+    const { document, sha256 } = readContract(id);
+    assert.equal(document.moduleId, id);
+    assert.equal(document.moduleVersion, contractVersions[id]);
+    assert.match(sha256, /^[a-f0-9]{64}$/);
+  }
 });
 
 test('configured installed operator uses only the admitted registry and separate runtime', t => {
@@ -46,7 +55,7 @@ test('configured installed operator uses only the admitted registry and separate
   const git = (...args) => execFileSync('git', args, { cwd: checkout, stdio: 'pipe' });
   git('init', '--initial-branch=main');
   git('remote', 'add', 'origin', 'https://github.com/Brain-Crumbs/IPTFantasyFootball.git');
-  for (const path of ['.gitignore', 'vibez.config.json', 'tasks', 'requirements', 'contracts/project', 'scripts/agent.mjs']) {
+  for (const path of ['.gitignore', 'vibez.config.json', 'tasks', 'requirements', 'contracts/project', 'scripts/agent.mjs', 'scripts/consumer-admission.mjs', 'migration/admissions']) {
     cpSync(join(root, path), join(checkout, path), { recursive: true });
   }
   git('add', '--all');
@@ -79,7 +88,23 @@ test('configured installed operator uses only the admitted registry and separate
     '--review-tools', 'read_file,run_test', '--enforce-policies', 'externally']);
   assert.equal(init.status, 0, JSON.stringify(init));
   assert.ok(existsSync(join(checkout, '.agent/vibez/operations/driver/profile.json')));
+  const select = cli(['orchestrate', 'select', 'MIG-009', '--issue-number', '81']);
+  assert.equal(select.status, 0, JSON.stringify(select));
+  assert.equal(select.data.status, 'PREPARED');
+  assert.equal(cli(['orchestrate', 'prepare']).error.code, 'REVIEWED_ADMISSION_REQUIRED');
+  const issueInbox = join(checkout, '.agent/vibez/inbox/issues');
+  mkdirSync(issueInbox, { recursive: true });
+  writeFileSync(join(issueInbox, 'unexpected.md'), 'Unreviewed intake');
+  assert.equal(cli(['orchestrate', 'run', select.data.sessionId]).status, 4);
+  assert.equal(existsSync(join(checkout, '.agent/vibez/state/lifecycle/MIG-009.lifecycle.json')), false);
+
   assert.equal(existsSync(join(checkout, '.agent/state')), false);
   assert.equal(existsSync(join(checkout, 'dist')), false);
   assert.equal(existsSync(join(checkout, 'schemas')), false);
+
+  const extraDefinition = join(checkout, 'tasks/admitted/unreviewed.task.json');
+  cpSync(join(checkout, 'tasks/admitted/mig-009.task.json'), extraDefinition);
+  git('add', '--all');
+  git('-c', 'user.name=MIG-009 fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'Exercise unreviewed input rejection');
+  assert.equal(cli(['next']).status, 4);
 });

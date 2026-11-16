@@ -10,7 +10,7 @@ import { loadTaskRegistry, resolveDependencyDag, selectNextEligibleTask } from '
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'migration registration '));
   t.after(() => rm(root, { recursive: true, force: true }));
-  for (const path of ['migration', 'requirements', 'schemas/v1', 'tasks/definitions', 'contracts']) {
+  for (const path of ['migration', 'requirements', 'schemas/v1', 'tasks', 'vibez.config.json', 'contracts']) {
     await cp(new URL(`../${path}`, import.meta.url), join(root, path), { recursive: true });
   }
   return root;
@@ -37,8 +37,10 @@ test('all 14 issue mappings validate; default registry and historical canary sta
   assert.ok(report.tasks.find(t => t.taskId === 'MIG-006').blockers.includes('UNACCEPTED:BOOT-037'));
   assert.ok(report.tasks.find(t => t.taskId === 'AUT-004').blockers.includes('UNACCEPTED:MIG-010'));
   const active = await loadTaskRegistry({ repositoryRoot: root });
-  assert.deepEqual([...active.keys()], ['CANARY-001']);
-  assert.equal(selectNextEligibleTask(active).taskId, 'CANARY-001');
+  assert.deepEqual([...active.keys()], []);
+  assert.equal(selectNextEligibleTask(active).kind, 'empty');
+  const archive = await readFile(join(root, 'tasks/archive/canary-001.task.json'), 'utf8');
+  assert.equal(JSON.parse(archive).taskId, 'CANARY-001');
   assert.deepEqual(await hashes(root), before, 'Audit must not write any source, runtime or evidence file');
 });
 for (const [name, path, mutate, message] of [

@@ -31,7 +31,9 @@
     "AGENTS.md",
     "README.md",
     "vibez.config.json",
-    "migration/admissions/mig-009.json"
+    "migration/admissions/mig-009.json",
+    "schemas/validate_repository_contracts.py",
+    "migration/README.md"
   ],
   "requirements": [
     "MIG-009-R1"

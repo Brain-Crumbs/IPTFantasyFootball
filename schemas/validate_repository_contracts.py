@@ -32,6 +32,18 @@ RECORD_FAMILIES = [
         "require_at_least_one": False,
     },
     {
+        "label": "archived task",
+        "schema": SCHEMA_DIR / "task.schema.json",
+        "glob": "tasks/archive/*.task.json",
+        "require_at_least_one": False,
+    },
+    {
+        "label": "admitted task",
+        "schema": SCHEMA_DIR / "task.schema.json",
+        "glob": "tasks/admitted/*.task.json",
+        "require_at_least_one": True,
+    },
+    {
         "label": "staged migration task (not runtime admission)",
         "schema": SCHEMA_DIR / "task.schema.json",
         "glob": "migration/tasks/*.task.json",

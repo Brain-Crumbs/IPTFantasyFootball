@@ -30,8 +30,14 @@ admitted task registry, committed requirements, project contracts, npm build/tes
 validators and required CI checks. Continue through the [manual driver
 guide](https://github.com/Brain-Crumbs/Vibez/blob/v0.1.0-rc.1/docs/WORKFLOW_DRIVER.md)
 using `npm run agent -- orchestrate …` for profile setup, selection,
-handoffs, publication, ready conversion and controlled completion. Run only an
-explicitly assigned, reviewed admission. Keep credentials in the trusted host.
+handoffs, publication, ready conversion and controlled completion. Start on
+the canonical task branch with a local main reference and a clean commit.
+Use `select`, `run` and `resume` with individually submitted role responses.
+Keep the issue inbox empty. `prepare` and `watch` are disabled because they
+can admit an issue outside the reviewed-registration process. The package's
+standalone binaries are upstream tools; this project's entry point is
+`npm run agent`. The retired CANARY-001 definition is available in
+`tasks/archive/` and its original Git revision. Keep credentials in the trusted host.
 Set `IPT_DRIVER_MERGE` only for the independently reviewed PR and exact head
 once all required checks pass. Preserve the original config and host on resume.
 
@@ -49,6 +55,12 @@ once all required checks pass. Preserve the original config and host on resume.
    against the original checkout. Record the coverage of any custom exchange
    directory separately. Keep the retired canary and other unfinished runs
    stopped, available to the original reader at their original identity.
+   Use `npm run --silent agent -- --json upgrade check <prior-reader-version> quiescent`
+   against the stopped configured checkout. Pass `--local-ntfs` on verified
+   Windows storage. Inspect `compatible` and `findings` in the response. Exit
+   zero means the inspection ran. The embedded Fantasy Football 0.1.0 reader
+   does not accept Vibez driver history; keep its store and the Vibez store
+   separate and retain both pinned readers.
 3. Enable writes only in the configured clone. Its seven writable roots are
    disjoint below `.agent/vibez/`. Preserve the Git identity marker and
    all task bindings with a snapshot. Keep prior checkouts available as
@@ -65,9 +77,11 @@ once all required checks pass. Preserve the original config and host on resume.
 
 ## Cleanup handoff
 
-MIG-010 should reconcile the
+See the [tracked-file cleanup manifest](MIG-010-cleanup-manifest.json) for
+the disposition of every file in the adoption candidate. MIG-010 should
+verify it against the final adoption commit and the
 [accepted source mapping](https://github.com/Brain-Crumbs/Vibez/blob/v0.1.0-rc.1/migration/MIG-008_CHECKPOINT.md)
-against the final adoption tree. The candidates are embedded engine modules
+before applying any deletion. The candidates are embedded engine modules
 under `src/`, engine schemas and contract copies, engine-only regression
 tests/scripts, and their build and CI wiring. Preserve project config,
 admitted and historical task definitions, requirements, `contracts/project/`,

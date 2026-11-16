@@ -1,5 +1,8 @@
 import { fileURLToPath } from 'node:url';
-import { createProjectServices, npmValidatorCommands } from '@brain-crumbs/vibez';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { verifyConsumerAdmission } from './consumer-admission.mjs';
+import { createProjectServices, describeCapabilities, npmValidatorCommands } from '@brain-crumbs/vibez';
 import { runCli } from '@brain-crumbs/vibez/cli';
 import {
   GitHubCiStatusOperations,
@@ -20,12 +23,44 @@ const interrupt = () => controller.abort();
 process.on('SIGINT', interrupt);
 process.on('SIGTERM', interrupt);
 
+async function requireEmptyIntake(paths) {
+  for (const path of [paths.intake, paths.operations + '/driver/intakes']) {
+    let entries;
+    try {
+      entries = await readdir(join(projectRoot, path));
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    if (entries.length) throw new Error('Reviewed admission requires an empty issue intake.');
+  }
+}
+
 async function run() {
+  describeCapabilities({ apiVersion: '1.0.0', packageVersion: '0.1.0-rc.1' });
   if (!command || ['help', '--help', '-h', 'version', '--version', '-v'].includes(command)) {
     return runCli(args);
   }
+  await verifyConsumerAdmission(projectRoot);
+  if (command === 'orchestrate' && ['prepare', 'watch'].includes(operation)) {
+    const message = 'New tasks require reviewed admission. Use orchestrate select, run or resume for admitted tasks.';
+    return {
+      exitCode: 4,
+      stdout: args.includes('--json') ? JSON.stringify({
+        schemaVersion: '1.0.0', ok: false, command, data: null,
+        error: { code: 'REVIEWED_ADMISSION_REQUIRED', message },
+      }) + '\n' : '',
+      stderr: args.includes('--json') ? '' : message + '\n',
+    };
+  }
   const token = process.env.IPT_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
   const mergeAuthorization = process.env.IPT_DRIVER_MERGE;
+  const recoveryActors = (process.env.IPT_RECOVERY_ADMIN_ACTORS ?? '').split(',');
+  // Validators and Git subprocesses inherit ordinary environment variables.
+  // Keep host authority available only to the explicit adapters.
+  for (const name of ['IPT_GITHUB_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'IPT_DRIVER_MERGE', 'IPT_RECOVERY_ADMIN_ACTORS']) {
+    delete process.env[name];
+  }
   const fetchImpl = (url, init) => {
     if (!token) throw new Error('Supply trusted GitHub credentials for PR and CI operations.');
     return fetch(url, { ...init, signal: AbortSignal.timeout(30_000), redirect: 'error' });
@@ -58,8 +93,11 @@ async function run() {
     authorizeMerge: request => Boolean(token)
       && request.repository === repository
       && mergeAuthorization === `${repository}#${request.number}@${request.expectedHeadSha}`,
-    authorizeRecovery: request => (process.env.IPT_RECOVERY_ADMIN_ACTORS ?? '').split(',').includes(request.actorId),
+    authorizeRecovery: request => recoveryActors.includes(request.actorId),
   });
+  if (command === 'orchestrate' && ['run', 'resume'].includes(operation)) {
+    await requireEmptyIntake(services.config.document.paths);
+  }
   return services.cli(args, controller.signal, {
     progress: message => process.stderr.write(`${message}\n`),
     ...(token ? { token } : {}),
@@ -75,7 +113,9 @@ try {
 } catch (error) {
   // Configuration failures can originate in a trusted adapter. Never print its
   // exception text, which could contain credentials or private workspace paths.
-  const message = 'Vibez could not open this project. Check the installed pin, tracked config, local storage and npm environment.';
+  const message = error.code === 'UNSUPPORTED_STORAGE'
+    ? 'Use a supported local checkout outside synchronized folders. On Windows, verify NTFS and pass --local-ntfs.'
+    : 'Vibez could not open this project. Check the installed pin, tracked config, reviewed admission and npm environment.';
   if (args.includes('--json')) {
     process.stdout.write(JSON.stringify({
       schemaVersion: '1.0.0', ok: false, command, data: null,

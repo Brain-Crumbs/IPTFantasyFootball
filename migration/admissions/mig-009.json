@@ -16,7 +16,7 @@
   },
   "definition": {
     "path": "tasks/admitted/mig-009.task.json",
-    "sha256": "8158fb14858d7df2f47db0098696e6b495c42785a086e30682c24ff97d894c62"
+    "sha256": "6d4be52bd8d6608706b71f414931a76a462eb3efdf260338e083383339d7a253"
   },
   "requirement": {
     "path": "requirements/migration/mig-009.requirement.json",

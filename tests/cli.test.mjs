@@ -23,7 +23,7 @@ function spawnDocumentedJsonCli(args) {
   const sharedArtifacts = ["dist/cli/cli.js", "dist/orchestration-engine/run-store.js"];
   const before = sharedArtifacts.map(path => statSync(join(source, path)).mtimeMs);
   try {
-    for (const path of ["scripts/agent.mjs", "node_modules", "package.json"]) {
+    for (const path of ["scripts/agent.mjs", "scripts/consumer-admission.mjs", "node_modules", "package.json"]) {
       cpSync(join(source, path), join(root, path), { recursive: true });
     }
     const result = spawnSync(npmCommand, [...npmPrefix, "run", "--silent", "agent", "--", "--json", ...args], {
